@@ -35,7 +35,7 @@ import { createAnalyticsController, attachAnalyticsTips } from './analytics-cont
 import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
-import { activeProvider, newTasksView } from './tasks-model.js';
+import { activeProvider, newTasksView, tasksOf } from './tasks-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
@@ -2196,10 +2196,11 @@ async function handle(action, el, ev) {
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
   if (action.startsWith('analytics-')) return analyticsUi.handle(action, el);
-  // Today's task rows open the task on the Tasks page.
+  // Today's task rows, and the tasks a run made, open the task on the Tasks page; one no longer
+  // there (deleted, or not pulled from the provider yet) opens the page alone.
   if (action === 'task-open-today') {
     await route('tasks');
-    return tasksUi.openDrawer(el.dataset.id);
+    return tasksOf(snap()).some(r => r.id === el.dataset.id) ? tasksUi.openDrawer(el.dataset.id) : undefined;
   }
   if (action.startsWith('meetings-settings-')) return meetingsSettingsUi.handle(action, el);
   if (action.startsWith('meeting-') || action.startsWith('doc-')) {

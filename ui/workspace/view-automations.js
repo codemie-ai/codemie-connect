@@ -35,23 +35,67 @@ export const EVENTS = [
   ['chat_from', 'A Teams message arrives from…'],
   ['critical', 'A critical item arrives'],
   ['meeting_ended', 'A meeting ends'],
+  ['meeting_ready', 'A meeting’s transcript is ready'],
 ];
 /** Events a message starts (it has a sender and a conversation). */
 const MESSAGE_EVENTS = new Set(['mail_from', 'chat_from', 'critical']);
+/** The event of a summary automation: it makes a note template's document, no Claude run of its own. */
+const SUMMARY_EVENT = 'meeting_ready';
+/** Events that name meetings, not people: no senders, keywords match the title. */
+const MEETING_EVENTS = new Set(['meeting_ended', SUMMARY_EVENT]);
 /** Events whose message can get a prepared reply draft (the backend allows only these). */
 const REPLY_EVENTS = new Set(['mail_from', 'chat_from']);
 
 // ---------------------------------------------------------------- templates (DESIGN 6.6)
 
+const WEEKDAYS = [1, 2, 3, 4, 5];
 export const TEMPLATES = [
   {
-    id: 'morning-brief', name: 'Morning brief', iconName: 'coffee',
-    description: 'Before your day starts: what can’t wait, the meetings to prepare for and your promises due today.',
+    id: 'morning-brief', name: 'Morning briefing', iconName: 'coffee',
+    description: 'Before work: budget requests, the replies you owe, what is late or due today and the meetings to prepare for.',
     automation: {
-      name: 'Morning brief', trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:45' },
+      name: 'Morning briefing', trigger: { kind: 'schedule', days: WEEKDAYS, time: '08:07' },
       read: { calendarToday: true, needsReply: true, commitmentsNotes: true },
-      prompt: 'Write my morning brief. Start with what can’t wait: critical items and replies that are overdue. Then name the meetings today that need preparation and why. End with the commitments due today or overdue. Keep it short and skip anything that needs no action from me.',
+      prompt: 'Write my morning briefing. First the budget requests that wait for me. Then the replies I owe: those that look handled first, then 1:1 chats, group chats, mail. Then what is late or due today. Then the meetings today that need preparation and why. End with what can wait and any FYI worth a line. Skip anything that needs nothing from me.',
       deliver: { today: true, notify: true }, catchUp: true,
+    },
+  },
+  {
+    id: 'inbox-triage', name: 'Inbox triage', iconName: 'inbox',
+    description: 'Every message that needs your answer becomes a reply task. Messages that only inform are left alone.',
+    automation: {
+      name: 'Inbox triage', trigger: { kind: 'schedule', days: WEEKDAYS, time: '08:00' },
+      read: { needsReply: true, commitmentsNotes: true },
+      prompt: 'Go through the messages waiting for my reply. Make a reply task for each one that needs an answer or a decision from me; skip newsletters, notifications and messages that only inform. If an open reply task already looks answered by someone else in its thread, say so under handled. Summarise what came in, in two lines.',
+      deliver: { today: true, createTasks: true }, catchUp: true,
+    },
+  },
+  {
+    id: 'commitments', name: 'Commitments', iconName: 'hand',
+    description: 'Your promises become your tasks; other people’s promises become waiting tasks with their date.',
+    automation: {
+      name: 'Commitments', trigger: { kind: 'schedule', days: WEEKDAYS, time: '08:03' },
+      read: { recentMessages: true, commitmentsNotes: true },
+      prompt: 'Find the promises in these messages. When I promised something, make a task for me with the date I gave. When someone promised me something, make a waiting task for that person with the date they gave. Ignore vague talk such as "let’s catch up sometime". If something I was waiting for arrived, say so under handled.',
+      deliver: { today: true, createTasks: true }, catchUp: true,
+    },
+  },
+  {
+    id: 'budget-reply', name: 'Budget request reply', iconName: 'chart',
+    description: 'A budget request becomes a budget task and a reply draft for you to check and send.',
+    automation: {
+      name: 'Budget request reply', trigger: { kind: 'event', event: 'mail_from', senders: [], keywords: ['budget'] },
+      read: { triggerConversation: true },
+      prompt: 'This message is a budget request. Make one budget task named after the project and the amount asked. Draft my reply: confirm what I approve, or ask for what is missing, with my choices in square brackets. Don’t judge whether the project exists; I check that myself.',
+      deliver: { today: true, notify: true, draftReply: true, createTasks: true }, catchUp: false,
+    },
+  },
+  {
+    id: 'formal-summary', name: 'Formal meeting summary', iconName: 'transcript',
+    description: 'Each meeting with a transcript gets a Formal summary you can share. Built from the transcript with your note templates.',
+    automation: {
+      name: 'Formal meeting summary', trigger: { kind: 'event', event: SUMMARY_EVENT, senders: [], keywords: [] },
+      read: {}, prompt: '', deliver: { meetingSummary: 'formal-summary' }, catchUp: false,
     },
   },
   {
@@ -116,16 +160,24 @@ export function triggerSummary(a) {
     case 'chat_from': return `When a Teams message arrives from ${senders || 'the people you name'}${about}`;
     case 'critical': return `When a critical item arrives${senders ? ` from ${senders}` : ''}${about}`;
     case 'meeting_ended': return `When a meeting${about} ends`;
+    case SUMMARY_EVENT: return about ? `When the transcript of a meeting${about} is ready` : 'When a meeting’s transcript is ready';
     default: return `When mail arrives from ${senders || 'the people you name'}${about}`;
   }
 }
 
-const DELIVER_LABELS = [['today', 'Today'], ['notify', 'Notification'], ['draftReply', 'Reply draft']];
-const DELIVER_WORDS = { today: 'Today', notify: 'a notification', draftReply: 'a reply draft' };
+const DELIVER_LABELS = [['today', 'Today'], ['notify', 'Notification'], ['draftReply', 'Reply draft'], ['createTasks', 'Tasks']];
+const DELIVER_WORDS = { today: () => 'Today', notify: () => 'a notification', draftReply: () => 'a reply draft', createTasks: provider => `tasks in ${provider}` };
 
-/** "Delivers to Today and a notification." */
-export function deliveriesSentence(deliver = {}) {
-  const words = Object.keys(DELIVER_WORDS).filter(key => deliver[key]).map(key => DELIVER_WORDS[key]);
+/** The name of the note template a summary automation makes ("Formal summary"). */
+const templateName = (id, templates = []) => templates.find(t => t.id === id)?.name || 'meeting summary';
+
+/** The active task provider's name ("Todoist"); Connect's own without one. */
+export const providerNameOf = s => s?.taskProvider?.name || 'Connect';
+
+/** "Delivers to Today and tasks in Todoist." / "Makes a Formal summary for each meeting." */
+export function deliveriesSentence(deliver = {}, providerName = 'Connect', templates = []) {
+  if (deliver.meetingSummary) return `Makes a ${templateName(deliver.meetingSummary, templates)} for each meeting.`;
+  const words = Object.keys(DELIVER_WORDS).filter(key => deliver[key]).map(key => DELIVER_WORDS[key](providerName));
   if (!words.length) return 'Kept in the Run log only.';
   return `Delivers to ${words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : words[0]}.`;
 }
@@ -181,7 +233,7 @@ export const activeRun = (s, id) => s.jobs.find(j => j.kind === 'automation_run'
 const STATUS = { ok: ['Done', 'success'], failed: ['Failed', 'error'], skipped: ['Skipped', 'neutral'], cancelled: ['Stopped', 'neutral'] };
 const statusBadge = run => badge(...(STATUS[run.data.status] || [run.data.status || 'Unknown', 'neutral']));
 
-const EVENT_RUN = { mail_from: 'Mail', chat_from: 'Teams message', critical: 'Critical item', meeting_ended: 'Meeting ended' };
+const EVENT_RUN = { mail_from: 'Mail', chat_from: 'Teams message', critical: 'Critical item', meeting_ended: 'Meeting ended', meeting_ready: 'Transcript ready' };
 /** What started a run: "Run now", "Schedule · 08:45", "Mail from Ann Lee", "Meeting ended · Planning". */
 export function runTrigger(run, s) {
   const t = run.data.trigger || {};
@@ -190,7 +242,7 @@ export function runTrigger(run, s) {
   if (t.kind === 'schedule') return `Schedule · ${formatTime(t.scheduledAt || run.data.startedAt, zone)}`;
   if (t.kind === 'catch_up') return `Catch-up for ${formatTime(t.scheduledAt || run.data.startedAt, zone)}`;
   const label = EVENT_RUN[t.event] || 'Event';
-  const source = t.sourceId && s?.records.find(r => r.id === t.sourceId && (r.kind === 'message' || r.kind === 'event'));
+  const source = t.sourceId && s?.records.find(r => r.id === t.sourceId && ['message', 'event', 'meeting'].includes(r.kind));
   if (source?.kind === 'message' && source.data.from) return `${label} from ${source.data.from}`;
   const title = source?.data.title || (run.data.sources || []).find(x => x.id === t.sourceId)?.title;
   return title ? `${label} · ${title}` : label;
@@ -290,7 +342,41 @@ function errorBox(failure) {
     </div>`;
 }
 
-const DELIVERED = { today: 'Today', notification_queued: 'Notification', draft: 'Reply draft' };
+const DELIVERED = { today: 'Today', notification_queued: 'Notification', draft: 'Reply draft', tasks: 'Tasks', meeting_summary: 'the meeting' };
+
+/** "Tasks: 2 made in Todoist, 1 already there", "Tasks: none needed"; '' for a run that made no tasks. */
+export function tasksLine(run, providerName = 'Connect') {
+  const t = run?.data?.tasks;
+  if (!t) return '';
+  const made = (t.made || []).length;
+  const existing = Number(t.existing) || 0;
+  if (!made && !existing) return 'Tasks: none needed';
+  return `Tasks: ${made} made in ${providerName}${existing ? `, ${existing} already there` : ''}`;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** What a run made: its tasks (each a link to Tasks), what was left out and flagged; for a
+ *  summary run, the meeting. */
+function madeHtml(run, s) {
+  const d = run.data;
+  const parts = [];
+  const line = tasksLine(run, providerNameOf(s));
+  if (line) {
+    const t = d.tasks;
+    // "already there" counts every key that had a task, including one deleted or finished.
+    parts.push(`<p class="ws-run-tasks-line"${t.existing ? ' title="Made by an earlier run. A task you deleted or finished counts here too, and is never made again."' : ''}>${e(line)}</p>`);
+    const made = t.made || [];
+    if (made.length) {
+      parts.push(`<ul class="ws-run-made">${made.map(x => `<li><a class="ws-run-task" href="#/tasks" data-action="task-open-today" data-id="${e(x.id)}">${e(x.text)}<span aria-hidden="true"> ›</span></a></li>`).join('')}</ul>`);
+    }
+    if (t.dropped) parts.push(`<p class="ws-muted ws-hint">${e(`${t.dropped} left out (no message given)`)}</p>`);
+  }
+  if (d.handled > 0) parts.push(`<p class="ws-run-tasks-line">${e(`Looks handled: ${plural(d.handled, 'task')} flagged`)}</p>`);
+  const meeting = d.meetingId && s?.records.find(r => r.id === d.meetingId && (r.kind === 'meeting' || r.kind === 'event'));
+  if (meeting) parts.push(`<p><a class="ws-run-task" href="#/meetings/${e(encodeURIComponent(d.meetingId))}/summary" data-action="meeting-open" data-id="${e(d.meetingId)}">Open meeting<span aria-hidden="true"> ›</span></a></p>`);
+  return parts.length ? `<div class="ws-run-made-block">${parts.join('')}</div>` : '';
+}
 
 function runDetail(run, s, ai) {
   const d = run.data;
@@ -307,6 +393,7 @@ function runDetail(run, s, ai) {
   }
   const sources = d.sources || [];
   if (sources.length) parts.push(`<div class="ws-run-sources"><span class="ws-field-label">Read · ${sources.length} source${sources.length === 1 ? '' : 's'}</span><div class="ws-chips">${sources.map(x => sourceChip(x, s)).join('')}</div></div>`);
+  parts.push(madeHtml(run, s));
   const delivered = (d.delivered || []).map(x => DELIVERED[x] || x);
   const meta = [
     d.profile ? `${profileName(d.profile)}${d.model ? ` · ${modelLabel(d.model)}` : ''}` : '',
@@ -364,7 +451,7 @@ export function automations(s, ctx = {}) {
   const panels = {
     'auto-list': () => listPanel(s, list, ui.highlight),
     'auto-runs': () => runsPanel(s, list, ui.runs || {}, ctx.state?.ai),
-    'auto-templates': () => templatesPanel(),
+    'auto-templates': () => templatesPanel(s),
   };
   // The empty list offers its own two buttons; the heading doesn't repeat one of them.
   const heading = visibleTabs(layout).includes('auto-list') && !list.length ? '' : button('New automation', { action: 'automation-new', variant: 'primary', iconName: 'plus' });
@@ -387,7 +474,7 @@ function listPanel(s, list, highlight) {
       className: 'ws-auto-empty',
       body: emptyState({
         iconName: 'automations', title: 'No automations yet',
-        text: 'Start from a template such as Morning brief, or build your own. Each run reads only what you tick and never sends anything.',
+        text: 'Start from a template such as Morning briefing, or build your own. Each run reads only what you tick and never sends anything.',
         actions: `${button('Start from a template', { action: 'automations-tab', variant: 'primary', iconName: 'spark', attrs: { 'data-tab': 'templates' } })}${button('New automation', { action: 'automation-new', variant: 'secondary', iconName: 'plus' })}`,
       }),
     });
@@ -400,7 +487,9 @@ function automationRow(s, rec, highlight = false) {
   const zone = s.settings.timeZone;
   const job = activeRun(s, a.id);
   const run = latestRun(s, a.id);
-  const delivers = DELIVER_LABELS.filter(([key]) => a.deliver?.[key] && (key !== 'draftReply' || REPLY_EVENTS.has(a.trigger?.event)));
+  const delivers = a.deliver?.meetingSummary
+    ? [['meetingSummary', templateName(a.deliver.meetingSummary, s.noteTemplates)]]
+    : DELIVER_LABELS.filter(([key]) => a.deliver?.[key] && (key !== 'draftReply' || REPLY_EVENTS.has(a.trigger?.event)));
   let last = '<span class="ws-muted">Not run yet</span>';
   if (job) {
     last = `${badge(job.state === 'running' ? 'Running' : 'Queued', 'info')}<span class="ws-muted">${job.state === 'running' ? 'Claude is working…' : 'Starts shortly'}</span>`;
@@ -443,13 +532,14 @@ function runsPanel(s, list, ui, ai) {
   return `${toolbar}${body}`;
 }
 
-function templatesPanel() {
+function templatesPanel(s) {
+  const provider = providerNameOf(s);
   return `<div class="ws-auto-templates">${TEMPLATES.map(t => {
     const a = t.automation;
     return `<article class="ws-card ws-auto-template">
       <div class="ws-auto-template-head"><span class="ws-card-icon">${icon(t.iconName)}</span><div><h2>${e(t.name)}</h2><p class="ws-auto-trigger">${icon(a.trigger.kind === 'event' ? 'bell' : 'clock')}<span>${e(triggerSummary(a))}</span></p></div></div>
       <p class="ws-auto-template-text">${e(t.description)}</p>
-      <p class="ws-muted ws-hint">${e(deliveriesSentence(a.deliver))}</p>
+      <p class="ws-muted ws-hint">${e(deliveriesSentence(a.deliver, provider, s?.noteTemplates))}</p>
       <div class="ws-actions">${button('Use template', { action: 'automation-template', variant: 'primary', attrs: { 'data-id': t.id } })}</div>
     </article>`;
   }).join('')}</div>`;
@@ -476,7 +566,7 @@ export function automationResultsCard(s, ai = {}, { failuresOnly = false } = {})
     .slice(0, 4);
   const body = results.length
     ? `<div class="ws-auto-results">${results.map(x => resultItem(x, s, zone, ai)).join('')}</div>`
-    : emptyState({ iconName: 'automations', title: 'Automation results land here', text: 'Morning brief and your other automations leave their latest result on Today.', actions: button('Open Automations', { action: 'route', variant: 'primary', attrs: { 'data-route': 'automations' } }) });
+    : emptyState({ iconName: 'automations', title: 'Automation results land here', text: 'Morning briefing and your other automations leave their latest result on Today.', actions: button('Open Automations', { action: 'route', variant: 'primary', attrs: { 'data-route': 'automations' } }) });
   return card({
     title: 'Automation results', iconName: 'automations', className: 'ws-auto-card',
     actions: results.length ? button('Automations', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'automations' } }) : '',
@@ -504,10 +594,12 @@ function resultItem({ a, run, problem }, s, zone, ai) {
   const items = out.items || [];
   const shown = !run ? '' : items.length ? itemsHtml(run, s, 3) : summaryHtml(run, 3);
   const more = items.length > 3 ? `<span class="ws-muted ws-hint">${items.length - 3} more in the run</span>` : '';
+  const made = (run?.data.tasks?.made || []).length;
+  const tasks = made ? `<a class="ws-run-task ws-auto-made" href="#/tasks" data-action="route" data-route="tasks">${e(`Made ${plural(made, 'task')} in ${providerNameOf(s)} ›`)}</a>` : '';
   return `<article class="ws-auto-result">
     <header class="ws-auto-result-head"><span class="ws-auto-result-name">${e(a.data.name)}</span>${run ? `<time title="${e(formatDateTime(run.data.startedAt, zone))}">${e(agoLabel(run.data.startedAt, zone))}</time>` : ''}</header>
     ${problem ? problemLine(a, problem, zone, ai) : ''}
-    ${run ? `<h3>${e(out.title || 'Result')}</h3>${shown}
+    ${run ? `<h3>${e(out.title || 'Result')}</h3>${shown}${tasks}
     <footer class="ws-auto-result-foot">${more}<span class="ws-spacer"></span>${button('Open run', { action: 'automation-open-run', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': run.id, 'data-automation': a.id } })}</footer>` : ''}
   </article>`;
 }
@@ -529,9 +621,9 @@ export function draftFromAutomation(a = {}) {
     time: schedule && t.time ? t.time : '09:00',
     event: !schedule && EVENTS.some(([v]) => v === t.event) ? t.event : 'mail_from',
     senders: (t.senders || []).join(', '), keywords: (t.keywords || []).join(', '),
-    read: { calendarToday: !!r.calendarToday, needsReply: !!r.needsReply, triggerConversation: !!r.triggerConversation, senderMail: (r.mailFromSenderDays || 0) > 0, commitmentsNotes: !!r.commitmentsNotes },
+    read: { calendarToday: !!r.calendarToday, needsReply: !!r.needsReply, triggerConversation: !!r.triggerConversation, senderMail: (r.mailFromSenderDays || 0) > 0, commitmentsNotes: !!r.commitmentsNotes, recentMessages: !!r.recentMessages },
     prompt: a.prompt || '', profile: a.ai?.profile || '', model: a.ai?.model || '', cap: a.capUsd != null ? String(a.capUsd) : '',
-    deliver: { today: !!d.today, notify: !!d.notify, draftReply: !!d.draftReply }, catchUp: !!a.catchUp,
+    deliver: { today: !!d.today, notify: !!d.notify, draftReply: !!d.draftReply, createTasks: !!d.createTasks }, meetingSummary: d.meetingSummary || '', catchUp: !!a.catchUp,
   };
 }
 
@@ -556,14 +648,20 @@ export function editorDraft(form) {
     days: form.getAll('auto-day').map(Number).filter(d => d >= 1 && d <= 7),
     time: str('auto-time'), event: EVENTS.some(([v]) => v === event) ? event : 'mail_from',
     senders: str('auto-senders'), keywords: str('auto-keywords'),
-    read: { calendarToday: read.has('calendarToday'), needsReply: read.has('needsReply'), triggerConversation: read.has('triggerConversation'), senderMail: read.has('senderMail'), commitmentsNotes: read.has('commitmentsNotes') },
+    read: { calendarToday: read.has('calendarToday'), needsReply: read.has('needsReply'), triggerConversation: read.has('triggerConversation'), senderMail: read.has('senderMail'), commitmentsNotes: read.has('commitmentsNotes'), recentMessages: read.has('recentMessages') },
     prompt: str('auto-prompt'), profile: str('auto-profile'), model: str('auto-model'), cap: str('auto-cap').trim(),
-    deliver: { today: deliver.has('today'), notify: deliver.has('notify'), draftReply: deliver.has('draftReply') },
-    catchUp: form.has('auto-catchup'),
+    deliver: { today: deliver.has('today'), notify: deliver.has('notify'), draftReply: deliver.has('draftReply'), createTasks: deliver.has('createTasks') },
+    meetingSummary: str('auto-summary'), catchUp: form.has('auto-catchup'),
   };
 }
 
 const splitList = text => String(text || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
+
+/** A summary automation (event "A meeting's transcript is ready"): no Read, Claude or Claude deliveries. */
+const isSummary = d => d.kind === 'event' && d.event === SUMMARY_EVENT;
+/** The draft gives Claude messages to make tasks from (as the backend checks it). */
+const readsMessages = d => !isSummary(d) && (!!d.read.needsReply || !!d.read.recentMessages
+  || (d.kind === 'event' && MESSAGE_EVENTS.has(d.event) && (!!d.read.triggerConversation || (REPLY_EVENTS.has(d.event) && !!d.deliver.draftReply))));
 
 /**
  * What `automation_save` gets: only what the trigger uses. A reply draft only for mail or Teams
@@ -572,6 +670,17 @@ const splitList = text => String(text || '').split(/[,;\n]+/).map(x => x.trim())
  */
 export function toAutomation(d) {
   const event = d.kind === 'event';
+  const summary = isSummary(d);
+  if (summary) {
+    // Reads nothing and runs no Claude of its own: only the template, the keywords and the wishes.
+    return {
+      id: d.id, name: d.name, enabled: d.enabled,
+      trigger: { kind: 'event', event: SUMMARY_EVENT, senders: [], keywords: splitList(d.keywords) },
+      read: { calendarToday: false, needsReply: false, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false, recentMessages: false },
+      prompt: d.prompt, ai: { profile: null, model: null }, capUsd: null,
+      deliver: { today: false, notify: false, draftReply: false, createTasks: false, meetingSummary: d.meetingSummary || null }, catchUp: false,
+    };
+  }
   const message = event && MESSAGE_EVENTS.has(d.event);
   const draftReply = event && REPLY_EVENTS.has(d.event) && !!d.deliver.draftReply;
   let capUsd = null;
@@ -582,15 +691,17 @@ export function toAutomation(d) {
   return {
     id: d.id, name: d.name, enabled: d.enabled,
     trigger: event
-      ? { kind: 'event', event: d.event, senders: d.event === 'meeting_ended' ? [] : splitList(d.senders), keywords: splitList(d.keywords) }
+      ? { kind: 'event', event: d.event, senders: MEETING_EVENTS.has(d.event) ? [] : splitList(d.senders), keywords: splitList(d.keywords) }
       : { kind: 'schedule', days: [...new Set(d.days)].sort((a, b) => a - b), time: d.time },
     read: {
       calendarToday: !!d.read.calendarToday, needsReply: !!d.read.needsReply,
       triggerConversation: event && (!!d.read.triggerConversation || draftReply),
-      mailFromSenderDays: message && d.read.senderMail ? 7 : 0, commitmentsNotes: !!d.read.commitmentsNotes,
+      mailFromSenderDays: message && d.read.senderMail ? 7 : 0, commitmentsNotes: !!d.read.commitmentsNotes, recentMessages: !!d.read.recentMessages,
     },
     prompt: d.prompt, ai: { profile: d.profile || null, model: d.profile && d.model ? d.model : null }, capUsd,
-    deliver: { today: !!d.deliver.today, notify: !!d.deliver.notify, draftReply }, catchUp: !event && !!d.catchUp,
+    // Tasks only while the switch shows: a hidden one (nothing read gives messages) is kept in the form, not saved.
+    deliver: { today: !!d.deliver.today, notify: !!d.deliver.notify, draftReply, createTasks: readsMessages(d) && !!d.deliver.createTasks, meetingSummary: null },
+    catchUp: !event && !!d.catchUp,
   };
 }
 
@@ -603,7 +714,7 @@ const ERROR_FIELDS = [
   [/^Choose at least one day|^Days run from/, 'auto-days'],
   [/^Enter the time as/, 'auto-time'],
   [/^Use up to 20 keywords/, 'auto-keywords'],
-  [/^Reply drafts are only available/, 'auto-deliver'],
+  [/^Reply drafts are only available|^Tasks are made from messages|^A meeting summary|^Choose the template to make|^Choose a note template/, 'auto-deliver'],
   [/^Read the sender/, 'auto-read'],
   [/^The cost cap|^Enter the cost cap/, 'auto-cap'],
 ];
@@ -623,7 +734,8 @@ export function fieldShown(draft, id, ai = {}) {
     case 'auto-days': case 'auto-time': return !event;
     case 'auto-senders': return event && MESSAGE_EVENTS.has(draft.event);
     case 'auto-keywords': return event;
-    case 'auto-cap': return !capOff(draft, ai);
+    case 'auto-read': return !isSummary(draft);
+    case 'auto-cap': return !isSummary(draft) && !capOff(draft, ai);
     default: return true;
   }
 }
@@ -650,7 +762,7 @@ function capOff(draft, ai) {
   return !!profile && !profile.startsWith('codemie:');
 }
 
-function aiSection(draft, ai, errorAt) {
+function aiSection(draft, ai, errorAt, hidden = false) {
   const profiles = ai?.profiles || [];
   const routeProfile = ai?.settings?.routes?.automation?.profile || ai?.settings?.defaultProfile || '';
   // Short enough for the half-width select: "Claude Code" or the CodeMie profile, "CodeMie · prod".
@@ -669,7 +781,7 @@ function aiSection(draft, ai, errorAt) {
   const capHint = effective.startsWith('codemie:')
     ? 'Stops a run that would cost more, in US dollars. CodeMie passes it to Claude as --max-budget-usd.'
     : off ? 'Applies to CodeMie profiles only; Claude Code ignores it, so it is off. A cap you set is kept.' : 'Applies to CodeMie profiles only.';
-  return `<fieldset class="ws-auto-section"><legend>Claude</legend>
+  return `<fieldset class="ws-auto-section"${hidden ? ' hidden' : ''}><legend>Claude</legend>
     <div class="ws-form-row">
       ${field('Profile', select(options, draft.profile, { id: 'auto-profile', name: 'auto-profile', 'data-action': 'automation-form' }))}
       ${field('Model', select(models, draft.profile ? draft.model : '', { id: 'auto-model', name: 'auto-model', disabled: !draft.profile }))}
@@ -685,11 +797,12 @@ function errorField(label, control, hint, id, errorAt) {
   return `<div class="ws-field-wrap">${field(label, control, hint)}${errorText(id, errorAt)}</div>`;
 }
 
-/** A switch with a one-line explanation under it. */
-function switchRow({ name, value, data, checked, label, hint, action, id }) {
+/** A switch with a one-line explanation under it (named by `hintId` as its description). */
+function switchRow({ name, value, data, checked, label, hint, action, id, hintId }) {
   const attrs = { value };
   if (data) attrs[data[0]] = data[1];
-  return `<div class="ws-auto-switch">${toggle({ name, id, checked, action, label, attrs })}${hint ? `<small>${e(hint)}</small>` : ''}</div>`;
+  if (hintId) attrs['aria-describedby'] = hintId;
+  return `<div class="ws-auto-switch">${toggle({ name, id, checked, action, label, attrs })}${hint ? `<small${hintId ? ` id="${hintId}"` : ''}>${e(hint)}</small>` : ''}</div>`;
 }
 
 const READS = {
@@ -698,6 +811,7 @@ const READS = {
   senderMail: ['The sender’s mail from the last 7 days', 'Other Outlook messages from the same person.'],
   calendarToday: ['Today’s calendar', 'Your meetings today with times and places. Private events show only as busy.'],
   needsReply: ['Needs your reply', 'Outlook and Teams messages waiting for your answer.'],
+  recentMessages: ['Messages since the last run', 'Mail and Teams messages, yours too, since this automation last ran (at most 3 days).'],
   commitmentsNotes: ['My commitments and notes', 'Open commitments and your notes from Today.'],
 };
 
@@ -705,8 +819,21 @@ const READS = {
  * The editor form. `ctx.zone` is the workspace time zone, `ctx.ai` the `ai_status` answer and
  * `ctx.error` `{field, message}` a sentence from the backend to show at its field.
  */
-export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null } = {}) {
+/** Reads that can give messages to make tasks from: ticking one redraws the Deliver switches. */
+const TASK_READS = new Set(['needsReply', 'recentMessages', 'triggerConversation']);
+
+/** The note templates a summary automation can make: Formal summary first, then the rest as in
+ *  Settings › Meetings; a chosen one no longer there is named so. */
+function summaryOptions(templates = [], chosen = '') {
+  const formal = templates.filter(t => t.id === 'formal-summary');
+  const options = [...formal, ...templates.filter(t => t.id !== 'formal-summary')].map(t => [t.id, t.name]);
+  if (chosen && !options.some(([id]) => id === chosen)) options.push([chosen, `${chosen} (not found)`]);
+  return options;
+}
+
+export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null, providerName = 'Connect', templates = [] } = {}) {
   const event = draft.kind === 'event';
+  const summary = isSummary(draft);
   const message = event && MESSAGE_EVENTS.has(draft.event);
   const replies = event && REPLY_EVENTS.has(draft.event);
   const lockConversation = replies && draft.deliver.draftReply;
@@ -719,8 +846,10 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null } 
     if (readKey === 'triggerConversation' && lockConversation) {
       return `${checkbox({ name: 'auto-read', value: readKey, label, hint: 'A reply draft needs the message it answers, so it is always read.', checked: true, attrs: { 'data-read': readKey, disabled: true } })}<input type="hidden" name="auto-read" value="triggerConversation">`;
     }
-    return checkbox({ name: 'auto-read', value: readKey, label, hint, checked: !!draft.read[readKey], attrs: { 'data-read': readKey } });
+    return checkbox({ name: 'auto-read', value: readKey, label, hint, checked: !!draft.read[readKey], action: TASK_READS.has(readKey) ? 'automation-form' : undefined, attrs: { 'data-read': readKey } });
   };
+  const tasks = switchRow({ name: 'auto-deliver', value: 'createTasks', data: ['data-deliver', 'createTasks'], checked: draft.deliver.createTasks, label: `Tasks in ${providerName}`, hint: 'One task per message that needs it. A rerun, or a task you deleted or finished, never makes it again.', hintId: 'auto-tasks-hint' });
+  const summaryChoice = draft.meetingSummary || 'formal-summary';
   const senderHint = {
     mail_from: ['From', 'Addresses or domains, separated by commas. For example ann@epam.com, @epam.com', 'name@epam.com, @epam.com'],
     chat_from: ['From', 'Names as Teams shows them, separated by commas. For example Ann Lee, Bob Stone', 'Ann Lee'],
@@ -751,34 +880,42 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null } 
       <div class="ws-auto-when" ${event ? '' : 'hidden'}>
         ${field('Event', select(EVENTS, draft.event, { id: 'auto-event', name: 'auto-event', 'data-action': 'automation-form' }))}
         <div ${message ? '' : 'hidden'}>${errorField(senderHint[0], textInput({ id: 'auto-senders', name: 'auto-senders', value: draft.senders, placeholder: senderHint[2], autocomplete: 'off', ...invalid('auto-senders', error) }), senderHint[1], 'auto-senders', error)}</div>
-        ${errorField(draft.event === 'meeting_ended' ? 'Only meetings whose title mentions (optional)' : 'Only when it mentions (optional)', textInput({ id: 'auto-keywords', name: 'auto-keywords', value: draft.keywords, placeholder: 'budget, Q3', autocomplete: 'off', ...invalid('auto-keywords', error) }), 'Words or phrases, separated by commas. Leave it empty to match everything.', 'auto-keywords', error)}
+        ${errorField(MEETING_EVENTS.has(draft.event) ? 'Only meetings whose title mentions (optional)' : 'Only when it mentions (optional)', textInput({ id: 'auto-keywords', name: 'auto-keywords', value: draft.keywords, placeholder: 'budget, Q3', autocomplete: 'off', ...invalid('auto-keywords', error) }), 'Words or phrases, separated by commas. Leave it empty to match everything.', 'auto-keywords', error)}
       </div>
     </fieldset>
 
-    <fieldset class="ws-auto-section" id="auto-read"><legend>Read</legend>
+    ${summary ? `<div class="ws-field-wrap" id="auto-deliver">
+      ${field('Make', select(summaryOptions(templates, summaryChoice), summaryChoice, { id: 'auto-summary', name: 'auto-summary', ...invalid('auto-deliver', error) }))}
+      ${errorText('auto-deliver', error)}
+    </div>` : ''}
+
+    <fieldset class="ws-auto-section" id="auto-read"${summary ? ' hidden' : ''}><legend>Read</legend>
       <p class="ws-muted ws-hint ws-auto-privacy">${icon('lock')}<span>Claude reads only what you tick. Each run sends it to ${e(provider)}.</span></p>
       <div class="ws-auto-reads">
         ${readBox(event && draft.event === 'meeting_ended' ? 'meeting' : 'triggerConversation', 'triggerConversation', event)}
         ${readBox('senderMail', 'senderMail', message)}
         ${readBox('calendarToday')}
         ${readBox('needsReply')}
+        ${readBox('recentMessages')}
         ${readBox('commitmentsNotes')}
       </div>
       ${errorText('auto-read', error)}
     </fieldset>
 
     <div class="ws-field-wrap">
-      <span class="ws-auto-label-row"><label class="ws-field-label" for="auto-prompt">Instructions</label><span class="ws-draft-count" data-auto-count>${count.toLocaleString('en-US')} / 4,000</span></span>
-      ${textArea(draft.prompt, { id: 'auto-prompt', name: 'auto-prompt', rows: 5, maxlength: PROMPT_MAX, placeholder: 'What should Claude do with what it reads? e.g. List what needs my attention today, most urgent first.', ...invalid('auto-prompt', error) })}
+      <span class="ws-auto-label-row"><label class="ws-field-label" for="auto-prompt">${summary ? 'Wishes (optional)' : 'Instructions'}</label><span class="ws-draft-count" data-auto-count>${count.toLocaleString('en-US')} / 4,000</span></span>
+      ${textArea(draft.prompt, { id: 'auto-prompt', name: 'auto-prompt', rows: summary ? 3 : 5, maxlength: PROMPT_MAX, placeholder: summary ? 'e.g. Keep it to one page' : 'What should Claude do with what it reads? e.g. List what needs my attention today, most urgent first.', ...invalid('auto-prompt', error) })}
       ${errorText('auto-prompt', error)}
     </div>
+    ${summary ? `<p class="ws-muted ws-hint ws-auto-privacy">${icon('info')}<span>Runs with the Claude route for meeting notes (Settings › Claude). Pin it as a summary tab in Settings › Meetings to open meetings on it.</span></p>` : ''}
 
-    ${aiSection(draft, ai, error)}
+    ${aiSection(draft, ai, error, summary)}
 
-    <fieldset class="ws-auto-section" id="auto-deliver"><legend>Deliver</legend>
+    <fieldset class="ws-auto-section"${summary ? ' hidden' : ' id="auto-deliver"'}><legend>Deliver</legend>
       ${switchRow({ name: 'auto-deliver', value: 'today', data: ['data-deliver', 'today'], checked: draft.deliver.today, label: 'A card on Today', hint: 'The latest result shows in Automation results on Today.' })}
       ${switchRow({ name: 'auto-deliver', value: 'notify', data: ['data-deliver', 'notify'], checked: draft.deliver.notify, label: 'A notification', hint: 'Quiet hours and focus sessions hold it back.' })}
       ${replies ? switchRow({ name: 'auto-deliver', value: 'draftReply', data: ['data-deliver', 'draftReply'], checked: draft.deliver.draftReply, action: 'automation-form', label: 'A reply draft on the conversation', hint: 'Prepared in the Inbox for you to review and send. Automations never send.' }) : ''}
-      ${errorText('auto-deliver', error)}
+      ${readsMessages(draft) ? tasks : `<div hidden>${tasks}</div>`}
+      ${summary ? '' : errorText('auto-deliver', error)}
     </fieldset>`;
 }

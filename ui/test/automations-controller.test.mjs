@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAutomationsController, notificationTarget, runSignature, RUNS_PAGE } from '../workspace/automations-controller.js';
-import { newAutomationDraft, draftFromAutomation } from '../workspace/view-automations.js';
+import { newAutomationDraft, draftFromAutomation, TEMPLATES } from '../workspace/view-automations.js';
 import { buildSnapshot, aiStatus, withAutomations, automationContract } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.now();
@@ -14,7 +14,7 @@ const [run1] = runsPage.next.runs;
 
 /** A controller over fakes. `pages` answer `store.query` in order (an Error is thrown).
  *  `shown.tabs` are the page's section tabs in view (the Run log at first). */
-function harness({ snapshot = snapshotOf(), ai = { status: 'ready', ...aiStatus('both') }, pages = [], ensure = async () => 'claude', onMutate } = {}) {
+function harness({ snapshot = snapshotOf(), ai = { status: 'ready', ...aiStatus('both') }, pages = [], ensure = async () => 'claude', onMutate, openModal = () => { throw new Error('no dialogs here'); } } = {}) {
   const calls = { mutate: [], query: [], render: 0, route: [], toasts: [], confirms: [], copied: [], later: [] };
   const shown = { tabs: ['auto-runs'] };
   const state = { route: 'automations', ai, automations: { tab: 'runs', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } } };
@@ -38,7 +38,7 @@ function harness({ snapshot = snapshotOf(), ai = { status: 'ready', ...aiStatus(
       if (tab) state.automations.tab = tab;
     },
     render: async () => { calls.render++; },
-    openModal: () => { throw new Error('no dialogs here'); },
+    openModal,
     confirmModal: options => { calls.confirms.push(options); },
     toast: (message, tone) => calls.toasts.push([message, tone]),
     ensureClaudeChoice: ensure,
@@ -197,4 +197,26 @@ test('run links open through native by index, and Copy takes the output as text'
   assert.deepEqual(state.automations.runs.expanded, ['run-1']);
   await ctl.handle('run-toggle', control({ id: 'run-1' }));
   assert.deepEqual(state.automations.runs.expanded, []);
+});
+
+test('the editor names the active task provider and lists the note templates', async () => {
+  const bodies = [];
+  const openModal = options => {
+    bodies.push(options);
+    return { classList: { add() {} }, querySelector: () => null };
+  };
+  const snapshot = snapshotOf();
+  snapshot.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  const { ctl } = harness({ snapshot, openModal });
+  await ctl.handle('automation-template', control({ id: 'inbox-triage' }));
+  assert.equal(bodies[0].title, 'New automation: Inbox triage');
+  assert.match(bodies[0].body, /Tasks in Todoist/);
+  await ctl.handle('automation-template', control({ id: 'formal-summary' }));
+  assert.match(bodies[1].body, /<option value="formal-summary" selected>Formal summary<\/option>/);
+  assert.match(bodies[1].body, /<option value="short-summary"\s*>Short summary<\/option>/);
+  // No provider in the snapshot (an older native): Connect's own.
+  delete snapshot.taskProvider;
+  await ctl.handle('automation-new', control());
+  assert.match(bodies[2].body, /Tasks in Connect/);
+  assert.ok(TEMPLATES.some(t => t.id === 'inbox-triage'));
 });

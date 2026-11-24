@@ -576,7 +576,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       calls.push(['automation_save', d]);
       const invalid = (field, message) => { throw { code: 'validation', field, message }; };
       if (!String(d.name || '').trim()) invalid('name', 'Give the automation a name (up to 80 characters).');
-      if (!String(d.prompt || '').trim()) invalid('prompt', 'Write the instructions for the automation.');
+      // A summary automation's prompt is its optional wishes.
+      if (!String(d.prompt || '').trim() && d.trigger?.event !== 'meeting_ready') invalid('prompt', 'Write the instructions for the automation.');
       if (d.trigger?.kind === 'schedule' && !(d.trigger.days || []).length) invalid('days', 'Choose at least one day for the schedule.');
       if (['mail_from', 'chat_from'].includes(d.trigger?.event) && !(d.trigger.senders || []).length) invalid('senders', 'Add at least one sender or domain for this trigger.');
       const id = d.id || crypto.randomUUID();
@@ -615,8 +616,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (job.state !== 'running') return;
         const ok = plan.outcome !== 'fail';
         const t = clone(ok ? automationTemplates.runOk : automationTemplates.runFailed);
-        const delivered = ok ? [a.data.deliver?.today && 'today', a.data.deliver?.notify && 'notification_queued'].filter(Boolean) : [];
-        allRuns.push({ ...t, id: job.id, updatedAt: now(), data: { ...t.data, automationId: a.id, automationName: a.data.name, connectionId: s.connection?.id || null, startedAt: now() - 2, trigger: { kind: 'manual' }, delivered } });
+        const tasks = ok && !!a.data.deliver?.createTasks;
+        const delivered = ok ? [a.data.deliver?.today && 'today', a.data.deliver?.notify && 'notification_queued', tasks && 'tasks'].filter(Boolean) : [];
+        // As native: a run says what tasks it made only when Tasks is on.
+        allRuns.push({ ...t, id: job.id, updatedAt: now(), data: { ...t.data, automationId: a.id, automationName: a.data.name, connectionId: s.connection?.id || null, startedAt: now() - 2, trigger: { kind: 'manual' }, delivered, tasks: tasks ? t.data.tasks : undefined, handled: tasks ? t.data.handled : undefined } });
         Object.assign(job, { state: ok ? 'succeeded' : 'failed', result: ok ? 'Automation ran' : 'Claude Code is not signed in.' });
         update();
       }, 150 + (plan.ms || 1500));
@@ -1492,7 +1495,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     const first = connected.records.find(r => r.id === 'm-reply-1');
     ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
   }
-  if (automations) withAutomations(connected, now);
+  // `automations: 'habits'` adds the Inbox triage and Formal meeting summary automations and their runs.
+  if (automations) withAutomations(connected, now, { habits: automations === 'habits' });
   if (tasks) withTasks(connected, now);
   if (meetings) withMeetings(connected, now);
   if (transcriptsOff) {
@@ -2904,7 +2908,7 @@ for (const theme of ['dark', 'light']) {
     const tag = `${theme}-${width}`;
     const { page, context, errors } = await open({ theme, width, height, hash: '#/automations' });
 
-    await check(`${tag}: automations create from Morning brief, run, show on Today and turn off`, async () => {
+    await check(`${tag}: automations create from Morning briefing, run, show on Today and turn off`, async () => {
       await page.waitForSelector('.ws-page-automations .ws-auto-empty');
       assert(await page.locator('.ws-nav button[data-route=automations][aria-current=page]').count() === 1, 'sidebar entry not current');
       assert(await page.locator('[data-action="automation-new"]').count() === 1, 'New automation offered twice');
@@ -2912,13 +2916,13 @@ for (const theme of ['dark', 'light']) {
       await shot(page, `${tag}-automations-empty`);
       await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.waitForSelector('[data-action="automation-template"][data-id="morning-brief"]');
-      assert(await page.locator('.ws-auto-template').count() === 4, 'four templates');
+      assert(await page.locator('.ws-auto-template').count() === 8, 'eight templates');
       await noOverflow(page, 'templates');
       await shot(page, `${tag}-automations-templates`);
       await page.click('[data-action="automation-template"][data-id="morning-brief"]');
       await editorOpen(page);
-      assert(await page.inputValue('#auto-name') === 'Morning brief', 'name prefilled');
-      assert(await page.inputValue('#auto-time') === '08:45', 'time prefilled');
+      assert(await page.inputValue('#auto-name') === 'Morning briefing', 'name prefilled');
+      assert(await page.inputValue('#auto-time') === '08:07', 'time prefilled');
       assert(await page.locator('[data-day]:checked').count() === 5, 'weekdays');
       assert(await page.locator('[data-deliver="draftReply"]').count() === 0, 'no reply draft for a schedule');
       assert((await text(page, '.ws-modal[open]')).includes('Europe/Kyiv'), 'zone shown');
@@ -2933,10 +2937,10 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-auto-row.ws-auto-highlight');
       await shot(page, `${tag}-automations-created`);
       const row = await text(page, '.ws-auto-row');
-      assert(row.includes('Weekdays at 08:45') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:45/.test(row), row);
+      assert(row.includes('Weekdays at 08:07') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:07/.test(row), row);
       await page.waitForSelector('.ws-auto-row:not(.ws-auto-highlight)', { timeout: 10000 });
       const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
-      assert(saved.trigger.time === '08:45' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply, JSON.stringify(saved));
+      assert(saved.trigger.time === '08:07' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply && !saved.deliver.createTasks, JSON.stringify(saved));
       const layout = await page.evaluate(() => window.__workspace.store.get().snapshot.workspaces[0].layout);
       assert(layout.includes('automations'), `Today card added: ${layout}`);
       assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'layout_save'), 'the card is added by the save itself');
@@ -3032,7 +3036,8 @@ for (const theme of ['dark', 'light']) {
       const output = await text(p, '.ws-run.ws-open .ws-run-detail');
       assert(output.includes('2 replies owed') && output.includes('Answer Ann about the Q3 budget') && output.includes('Send the roadmap'), output);
       assert(await p.locator('.ws-run.ws-open .ws-run-summary-text strong').innerText() === 'Q3 budget', 'bold');
-      assert(await p.locator('.ws-run-detail a[href]').count() === 0, 'a link the window could follow');
+      // The only addresses are Connect's own pages (a task the run made opens on Tasks).
+      assert(await p.locator('.ws-run-detail a[href]:not([href^="#/"])').count() === 0, 'a link the window could follow');
       await p.click('.ws-run.ws-open [data-action="run-link"]');
       await p.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'open_source' && d.kind === 'automation_run' && d.link === 0));
       await noOverflow(p, 'run log');

@@ -142,7 +142,7 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   const schedule = automationEditor(draftFromAutomation(TEMPLATES[0].automation), ctx);
   assert.equal(count(schedule, /data-day="\d"/g), 7);
   assert.equal(count(schedule, /data-day="\d"[^>]*checked/g), 5);
-  assert.match(schedule, /id="auto-time"[^>]*value="08:45"/);
+  assert.match(schedule, /id="auto-time"[^>]*value="08:07"/);
   assert.match(schedule, /Europe\/Kyiv/);
   assert.match(schedule, /id="auto-catchup"/);
   assert.doesNotMatch(schedule, /data-deliver="draftReply"/);
@@ -181,9 +181,9 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   assert.deepEqual(toAutomation(switched), {
     id: 'auto-x', name: 'Wrap-up', enabled: true,
     trigger: { kind: 'schedule', days: [1, 5], time: '17:30' },
-    read: { calendarToday: false, needsReply: true, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false },
+    read: { calendarToday: false, needsReply: true, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false, recentMessages: false },
     prompt: 'Wrap up.', ai: { profile: null, model: null }, capUsd: null,
-    deliver: { today: true, notify: false, draftReply: false }, catchUp: false,
+    deliver: { today: true, notify: false, draftReply: false, createTasks: false, meetingSummary: null }, catchUp: false,
   });
   // A reply draft reads the triggering conversation even when its box was locked (not sent).
   const mail = toAutomation({ ...switched, kind: 'event', read: { ...switched.read, triggerConversation: false }, cap: '0.5', profile: 'codemie:prod', model: 'claude-haiku-4-5' });
@@ -224,7 +224,7 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   assert.match(tagWith(automationEditor({ ...kept, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /value="0\.5"/);
   assert.doesNotMatch(tagWith(automationEditor({ ...kept, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /\bdisabled\b/);
   assert.doesNotMatch(tagWith(automationEditor({ ...event, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /\bdisabled\b/);
-  assert.ok(needsSenders(draftFromAutomation(TEMPLATES[1].automation)));
+  assert.ok(needsSenders(draftFromAutomation(TEMPLATES.find(t => t.id === 'draft-replies').automation)));
   assert.ok(!needsSenders(event));
   // An automation run never offers "Draft again".
   assert.notEqual(draftError({ id: 'r', state: 'failed', errorCode: 'conflict', payload: { automationId: 'a' } }, { kind: 'automation' }).action?.label, 'Draft again');
@@ -251,8 +251,8 @@ test('profiles, models and the cap hint follow the chosen Claude', () => {
 // ---------------------------------------------------------------- templates
 
 test('template_prefills_editor', () => {
-  assert.deepEqual(TEMPLATES.map(t => t.name), ['Morning brief', 'Draft replies to someone', 'End-of-day wrap-up', 'Weekly reflection']);
-  assert.deepEqual(TEMPLATES.map(t => triggerSummary(t.automation)), ['Weekdays at 08:45', 'When mail arrives from the people you name', 'Weekdays at 17:30', 'Fridays at 16:00']);
+  assert.deepEqual(TEMPLATES.map(t => t.name), ['Morning briefing', 'Inbox triage', 'Commitments', 'Budget request reply', 'Formal meeting summary', 'Draft replies to someone', 'End-of-day wrap-up', 'Weekly reflection']);
+  assert.deepEqual(TEMPLATES.map(t => triggerSummary(t.automation)), ['Weekdays at 08:07', 'Weekdays at 08:00', 'Weekdays at 08:03', 'When mail arrives from the people you name about “budget”', 'When a meeting’s transcript is ready', 'When mail arrives from the people you name', 'Weekdays at 17:30', 'Fridays at 16:00']);
   const cards = page(snapshot(), { tab: 'templates' });
   for (const t of TEMPLATES) assert.ok(tagWith(cards, `data-action="automation-template"[^>]*data-id="${t.id}"`), t.id);
   assert.match(cards, /Use template/);
@@ -262,20 +262,20 @@ test('template_prefills_editor', () => {
 
   const brief = draftFromAutomation(TEMPLATES[0].automation);
   const html = automationEditor(brief, { zone: 'UTC', ai: AI });
-  assert.match(html, /id="auto-name"[^>]*value="Morning brief"/);
+  assert.match(html, /id="auto-name"[^>]*value="Morning briefing"/);
   assert.match(html, /name="auto-id" value=""/);
   assert.ok(brief.prompt.length > 40 && brief.prompt.length <= 4000);
   const saved = toAutomation(brief);
-  assert.deepEqual(saved.trigger, { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:45' });
+  assert.deepEqual(saved.trigger, { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:07' });
   assert.equal(saved.id, '');
   assert.equal(saved.deliver.today, true);
   assert.equal(saved.catchUp, true);
 
   // Draft replies to someone: mail from people you name, delivering a reply draft.
-  const replies = automationEditor(draftFromAutomation(TEMPLATES[1].automation), { zone: 'UTC', ai: AI });
+  const replies = automationEditor(draftFromAutomation(TEMPLATES.find(t => t.id === 'draft-replies').automation), { zone: 'UTC', ai: AI });
   assert.match(tagWith(replies, 'data-deliver="draftReply"'), /\bchecked\b/);
   assert.match(replies, /id="auto-senders"[^>]*value=""/);
-  assert.deepEqual(toAutomation(draftFromAutomation(TEMPLATES[3].automation)).trigger.days, [5]);
+  assert.deepEqual(toAutomation(draftFromAutomation(TEMPLATES.find(t => t.id === 'weekly-reflection').automation)).trigger.days, [5]);
 
   // Duplicate: a copy that stays off until it is turned on.
   const copy = toAutomation(duplicateDraft(record(snapshot(), 'automation', 'auto-brief')));
@@ -305,8 +305,9 @@ test('run_log_expands_output_sources_and_error', () => {
   assert.match(ok, /<h4[^>]*>Replies<\/h4>/);
   assert.match(ok, /<strong>Q3 budget<\/strong>/);
   assert.match(tagWith(ok, 'title="https://example\\.test/plan"'), /<button[^>]*data-action="run-link"[^>]*data-id="run-1"[^>]*data-link="0"/);
-  // No address the app window could follow: a link is a button that opens through native.
-  assert.doesNotMatch(html, /href=/);
+  // No address the app window could follow: a link is a button that opens through native. The
+  // only href is Connect's own Tasks page, for the task the run made.
+  assert.doesNotMatch(html.replace(/href="#\/tasks"/g, ''), /href=/);
   assert.match(ok, /Answer Ann about the Q3 budget[\s\S]*?data-action="open-message" data-id="m0"/);
   assert.match(ok, /Invented source/);
   assert.match(ok, /Send the roadmap/);
@@ -459,4 +460,216 @@ test('a draft from a deleted automation says it came from an automation', () => 
   assert.match(unescape(view()), /Drafted by “Draft replies to Ann” with Claude Code/);
   s.records = s.records.filter(r => r.kind !== 'automation');
   assert.match(view(), /Drafted by an automation with Claude Code/);
+});
+
+// ---------------------------------------------------------------- habits: templates, Tasks, summaries
+
+const TODOIST = { zone: 'UTC', ai: AI, providerName: 'Todoist' };
+const noteTemplates = () => buildSnapshot(NOW, { photo: false }).noteTemplates;
+const template = id => TEMPLATES.find(t => t.id === id);
+
+test('the gallery lists the five habits first, Morning briefing at 08:07', () => {
+  assert.deepEqual(TEMPLATES.map(t => t.id), ['morning-brief', 'inbox-triage', 'commitments', 'budget-reply', 'formal-summary', 'draft-replies', 'end-of-day', 'weekly-reflection']);
+  assert.deepEqual(TEMPLATES.slice(0, 5).map(t => t.name), ['Morning briefing', 'Inbox triage', 'Commitments', 'Budget request reply', 'Formal meeting summary']);
+  const at = id => template(id).automation.trigger;
+  assert.deepEqual(at('morning-brief'), { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:07' });
+  assert.deepEqual(at('inbox-triage'), { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:00' });
+  assert.deepEqual(at('commitments'), { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:03' });
+  assert.deepEqual(at('budget-reply'), { kind: 'event', event: 'mail_from', senders: [], keywords: ['budget'] });
+  assert.deepEqual(at('formal-summary'), { kind: 'event', event: 'meeting_ready', senders: [], keywords: [] });
+  for (const id of ['morning-brief', 'inbox-triage', 'commitments']) assert.equal(template(id).automation.catchUp, true, id);
+  // What each reads and delivers, as saved.
+  const saved = id => toAutomation(draftFromAutomation(template(id).automation));
+  assert.equal(saved('inbox-triage').read.needsReply, true);
+  assert.equal(saved('inbox-triage').deliver.createTasks, true);
+  assert.equal(saved('commitments').read.recentMessages, true);
+  assert.equal(saved('commitments').deliver.createTasks, true);
+  assert.deepEqual(saved('budget-reply').deliver, { today: true, notify: true, draftReply: true, createTasks: true, meetingSummary: null });
+  assert.equal(saved('budget-reply').read.triggerConversation, true);
+  assert.equal(saved('formal-summary').deliver.meetingSummary, 'formal-summary');
+  assert.equal(saved('formal-summary').prompt, '');
+  assert.match(template('morning-brief').automation.prompt, /^Write my morning briefing\. First the budget requests/);
+  assert.match(template('budget-reply').description, /^A budget request becomes a budget task and a reply draft/);
+  // The budget reply opens with its From field to fill, as Draft replies does.
+  assert.ok(needsSenders(draftFromAutomation(template('budget-reply').automation)));
+  // The cards say where results go, with the provider's name at the moment.
+  const s = snapshot();
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  const cards = page(s, { tab: 'templates' });
+  assert.match(cards, /Delivers to Today and tasks in Todoist\./);
+  assert.match(cards, /Makes a Formal summary for each meeting\./);
+  assert.match(cards, /When a meeting(’|'|&#39;)s transcript is ready/);
+  assert.equal(deliveriesSentence({ today: true, createTasks: true }, 'Todoist'), 'Delivers to Today and tasks in Todoist.');
+  assert.equal(deliveriesSentence({ today: true, createTasks: true }), 'Delivers to Today and tasks in Connect.');
+  assert.equal(deliveriesSentence({ meetingSummary: 'formal-summary' }, 'Todoist', noteTemplates()), 'Makes a Formal summary for each meeting.');
+});
+
+test('Tasks in <provider> shows only with a message read', () => {
+  const triage = draftFromAutomation(template('inbox-triage').automation);
+  const html = automationEditor(triage, TODOIST);
+  assert.match(html, /Tasks in Todoist/);
+  assert.match(html, /One task per message that needs it\. A rerun, or a task you deleted or finished, never makes it again\./);
+  assert.match(tagWith(html, 'data-deliver="createTasks"'), /\bchecked\b/);
+  assert.doesNotMatch(html.slice(0, html.indexOf('data-deliver="createTasks"')).split('<div class="ws-auto-switch">').at(-1), /hidden/);
+  assert.match(automationEditor(triage, { zone: 'UTC', ai: AI }), /Tasks in Connect/);
+  // The new read box.
+  assert.match(html, /Messages since the last run/);
+  assert.match(unescape(html), /Mail and Teams messages, yours too, since this automation last ran \(at most 3 days\)\./);
+  // Calendar only: the switch stays in the form, hidden.
+  const calendar = { ...triage, read: { calendarToday: true, needsReply: false, triggerConversation: false, senderMail: false, commitmentsNotes: false, recentMessages: false } };
+  const off = automationEditor(calendar, TODOIST);
+  assert.match(off, /<div hidden><div class="ws-auto-switch">[^]*?data-deliver="createTasks"/);
+  // …and is not saved while hidden.
+  assert.equal(toAutomation(calendar).deliver.createTasks, false);
+  // Ticking a message read redraws the editor so the switch can show.
+  assert.match(tagWith(html, 'data-read="needsReply"'), /data-action="automation-form"/);
+  assert.match(tagWith(html, 'data-read="recentMessages"'), /data-action="automation-form"/);
+  // A mail trigger with its conversation read makes tasks too.
+  const budget = automationEditor(draftFromAutomation(template('budget-reply').automation), TODOIST);
+  assert.doesNotMatch(budget, /<div hidden><div class="ws-auto-switch">[^]*?data-deliver="createTasks"/);
+  // The list's Deliver chip names it.
+  const s = snapshot();
+  record(s, 'automation', 'auto-brief').data.deliver.createTasks = true;
+  assert.match(page(s), /Today · Notification · Tasks/);
+});
+
+test('a summary automation shows Make, keywords and Wishes, not Read or Claude', () => {
+  const ctx = { ...TODOIST, templates: noteTemplates() };
+  const draft = draftFromAutomation(template('formal-summary').automation);
+  const html = automationEditor(draft, ctx);
+  const make = html.match(/<select[^>]*id="auto-summary"[^>]*>[^]*?<\/select>/)?.[0] || '';
+  assert.ok(make, 'the template select');
+  assert.match(make, /^<select[^>]*>\s*<option value="formal-summary" selected>Formal summary<\/option>/);
+  assert.match(make, /Meeting notes/);
+  assert.match(html, /<label class="ws-field"><span class="ws-field-label">Make<\/span><span class="ws-select-wrap"><select[^>]*id="auto-summary"/, 'a visible label');
+  assert.match(html, /Only meetings whose title mentions \(optional\)/);
+  assert.match(html, /<label[^>]*for="auto-prompt"[^>]*>Wishes \(optional\)<\/label>/);
+  assert.match(html, /placeholder="e\.g\. Keep it to one page"/);
+  assert.match(html, /Runs with the Claude route for meeting notes \(Settings › Claude\)\. Pin it as a summary tab in Settings › Meetings to open meetings on it\./);
+  assert.doesNotMatch(html, /Instructions<\/label>/);
+  // Read, Claude and the Claude deliveries are hidden, not merely styled away.
+  assert.match(html, /<fieldset class="ws-auto-section" id="auto-read" hidden>/);
+  assert.match(html, /<fieldset class="ws-auto-section" hidden><legend>Claude<\/legend>/);
+  assert.match(html, /<fieldset class="ws-auto-section" hidden><legend>Deliver<\/legend>/);
+  assert.equal(count(html, /id="auto-deliver"/g), 1, 'one place for the Deliver refusals: the template select');
+  assert.match(html, /<option value="meeting_ready" selected>A meeting(’|'|&#39;)s transcript is ready<\/option>/);
+  // Saved: the template, nothing read, no Claude delivery.
+  const saved = toAutomation({ ...draft, read: { ...draft.read, needsReply: true, recentMessages: true }, deliver: { ...draft.deliver, today: true, createTasks: true }, prompt: 'Keep it short' });
+  assert.equal(saved.deliver.meetingSummary, 'formal-summary');
+  assert.deepEqual(saved.read, { calendarToday: false, needsReply: false, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false, recentMessages: false });
+  assert.deepEqual(saved.deliver, { today: false, notify: false, draftReply: false, createTasks: false, meetingSummary: 'formal-summary' });
+  assert.deepEqual(saved.trigger, { kind: 'event', event: 'meeting_ready', senders: [], keywords: [] });
+  assert.equal(saved.prompt, 'Keep it short');
+  assert.equal(saved.capUsd, null);
+  // A template no longer there is named so, and the editor's form reads the choice.
+  assert.match(automationEditor({ ...draft, meetingSummary: 'gone' }, ctx), /<option value="gone" selected>gone \(not found\)<\/option>/);
+  assert.equal(editorDraft(form({ 'auto-kind': 'event', 'auto-event': 'meeting_ready', 'auto-summary': 'short-summary' })).meetingSummary, 'short-summary');
+  // Other automations never send a template.
+  assert.equal(toAutomation(draftFromAutomation(template('inbox-triage').automation)).deliver.meetingSummary, null);
+  assert.equal(triggerSummary(template('formal-summary').automation), 'When a meeting’s transcript is ready');
+  // The summary's errors stay at the template select; the hidden Read and cap hold none.
+  assert.deepEqual(errorTarget({ code: 'validation', field: 'deliver', message: 'Choose a note template.' }, draft), { field: 'auto-deliver', message: 'Choose a note template.' });
+  assert.equal(errorTarget({ code: 'validation', field: 'read', message: 'x' }, draft), null);
+  assert.equal(errorTarget({ code: 'validation', field: 'capUsd', message: 'The cost cap must be between 0.01 and 100 US dollars.' }, { ...draft, profile: 'codemie:prod' }, AI), null);
+  const invalid = automationEditor({ ...draft, meetingSummary: '' }, { ...ctx, error: { field: 'auto-deliver', message: 'Choose the template to make.' } });
+  assert.match(invalid, /id="auto-deliver"[^]*?class="ws-field-error"[^>]*>Choose the template to make\./);
+});
+
+test('the editor round-trips the new fields', () => {
+  for (const id of ['commitments', 'inbox-triage', 'budget-reply', 'formal-summary']) {
+    const d = draftFromAutomation(template(id).automation);
+    const again = draftFromAutomation(toAutomation(d));
+    assert.equal(again.read.recentMessages, d.read.recentMessages, id);
+    assert.equal(again.deliver.createTasks, d.deliver.createTasks, id);
+    assert.equal(again.meetingSummary, d.meetingSummary, id);
+    assert.equal(again.event, d.event, id);
+  }
+  assert.equal(draftFromAutomation(template('commitments').automation).read.recentMessages, true);
+  assert.equal(draftFromAutomation(template('formal-summary').automation).meetingSummary, 'formal-summary');
+  // From the form, as the browser sends it.
+  const d = editorDraft(form({ 'auto-kind': 'schedule', 'auto-day': [1], 'auto-time': '08:03', 'auto-read': ['recentMessages'], 'auto-deliver': ['today', 'createTasks'] }));
+  assert.equal(d.read.recentMessages, true);
+  assert.equal(d.deliver.createTasks, true);
+  assert.equal(toAutomation(d).deliver.createTasks, true);
+  assert.equal(toAutomation(d).read.recentMessages, true);
+  // The saved contract automations read back the same way.
+  const { summary } = automationContract().automation;
+  assert.equal(draftFromAutomation(summary.data).meetingSummary, 'meeting-notes');
+  assert.equal(draftFromAutomation(summary.data).event, 'meeting_ready');
+});
+
+test('the run detail says what tasks were made and links them', () => {
+  const s = snapshot();
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  const { runOk, runSummary } = automationContract();
+  const run = { ...runOk, data: { ...runOk.data, handled: 1, tasks: { made: [
+    { id: 'task-1', kind: 'reply', text: 'Reply to Olga about SOW section 4' },
+    { id: 'task-2', kind: 'reply', text: 'Reply to <b>Marek</b> about the pilot users' },
+  ], existing: 1, dropped: 1 } } };
+  const html = runLog([run], { s, expanded: ['run-1'], ai: AI });
+  assert.match(html, /Delivered to Today, Notification, Tasks/);
+  assert.match(html, /Tasks: 2 made in Todoist, 1 already there/);
+  assert.equal(count(html, /<a [^>]*href="#\/tasks"/g), 2, 'two links to Tasks');
+  assert.match(tagWith(html, 'data-id="task-1"'), /^<a [^>]*href="#\/tasks"[^>]*data-action="task-open-today"/);
+  assert.match(html, /Reply to Olga about SOW section 4/);
+  assert.match(html, /Reply to &lt;b&gt;Marek&lt;\/b&gt; about the pilot users/);
+  assert.doesNotMatch(html, /<b>Marek/);
+  assert.match(html, /1 left out \(no message given\)/);
+  assert.match(html, /Looks handled: 1 task flagged/);
+  // Nothing made or found: still says so; no tasks object, no line.
+  const none = runLog([{ ...run, data: { ...run.data, handled: 0, tasks: { made: [], existing: 0, dropped: 0 } } }], { s, expanded: ['run-1'], ai: AI });
+  assert.match(none, /Tasks: none needed/);
+  assert.doesNotMatch(none, /Looks handled|left out/);
+  assert.doesNotMatch(runLog([{ ...run, data: { ...run.data, tasks: undefined, handled: undefined } }], { s, expanded: ['run-1'], ai: AI }), /Tasks:/);
+  assert.match(runLog([{ ...run, data: { ...run.data, handled: 2 } }], { s, expanded: ['run-1'], ai: AI }), /Looks handled: 2 tasks flagged/);
+  // Every other link is still a button that opens through native.
+  assert.doesNotMatch(html.replace(/href="#\/tasks"/g, ''), /href=/);
+  // A summary run: what was queued, and the meeting.
+  s.records.push({ id: 'mtg-1', kind: 'meeting', source: 'local', connectionId: null, workspaceId: 'personal', revision: 'r', updatedAt: nowSec, data: { title: 'Weekly <i>sync</i>' } });
+  const summaryRun = { ...runSummary, id: 'run-s', data: { ...runSummary.data, meetingId: 'mtg-1', trigger: { ...runSummary.data.trigger, sourceId: 'mtg-1' } } };
+  const queued = runLog([summaryRun], { s, expanded: ['run-s'], ai: AI });
+  assert.match(queued, /Formal summary queued for Weekly sync/);
+  assert.match(queued, /Transcript ready · Weekly &lt;i&gt;sync&lt;\/i&gt;/);
+  assert.match(tagWith(queued, 'data-action="meeting-open"'), /href="#\/meetings\/mtg-1\/summary"[^>]*data-id="mtg-1"/);
+  assert.match(queued, /Open meeting/);
+  assert.doesNotMatch(queued, /Tasks:/);
+  // The meeting gone: no link to it.
+  s.records = s.records.filter(r => r.id !== 'mtg-1');
+  assert.doesNotMatch(runLog([summaryRun], { s, expanded: ['run-s'], ai: AI }), /Open meeting/);
+});
+
+test('Today says Made 2 tasks in Todoist', () => {
+  const s = snapshot();
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  s.workspaces[0].layout = ['automations'];
+  const run = record(s, 'automation_run', 'run-1');
+  run.data.tasks = { made: [{ id: 'task-1', kind: 'reply', text: 'Reply to Ann' }, { id: 'task-2', kind: 'reply', text: 'Reply to Olga' }], existing: 0, dropped: 0 };
+  const html = today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' });
+  const link = html.match(/<a [^>]*href="#\/tasks"[^>]*>[^]*?<\/a>/)?.[0] || '';
+  assert.match(link, /data-action="route"[^>]*data-route="tasks"/);
+  assert.match(link, />Made 2 tasks in Todoist ›<\/a>$/);
+  run.data.tasks.made = run.data.tasks.made.slice(0, 1);
+  s.taskProvider = undefined;
+  assert.match(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Made 1 task in Connect ›/);
+  run.data.tasks.made = [];
+  assert.doesNotMatch(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Made \d/);
+});
+
+test('the refusals point at the Deliver section', () => {
+  for (const sentence of [
+    'Tasks are made from messages. Tick Needs your reply or Messages since the last run, or start it from a message.',
+    'A meeting summary starts when a meeting\'s transcript is ready.',
+    'Choose the template to make.',
+    'Choose a note template.',
+  ]) assert.equal(fieldForError(sentence), 'auto-deliver', sentence);
+});
+
+test('the habits fixture carries a triage run with tasks and a summary run', () => {
+  const s = withAutomations(buildSnapshot(NOW, { photo: false }), NOW, { habits: true });
+  assert.ok(record(s, 'automation', 'auto-triage').data.deliver.createTasks);
+  assert.equal(record(s, 'automation', 'auto-summary').data.deliver.meetingSummary, 'formal-summary');
+  assert.ok(record(s, 'automation_run', 'run-triage').data.tasks.made.length === 2);
+  assert.equal(record(s, 'automation_run', 'run-summary').data.status, 'ok');
+  // Without the option, the fixture is as before.
+  assert.equal(snapshot().records.filter(r => r.kind === 'automation').length, 2);
 });

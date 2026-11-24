@@ -196,6 +196,7 @@ export const aiUsage = () => contract('ai-usage');
 export const automationContract = () => ({
   automation: contract('automation'), runOk: contract('automation-run-ok'), runFailed: contract('automation-run-failed'),
   runDraft: contract('automation-run-draft'), runsPage: contract('automation-runs-page'), snapshotRuns: contract('automation-snapshot-runs'),
+  runSummary: contract('automation-run-summary'),
 });
 
 /**
@@ -225,10 +226,58 @@ export function automationRecords(nowMs, connectionId = CID) {
   return { automations, runs, sources };
 }
 
-/** `snapshot` with the contract automations, their runs and the records the runs cite. */
-export function withAutomations(snapshot, nowMs) {
-  const { automations, runs, sources } = automationRecords(nowMs, snapshot.connection?.id || CID);
+/**
+ * Two habit automations and a run of each, for the checks of the create-tasks delivery and the
+ * Formal summary: "Inbox triage" (`auto-triage`, weekdays 08:00, Tasks on) made two reply tasks
+ * 30 minutes ago (one more was already there, one was left out, one task looks handled), and
+ * "Formal meeting summary" (`auto-summary`) queued a Formal summary for the Daily stand-up
+ * (`ev-standup`) 40 minutes ago. The task ids are links only; the tasks are not records here.
+ */
+export function habitRecords(nowMs, connectionId = CID) {
+  const now = Math.floor(nowMs / 1000);
+  const { schedule, summary } = contract('automation');
+  const triage = {
+    ...schedule, id: 'auto-triage', updatedAt: now - 86_400,
+    data: {
+      ...schedule.data, id: 'auto-triage', name: 'Inbox triage', ai: { profile: null, model: null }, capUsd: null,
+      trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:00' },
+      read: { ...schedule.data.read, calendarToday: false, needsReply: true, commitmentsNotes: true },
+      prompt: 'Go through the messages waiting for my reply. Make a reply task for each one that needs an answer or a decision from me.',
+      deliver: { ...schedule.data.deliver, today: true, notify: false, createTasks: true },
+    },
+  };
+  const formal = { ...summary, id: 'auto-summary', updatedAt: now - 86_400, data: { ...summary.data, id: 'auto-summary', name: 'Formal meeting summary', deliver: { ...summary.data.deliver, meetingSummary: 'formal-summary' } } };
+  const ok = contract('automation-run-ok');
+  const triageRun = {
+    ...ok, id: 'run-triage', updatedAt: now - 1800 + 5,
+    data: {
+      ...ok.data, automationId: 'auto-triage', automationName: 'Inbox triage', connectionId, startedAt: now - 1800, durationMs: 4100, costUsd: 0.02,
+      trigger: { kind: 'schedule', scheduledAt: now - 1800 }, delivered: ['today', 'tasks'], handled: 1,
+      output: { title: '3 messages need you', items: [], summaryMarkdown: '3 messages need you; two are about the SOW.', summaryBlocks: [{ type: 'paragraph', inlines: [{ text: '3 messages need you; two are about the SOW.' }] }] },
+      tasks: {
+        made: [{ id: 'task-olga', kind: 'reply', text: 'Reply to Olga about SOW section 4' }, { id: 'task-marek', kind: 'reply', text: 'Reply to Marek about the pilot users' }],
+        existing: 1, dropped: 1,
+      },
+    },
+  };
+  const queued = contract('automation-run-summary');
+  const summaryRun = {
+    ...queued, id: 'run-summary', updatedAt: now - 2400 + 5,
+    data: { ...queued.data, automationName: 'Formal meeting summary', connectionId, startedAt: now - 2400, meetingId: 'ev-standup', trigger: { ...queued.data.trigger, sourceId: 'ev-standup' }, output: { title: 'Formal summary queued for Daily stand-up' } },
+  };
+  return { automations: [triage, formal], runs: [triageRun, summaryRun] };
+}
+
+/** `snapshot` with the contract automations, their runs and the records the runs cite; with
+ *  `habits`, also the Inbox triage and Formal meeting summary automations and their runs. */
+export function withAutomations(snapshot, nowMs, { habits = false } = {}) {
+  const cid = snapshot.connection?.id || CID;
+  const { automations, runs, sources } = automationRecords(nowMs, cid);
   snapshot.records.push(...automations, ...runs, ...sources);
+  if (habits) {
+    const more = habitRecords(nowMs, cid);
+    snapshot.records.push(...more.automations, ...more.runs);
+  }
   return snapshot;
 }
 

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 import { createStore } from '../workspace/store.js';
 import {
-  firstSync, counts, setupFacts, pickDraftTarget, pickSummaryThread, briefFromTemplate, recordOps, runStatusSmoke, SEND_OPS,
+  firstSync, counts, setupFacts, pickDraftTarget, pickSummaryThread, briefFromTemplate, BRIEF_NAME, recordOps, runStatusSmoke, SEND_OPS,
 } from '../workspace/status-smoke.js';
 
 const NOW = Date.UTC(2026, 10, 18, 10, 0);
@@ -106,12 +106,13 @@ test('the summary goes to the newest mail thread long enough to summarize, witho
   assert.equal(pickSummaryThread(s).id, 'conv-old-0');
 });
 
-test('the Morning brief is made from the template, off so no schedule runs it', () => {
+test('the Morning briefing is made from the template, off so no schedule runs it', () => {
   const a = briefFromTemplate();
-  assert.equal(a.name, 'Morning brief');
+  assert.equal(a.name, 'Morning briefing');
+  assert.equal(a.name, BRIEF_NAME, 'an existing one is found by the template\'s name');
   assert.equal(a.enabled, false);
-  assert.deepEqual(a.trigger, { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:45' });
-  assert.deepEqual(a.deliver, { today: true, notify: true, draftReply: false });
+  assert.deepEqual(a.trigger, { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:07' });
+  assert.deepEqual(a.deliver, { today: true, notify: true, draftReply: false, createTasks: false, meetingSummary: null });
   assert.equal(a.read.needsReply, true);
 });
 
@@ -192,7 +193,7 @@ async function liveRun(s, options) {
   return { report, ops, s: connect.state() };
 }
 
-test('a live run drafts, summarizes and runs the Morning brief, sends nothing and leaves nothing behind', async () => {
+test('a live run drafts, summarizes and runs the Morning briefing, sends nothing and leaves nothing behind', async () => {
   const s = snapshot();
   thread(s, 'conv-long', 4);
   const layout = s.workspaces[0].layout.slice();
@@ -246,7 +247,7 @@ test('a live run fails when a check fails, and still deletes the automation it m
   assert.ok(!after.records.some(r => r.kind === 'automation'));
 });
 
-test('an existing Morning brief is run and left as it was', async () => {
+test('an existing Morning briefing is run and left as it was', async () => {
   const s = snapshot();
   s.records.push({ id: 'auto-brief', kind: 'automation', source: 'local', connectionId: null, workspaceId: 'personal', updatedAt: now - 9999, data: { ...briefFromTemplate(), id: 'auto-brief', enabled: true } });
   const { report, s: after } = await liveRun(s);

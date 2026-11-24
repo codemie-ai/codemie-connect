@@ -4,7 +4,7 @@
 // route, the dialogs), so node:test drives it without a browser; only the editor's own form is
 // DOM.
 import {
-  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, AUTOMATION_TABS, TEMPLATES,
+  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, providerNameOf, AUTOMATION_TABS, TEMPLATES,
 } from './view-automations.js';
 import { records } from './selectors.js';
 import { controlSelector, soleMatch } from './ui.js';
@@ -169,7 +169,12 @@ export function createAutomationsController({
     return route('automations', 'runs');
   }
 
-  const editorCtx = (error = null) => ({ zone: snap().settings.timeZone, ai: state.ai, error });
+  /** The workspace zone, Claude's state, the active task provider's name ("Tasks in Todoist") and
+   *  the note templates a summary automation can make. */
+  const editorCtx = (error = null) => {
+    const s = snap();
+    return { zone: s.settings.timeZone, ai: state.ai, error, providerName: providerNameOf(s), templates: s.noteTemplates || [] };
+  };
 
   /** Renders the editor again from its own form (a trigger, event, profile or reply-draft change, or an error). */
   function refreshEditor(form, change = {}, error = null) {

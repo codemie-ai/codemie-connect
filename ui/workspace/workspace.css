@@ -1550,6 +1550,13 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-source-gone{opacity:.55}
 .ws-run-sources{display:grid;gap:6px}
 .ws-run-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+/* What a run made: the tasks line, each task a link to Tasks, and a summary run's meeting. */
+.ws-run-made-block{display:grid;gap:4px;font-size:var(--ws-fs-body-sm);line-height:20px;color:var(--ws-text-2)}
+.ws-run-made-block p{margin:0}
+.ws-run-made{list-style:none;margin:0;padding:0 0 0 14px;display:grid;gap:2px}
+.ws-run-task{color:var(--ws-link);text-decoration:none;overflow-wrap:anywhere}
+.ws-run-task:hover{text-decoration:underline}
+.ws-auto-made{justify-self:start;font-size:var(--ws-fs-body-sm);line-height:20px}
 .ws-run-more{display:flex;justify-content:center;padding:12px;border-top:1px solid var(--ws-border)}
 
 /* templates */
@@ -1558,6 +1565,9 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-auto-template-head{display:flex;align-items:flex-start;gap:12px}
 .ws-auto-template-head h2{font-size:var(--ws-fs-heading);line-height:24px}
 .ws-auto-template-head .ws-auto-trigger{font-size:var(--ws-fs-secondary);line-height:16px;color:var(--ws-muted)}
+/* A card has room for the whole trigger (a mail trigger names its keywords): it wraps, never past the card. */
+.ws-auto-template-head>div{min-width:0}
+.ws-auto-template-head .ws-auto-trigger span{white-space:normal;overflow-wrap:anywhere}
 .ws-auto-template-text{flex:1;font-size:var(--ws-fs-body-sm);line-height:20px;color:var(--ws-text-2)}
 .ws-auto-template .ws-actions{margin-top:4px}
 
