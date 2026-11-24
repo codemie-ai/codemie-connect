@@ -5,6 +5,7 @@ use super::{models::*, Core};
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::{AiProfile, ProfileState};
 use crate::ai::stream::{AiError, ErrorClass, RunOutcome};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -50,79 +51,243 @@ pub(super) fn unready_error(profile: &AiProfile) -> Option<AiError> {
     Some(e)
 }
 
-/// The profile and model for one purpose: its own route, else the default. With neither
-/// chosen the caller must ask the user (`NeedsChoice`); nothing is picked automatically.
+/// The profile and model for one purpose (see [`choose`]). With no profile chosen the
+/// caller must ask the user (`NeedsChoice`); nothing is picked automatically.
 pub fn resolve_route(
     settings: &AiSettings,
     profiles: &[AiProfile],
     purpose: Purpose,
 ) -> std::result::Result<(AiProfile, Option<String>), AiError> {
-    let route = settings.routes.get(&purpose);
-    let id =
-        chosen_profile(settings, purpose).ok_or_else(|| AiError::new(ErrorClass::NeedsChoice))?;
+    let chosen = choose(settings, &RouteKey::Purpose(purpose));
+    let id = chosen
+        .profile
+        .ok_or_else(|| AiError::new(ErrorClass::NeedsChoice))?;
     let profile = profiles
         .iter()
-        .find(|p| &p.id == id)
+        .find(|p| p.id == id)
         .ok_or_else(|| AiError::new(ErrorClass::NotConfigured))?;
     if let Some(e) = unready_error(profile) {
         return Err(e);
     }
-    Ok((profile.clone(), route.and_then(|r| r.model.clone())))
+    Ok((profile.clone(), chosen.model))
 }
 
 /// The profile id `purpose` is routed to, `None` until the user has chosen one.
-pub(super) fn chosen_profile(settings: &AiSettings, purpose: Purpose) -> Option<&String> {
-    settings
-        .routes
-        .get(&purpose)
-        .and_then(|r| r.profile.as_ref())
-        .or(settings.default_profile.as_ref())
+pub(super) fn chosen_profile(settings: &AiSettings, purpose: Purpose) -> Option<String> {
+    choose(settings, &RouteKey::Purpose(purpose)).profile
+}
+
+/// One row of Settings › AI: a purpose, or a single plugin by id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteKey {
+    Purpose(Purpose),
+    Plugin(String),
+}
+
+impl RouteKey {
+    /// The row's key in `chosen`: `triage`, `plugin:knowledge`.
+    pub fn wire(&self) -> String {
+        match self {
+            RouteKey::Purpose(p) => wire_name(p),
+            RouteKey::Plugin(id) => format!("plugin:{id}"),
+        }
+    }
+}
+
+/// The row a row inherits from when it sets nothing; `None` is the Default row.
+pub fn group_of(key: &RouteKey) -> Option<RouteKey> {
+    match key {
+        RouteKey::Purpose(Purpose::Briefing | Purpose::Triage | Purpose::Commitments) => {
+            Some(RouteKey::Purpose(Purpose::Automation))
+        }
+        RouteKey::Plugin(_) => Some(RouteKey::Purpose(Purpose::Plugin)),
+        RouteKey::Purpose(_) => None,
+    }
+}
+
+/// What a row runs on: its profile and model, and the profile used when that can't run.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Chosen {
+    pub profile: Option<String>,
+    pub model: Option<String>,
+    pub fallback: Option<String>,
+}
+
+fn set(value: &Option<String>) -> Option<String> {
+    value.clone().filter(|v| !v.is_empty())
+}
+
+fn saved_route<'a>(s: &'a AiSettings, key: &RouteKey) -> Option<&'a Route> {
+    match key {
+        RouteKey::Purpose(p) => s.routes.get(p),
+        RouteKey::Plugin(id) => s.plugins.get(id),
+    }
+}
+
+/// The row's choice with its fallback as inherited, before it is compared to the profile.
+fn inherited(s: &AiSettings, key: Option<&RouteKey>) -> Chosen {
+    let Some(key) = key else {
+        return Chosen {
+            profile: set(&s.default_profile),
+            model: set(&s.default_model),
+            fallback: set(&s.default_fallback),
+        };
+    };
+    let group = inherited(s, group_of(key).as_ref());
+    let Some(route) = saved_route(s, key) else {
+        return group;
+    };
+    let model = set(&route.model);
+    let (profile, model) = match set(&route.profile) {
+        Some(profile) => (Some(profile), model),
+        None => (group.profile, model.or(group.model)),
+    };
+    Chosen {
+        profile,
+        model,
+        fallback: set(&route.fallback).or(group.fallback),
+    }
+}
+
+/// The one resolution rule (spec §2). Profile and model go together: a row that sets a
+/// profile uses its own model (none = the profile's default); a row that sets no profile
+/// takes its group's profile, with its own model if it set one. The fallback is inherited
+/// on its own, and a fallback equal to the chosen profile is no fallback.
+pub fn choose(s: &AiSettings, key: &RouteKey) -> Chosen {
+    without_self_fallback(inherited(s, Some(key)))
+}
+
+/// [`choose`] for the Default row.
+pub fn choose_default(s: &AiSettings) -> Chosen {
+    without_self_fallback(inherited(s, None))
+}
+
+fn without_self_fallback(mut c: Chosen) -> Chosen {
+    if c.fallback.is_some() && c.fallback == c.profile {
+        c.fallback = None;
+    }
+    c
+}
+
+/// `chosen` of `ai_status` and `ai_settings_save`: `default`, every purpose, and
+/// `plugin:<id>` for each saved plugin row.
+pub(super) fn chosen_all(s: &AiSettings) -> serde_json::Map<String, Value> {
+    let value = |c: Chosen| serde_json::to_value(c).unwrap_or(Value::Null);
+    let mut out = serde_json::Map::new();
+    out.insert("default".into(), value(choose_default(s)));
+    let keys = Purpose::ALL
+        .into_iter()
+        .map(RouteKey::Purpose)
+        .chain(s.plugins.keys().cloned().map(RouteKey::Plugin));
+    for key in keys {
+        out.insert(key.wire(), value(choose(s, &key)));
+    }
+    out
 }
 
 fn invalid(message: &str) -> WorkspaceError {
     WorkspaceError::new("validation", message)
 }
 
+const NOT_OFFERED: &str = "That model is not offered by this profile.";
+
 /// A model must be one the profile offers; empty means the profile's own default.
 fn checked_model(profile: &AiProfile, model: Option<&str>) -> Result<Option<String>> {
     match model.filter(|m| !m.is_empty()) {
         None => Ok(None),
         Some(m) if profile.models.iter().any(|c| c.id == m) => Ok(Some(m.to_string())),
-        Some(_) => Err(invalid("That model is not offered by this Claude profile.")),
+        Some(_) => Err(invalid(NOT_OFFERED)),
     }
 }
 
-/// Checks every profile id and model of `settings` against the detected profiles and
-/// returns the normalised settings (empty routes dropped).
-fn validate_ai_settings(settings: AiSettings, profiles: &[AiProfile]) -> Result<AiSettings> {
+/// A route with empty strings cleared, `None` when it sets nothing.
+fn normalized(route: Route) -> Option<Route> {
+    let route = Route {
+        profile: set(&route.profile),
+        model: set(&route.model),
+        fallback: set(&route.fallback),
+    };
+    (route != Route::default()).then_some(route)
+}
+
+/// Checks every profile, fallback and model of `settings` against the detected profiles
+/// and returns the normalised settings (empty rows dropped). A model the chosen profile
+/// doesn't list is kept when `saved` has it on the same row with the same profile, so a
+/// closed Ollama doesn't refuse an edit of another row.
+fn validate_ai_settings(
+    settings: AiSettings,
+    profiles: &[AiProfile],
+    saved: &AiSettings,
+) -> Result<AiSettings> {
+    if !settings
+        .plugins
+        .keys()
+        .all(|id| crate::plugins::valid_id(id))
+    {
+        return Err(invalid("That plugin is not known."));
+    }
+    let s = AiSettings {
+        default_profile: set(&settings.default_profile),
+        default_model: set(&settings.default_model),
+        default_fallback: set(&settings.default_fallback),
+        routes: settings
+            .routes
+            .into_iter()
+            .filter_map(|(k, r)| Some((k, normalized(r)?)))
+            .collect(),
+        plugins: settings
+            .plugins
+            .into_iter()
+            .filter_map(|(k, r)| Some((k, normalized(r)?)))
+            .collect(),
+    };
     let find = |id: &str| {
         profiles
             .iter()
             .find(|p| p.id == id)
-            .ok_or_else(|| invalid("Choose one of the listed Claude profiles."))
+            .ok_or_else(|| invalid("Choose one of the listed profiles."))
     };
-    let default = settings.default_profile.filter(|d| !d.is_empty());
-    if let Some(d) = &default {
-        find(d)?;
-    }
-    let mut routes = std::collections::BTreeMap::new();
-    for (purpose, route) in settings.routes {
-        let profile = route.profile.filter(|p| !p.is_empty());
-        let model = route.model.filter(|m| !m.is_empty());
-        if profile.is_none() && model.is_none() {
-            continue;
+    let default_row = Route {
+        profile: s.default_profile.clone(),
+        model: s.default_model.clone(),
+        fallback: s.default_fallback.clone(),
+    };
+    let rows = std::iter::once((None, &default_row))
+        .chain(
+            s.routes
+                .iter()
+                .map(|(p, r)| (Some(RouteKey::Purpose(*p)), r)),
+        )
+        .chain(
+            s.plugins
+                .iter()
+                .map(|(id, r)| (Some(RouteKey::Plugin(id.clone())), r)),
+        );
+    for (key, row) in rows {
+        for id in [&row.profile, &row.fallback].into_iter().flatten() {
+            find(id)?;
         }
-        let effective = profile
+        let pick = |s: &AiSettings| inherited(s, key.as_ref());
+        let chosen = pick(&s);
+        if row.fallback.is_some() && row.fallback == chosen.profile {
+            return Err(invalid("The fallback must be a different profile."));
+        }
+        let Some(model) = &row.model else { continue };
+        let profile = chosen
+            .profile
             .as_deref()
-            .or(default.as_deref())
-            .ok_or_else(|| invalid("Choose a Claude profile before choosing a model."))?;
-        let model = checked_model(find(effective)?, model.as_deref())?;
-        routes.insert(purpose, Route { profile, model });
+            .ok_or_else(|| invalid("Choose a profile before choosing a model."))?;
+        let before = match &key {
+            Some(k) => saved_route(saved, k).and_then(|r| set(&r.model)),
+            None => set(&saved.default_model),
+        };
+        let kept = before.as_ref() == Some(model) && pick(saved).profile == chosen.profile;
+        if !kept {
+            checked_model(find(profile)?, Some(model))?;
+        }
     }
-    Ok(AiSettings {
-        default_profile: default,
-        routes,
-    })
+    Ok(s)
 }
 
 fn month_now(time_zone: &str) -> String {
@@ -258,7 +423,7 @@ impl Core {
         }
         let profiles = self.profiles.profiles().await;
         let settings = self.repo()?.settings()?.ai;
-        Ok(json!({"profiles": profiles, "settings": settings}))
+        Ok(json!({"profiles": profiles, "chosen": chosen_all(&settings), "settings": settings}))
     }
 
     /// `ai_usage`: this month's (default) runs and cost, in total and per profile.
@@ -271,17 +436,17 @@ impl Core {
         self.repo()?.ai_usage(&month)
     }
 
-    /// `ai_settings_save {defaultProfile, routes}`.
+    /// `ai_settings_save {defaultProfile, defaultModel, defaultFallback, routes, plugins}`.
     /// `profiles` were detected by the caller before the mutation lock was taken.
     pub(super) fn ai_settings_save(&self, req: &Request, profiles: &[AiProfile]) -> Result<Value> {
         let wanted: AiSettings = serde_json::from_value(req.data.clone())
             .map_err(|_| invalid("Those AI settings are not valid."))?;
-        let ai = validate_ai_settings(wanted, profiles)?;
         let mut r = self.repo()?;
         let mut s = r.settings()?;
+        let ai = validate_ai_settings(wanted, profiles, &s.ai)?;
         s.ai = ai.clone();
         r.settings_update(&s)?;
-        Ok(json!({"settings": ai}))
+        Ok(json!({"chosen": chosen_all(&ai), "settings": ai}))
     }
 
     /// `ai_test {profileId, model?}`: one tiny isolated run that proves sign-in and model.
@@ -293,7 +458,7 @@ impl Core {
         let profile = profiles
             .iter()
             .find(|p| p.id == profile_id)
-            .ok_or_else(|| invalid("Choose one of the listed Claude profiles."))?;
+            .ok_or_else(|| invalid("Choose one of the listed profiles."))?;
         let model = checked_model(profile, req.data["model"].as_str())?;
         let failed = |e: &AiError, ms: u128| json!({"ok": false, "ms": ms as u64, "errorClass": e.class, "message": e.message});
         if let Some(e) = unready_error(profile) {
@@ -412,6 +577,336 @@ pub(super) mod tests {
         r
     }
 
+    fn ollama(id: &str, models: &[&str]) -> AiProfile {
+        let mut p = profile(id, ProfileState::Ready);
+        p.provider = Some("ollama".into());
+        p.models = models
+            .iter()
+            .map(|m| ModelChoice {
+                id: m.to_string(),
+                label: m.to_string(),
+            })
+            .collect();
+        p
+    }
+    fn settings(v: Value) -> AiSettings {
+        serde_json::from_value(v).unwrap()
+    }
+    fn chosen(profile: Option<&str>, model: Option<&str>, fallback: Option<&str>) -> Chosen {
+        Chosen {
+            profile: profile.map(str::to_string),
+            model: model.map(str::to_string),
+            fallback: fallback.map(str::to_string),
+        }
+    }
+    fn key(p: Purpose) -> RouteKey {
+        RouteKey::Purpose(p)
+    }
+
+    #[test]
+    fn route_keys_have_wire_names_and_groups() {
+        assert_eq!(key(Purpose::Triage).wire(), "triage");
+        assert_eq!(
+            RouteKey::Plugin("knowledge".into()).wire(),
+            "plugin:knowledge"
+        );
+        for p in [Purpose::Briefing, Purpose::Triage, Purpose::Commitments] {
+            assert_eq!(group_of(&key(p)), Some(key(Purpose::Automation)));
+        }
+        assert_eq!(
+            group_of(&RouteKey::Plugin("knowledge".into())),
+            Some(key(Purpose::Plugin))
+        );
+        for p in [
+            Purpose::MailDraft,
+            Purpose::ChatDraft,
+            Purpose::Summary,
+            Purpose::Meeting,
+            Purpose::Automation,
+            Purpose::Plugin,
+            Purpose::Ask,
+        ] {
+            assert_eq!(group_of(&key(p)), None, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn old_settings_read_unchanged() {
+        let s = settings(json!({"defaultProfile": "claude", "routes": {
+            "summary": {"profile": "codemie:prod", "model": "claude-haiku-4-5"}}}));
+        assert_eq!(
+            choose(&s, &key(Purpose::Summary)),
+            chosen(Some("codemie:prod"), Some("claude-haiku-4-5"), None)
+        );
+        assert_eq!(
+            choose(&s, &key(Purpose::MailDraft)),
+            chosen(Some("claude"), None, None)
+        );
+        assert_eq!(choose_default(&s), chosen(Some("claude"), None, None));
+    }
+
+    #[test]
+    fn rows_inherit_from_their_group() {
+        let s = settings(json!({"defaultProfile": "claude", "routes": {
+            "automation": {"profile": "codemie:prod", "model": "m1"}}}));
+        assert_eq!(
+            choose(&s, &key(Purpose::Triage)),
+            chosen(Some("codemie:prod"), Some("m1"), None)
+        );
+        // A plugin without a row (or with an empty one) is All plugins'.
+        let s = settings(json!({"defaultProfile": "claude",
+            "routes": {"plugin": {"profile": "codemie:prod", "model": "m2"}},
+            "plugins": {"knowledge": {}}}));
+        assert_eq!(
+            choose(&s, &RouteKey::Plugin("knowledge".into())),
+            choose(&s, &key(Purpose::Plugin))
+        );
+        assert_eq!(
+            choose(&s, &RouteKey::Plugin("other".into())),
+            chosen(Some("codemie:prod"), Some("m2"), None)
+        );
+        // Profile and model go together.
+        let s = settings(json!({"defaultProfile": "claude", "routes": {
+            "automation": {"profile": "codemie:prod", "model": "m1"},
+            "triage": {"profile": "claude"},
+            "briefing": {"model": "sonnet"}}}));
+        assert_eq!(
+            choose(&s, &key(Purpose::Triage)),
+            chosen(Some("claude"), None, None)
+        );
+        assert_eq!(
+            choose(&s, &key(Purpose::Briefing)),
+            chosen(Some("codemie:prod"), Some("sonnet"), None)
+        );
+        let s = settings(json!({"routes": {
+            "automation": {"profile": "claude"},
+            "triage": {"model": "sonnet"}}}));
+        assert_eq!(
+            choose(&s, &key(Purpose::Triage)),
+            chosen(Some("claude"), Some("sonnet"), None)
+        );
+        // An empty string is no choice.
+        let s = settings(json!({"defaultProfile": "claude", "defaultModel": "haiku",
+            "routes": {"summary": {"profile": "", "model": ""}}}));
+        assert_eq!(
+            choose(&s, &key(Purpose::Summary)),
+            chosen(Some("claude"), Some("haiku"), None)
+        );
+    }
+
+    #[test]
+    fn fallback_inherits_on_its_own_and_never_equals_the_profile() {
+        let s = settings(
+            json!({"defaultProfile": "claude", "defaultFallback": "codemie:prod",
+            "routes": {"triage": {"profile": "claude"}}}),
+        );
+        assert_eq!(
+            choose(&s, &key(Purpose::Triage)).fallback.as_deref(),
+            Some("codemie:prod")
+        );
+        let s = settings(
+            json!({"defaultProfile": "claude", "defaultFallback": "codemie:prod",
+            "routes": {"triage": {"profile": "codemie:prod"}}}),
+        );
+        assert_eq!(choose(&s, &key(Purpose::Triage)).fallback, None);
+        // The group's fallback, not the default's, and it is inherited raw: a fallback
+        // equal to the group's own profile still backs up a row on another profile.
+        let s = settings(
+            json!({"defaultProfile": "claude", "defaultFallback": "codemie:a",
+            "routes": {"automation": {"fallback": "claude"},
+                       "briefing": {"profile": "codemie:b"}}}),
+        );
+        assert_eq!(choose(&s, &key(Purpose::Automation)).fallback, None);
+        assert_eq!(
+            choose(&s, &key(Purpose::Briefing)),
+            chosen(Some("codemie:b"), None, Some("claude"))
+        );
+        assert_eq!(
+            choose(&s, &key(Purpose::Summary)).fallback.as_deref(),
+            Some("codemie:a")
+        );
+    }
+
+    #[test]
+    fn nothing_chosen_is_none() {
+        let s = AiSettings::default();
+        assert_eq!(choose_default(&s), chosen(None, None, None));
+        for p in Purpose::ALL {
+            assert_eq!(choose(&s, &key(p)).profile, None, "{p:?}");
+        }
+        assert_eq!(
+            choose(&s, &RouteKey::Plugin("knowledge".into())).profile,
+            None
+        );
+        assert_eq!(chosen_profile(&s, Purpose::Meeting), None);
+    }
+
+    #[tokio::test]
+    async fn save_validates_fallbacks_plugins_and_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let save = |data: Value| {
+            let req = mutation(&core, Operation::AiSettingsSave, data);
+            let core = core.clone();
+            async move { core.request(req).await }
+        };
+        for (bad, message) in [
+            (
+                json!({"defaultProfile": "claude", "defaultFallback": "nope"}),
+                "Choose one of the listed profiles.",
+            ),
+            (
+                json!({"defaultProfile": "claude", "routes": {"triage": {"fallback": "nope"}}}),
+                "Choose one of the listed profiles.",
+            ),
+            (
+                json!({"defaultProfile": "claude",
+                       "routes": {"summary": {"profile": "claude", "fallback": "claude"}}}),
+                "The fallback must be a different profile.",
+            ),
+            (
+                json!({"defaultProfile": "claude", "defaultFallback": "claude"}),
+                "The fallback must be a different profile.",
+            ),
+            (
+                json!({"defaultProfile": "claude", "plugins": {"../x": {"profile": "claude"}}}),
+                "That plugin is not known.",
+            ),
+            (
+                json!({"defaultProfile": "claude", "plugins": {"knowledge": {"model": "gpt-9"}}}),
+                "That model is not offered by this profile.",
+            ),
+            (
+                json!({"defaultProfile": "claude", "defaultModel": "gpt-9"}),
+                "That model is not offered by this profile.",
+            ),
+        ] {
+            let e = save(bad.clone()).await.unwrap_err();
+            assert_eq!(
+                (e.code.as_str(), e.message.as_str()),
+                ("validation", message),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().ai,
+            AiSettings::default()
+        );
+        let out = save(json!({"defaultProfile": "claude", "defaultModel": "haiku",
+            "defaultFallback": "codemie:prod",
+            "routes": {"triage": {"profile": "codemie:prod", "model": "sonnet"}},
+            "plugins": {"knowledge": {"fallback": "codemie:prod"}, "github": {}}}))
+        .await
+        .unwrap();
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(ai.default_model.as_deref(), Some("haiku"));
+        assert_eq!(ai.default_fallback.as_deref(), Some("codemie:prod"));
+        assert_eq!(ai.plugins.len(), 1, "empty plugin rows are dropped");
+        assert_eq!(out["settings"], serde_json::to_value(&ai).unwrap());
+        assert_eq!(out["chosen"]["triage"]["profile"], "codemie:prod");
+        assert!(out["chosen"]["triage"]["fallback"].is_null());
+    }
+
+    #[tokio::test]
+    async fn a_saved_model_is_kept_while_its_profile_cannot_list_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:ol", &["qwen3:8b", "llama3.2:latest"]),
+        ];
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), open);
+        core.request(mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude",
+                   "plugins": {"knowledge": {"profile": "codemie:ol", "model": "qwen3:8b"}}}),
+        ))
+        .await
+        .unwrap();
+        // Ollama is closed: the profile lists only the config's models.
+        let mut closed_ol = ollama("codemie:ol", &["llama3.2:latest"]);
+        closed_ol.state = ProfileState::NotRunning;
+        let closed = vec![
+            profile("codemie:prod", ProfileState::Ready),
+            closed_ol,
+            profile("claude", ProfileState::Ready),
+        ];
+        let req = mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "codemie:prod",
+                   "plugins": {"knowledge": {"profile": "codemie:ol", "model": "qwen3:8b"}}}),
+        );
+        let out = core.ai_settings_save(&req, &closed).unwrap();
+        assert_eq!(out["settings"]["plugins"]["knowledge"]["model"], "qwen3:8b");
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(ai.plugins["knowledge"].model.as_deref(), Some("qwen3:8b"));
+        assert_eq!(ai.default_profile.as_deref(), Some("codemie:prod"));
+        // A new row with that model is refused, and so is the same model on another row.
+        for data in [
+            json!({"defaultProfile": "codemie:prod",
+                   "plugins": {"knowledge": {"profile": "codemie:ol", "model": "qwen3:8b"},
+                               "github": {"profile": "codemie:ol", "model": "qwen3:8b"}}}),
+            json!({"defaultProfile": "codemie:prod",
+                   "routes": {"summary": {"profile": "codemie:ol", "model": "qwen3:8b"}}}),
+        ] {
+            let req = mutation(&core, Operation::AiSettingsSave, data.clone());
+            let e = core.ai_settings_save(&req, &closed).unwrap_err();
+            assert_eq!(
+                e.message, "That model is not offered by this profile.",
+                "{data}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn status_and_save_answer_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let out = core
+            .request(mutation(
+                &core,
+                Operation::AiSettingsSave,
+                json!({"defaultProfile": "claude",
+                       "plugins": {"knowledge": {"profile": "codemie:prod"}}}),
+            ))
+            .await
+            .unwrap();
+        let status = core
+            .request(request(Operation::AiStatus, json!({})))
+            .await
+            .unwrap();
+        assert_eq!(status["chosen"], out["chosen"]);
+        let mut keys: Vec<&str> = status["chosen"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut want = vec![
+            "default",
+            "mail_draft",
+            "chat_draft",
+            "summary",
+            "automation",
+            "plugin",
+            "meeting",
+            "briefing",
+            "triage",
+            "commitments",
+            "ask",
+            "plugin:knowledge",
+        ];
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        assert_eq!(
+            status["chosen"]["plugin:knowledge"],
+            json!({"profile": "codemie:prod", "model": null, "fallback": null})
+        );
+        assert_eq!(status["chosen"]["ask"]["profile"], "claude");
+    }
+
     #[test]
     fn resolve_route_without_choice_needs_choice() {
         let e = resolve_route(&AiSettings::default(), &ready(), Purpose::MailDraft).unwrap_err();
@@ -432,6 +927,7 @@ pub(super) mod tests {
             Route {
                 profile: Some("codemie:prod".into()),
                 model: Some("sonnet".into()),
+                fallback: None,
             },
         );
         s.routes.insert(
@@ -439,6 +935,7 @@ pub(super) mod tests {
             Route {
                 profile: None,
                 model: Some("haiku".into()),
+                fallback: None,
             },
         );
         let (p, m) = resolve_route(&s, &ready(), Purpose::Summary).unwrap();
@@ -747,6 +1244,15 @@ pub(super) mod tests {
             default_model: Some("claude-sonnet-4-5".into()),
             message: message.map(str::to_string),
         };
+        let local_ollama = AiProfile {
+            provider: Some("ollama".into()),
+            models: models(&[
+                ("qwen3:8b", "qwen3:8b"),
+                ("llama3.2:latest", "llama3.2:latest"),
+            ]),
+            default_model: Some("qwen3:8b".into()),
+            ..codemie("local-ollama", ProfileState::Ready, None)
+        };
         let profiles = vec![
             native,
             codemie("prod", ProfileState::Ready, None),
@@ -755,6 +1261,7 @@ pub(super) mod tests {
                 ProfileState::NeedsLogin,
                 Some("Sign in to this CodeMie profile."),
             ),
+            local_ollama,
         ];
         let run = |cost: f64, model: &str| {
             let mut o = outcome(cost);
@@ -771,9 +1278,13 @@ pub(super) mod tests {
         core.request(mutation(
             &core,
             Operation::AiSettingsSave,
-            json!({"defaultProfile": "claude", "routes": {
-                "summary": {"profile": "codemie:prod", "model": "claude-haiku-4-5"},
-                "mail_draft": {"model": "sonnet"}}}),
+            json!({"defaultProfile": "claude", "defaultFallback": "codemie:prod",
+                "routes": {
+                    "summary": {"profile": "codemie:prod", "model": "claude-haiku-4-5"},
+                    "mail_draft": {"model": "sonnet"},
+                    "triage": {"fallback": "codemie:local-ollama"}},
+                "plugins": {
+                    "knowledge": {"profile": "codemie:local-ollama", "model": "qwen3:8b"}}}),
         ))
         .await
         .unwrap();
@@ -798,27 +1309,73 @@ pub(super) mod tests {
         usage["month"] = "2026-11".into();
         assert_eq!(usage["byProfile"].as_object().unwrap().len(), 2);
 
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
-        let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
         for (name, value) in [
             ("ai-status.json", status),
             ("ai-usage.json", usage),
             ("ai-test-ok.json", ok),
             ("ai-test-fail.json", fail),
         ] {
-            let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
-            let path = dir.join(name);
-            if update {
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(&path, &text).unwrap();
-            } else {
-                let saved = std::fs::read_to_string(&path).unwrap_or_default();
-                assert_eq!(
-                    saved, text,
-                    "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
-                );
-            }
+            contract_fixture(name, &value);
+        }
+    }
+
+    /// `ai-route-cases.json`: saved settings and the `chosen` [`choose`] answers for them,
+    /// which the window's tests read to check the rows' "Same as" labels.
+    #[test]
+    fn contract_fixtures_route_cases() {
+        let cases = [
+            ("empty", json!({})),
+            (
+                "old default and summary",
+                json!({"defaultProfile": "claude", "routes": {
+                    "summary": {"profile": "codemie:prod", "model": "claude-haiku-4-5"}}}),
+            ),
+            (
+                "automation group gives triage",
+                json!({"defaultProfile": "claude", "routes": {
+                    "automation": {"profile": "codemie:prod", "model": "claude-haiku-4-5"},
+                    "triage": {"model": "claude-sonnet-4-5"}}}),
+            ),
+            (
+                "plugin row",
+                json!({"defaultProfile": "claude",
+                    "routes": {"plugin": {"profile": "codemie:prod"}},
+                    "plugins": {"knowledge": {"profile": "codemie:local-ollama", "model": "qwen3:8b"},
+                                "github": {"model": "claude-haiku-4-5"}}}),
+            ),
+            (
+                "fallback inheritance",
+                json!({"defaultProfile": "claude", "defaultFallback": "codemie:prod",
+                    "routes": {"automation": {"fallback": "codemie:local-ollama"},
+                               "summary": {"profile": "codemie:prod"},
+                               "briefing": {"profile": "codemie:local-ollama"}}}),
+            ),
+        ];
+        let cases: Vec<Value> = cases
+            .into_iter()
+            .map(|(name, saved)| {
+                let s = settings(saved);
+                json!({"name": name, "settings": s, "chosen": chosen_all(&s)})
+            })
+            .collect();
+        contract_fixture("ai-route-cases.json", &Value::Array(cases));
+    }
+
+    /// Writes (`UPDATE_CONTRACT_FIXTURES=1`) or checks one UI contract fixture.
+    fn contract_fixture(name: &str, value: &Value) {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+        let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+        let path = dir.join(name);
+        if std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        } else {
+            let saved = std::fs::read_to_string(&path).unwrap_or_default();
+            assert_eq!(
+                saved, text,
+                "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+            );
         }
     }
 }

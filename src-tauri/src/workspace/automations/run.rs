@@ -103,8 +103,18 @@ fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
     let profile = pin.profile.clone().filter(|p| !p.is_empty());
     let model = pin.model.clone().filter(|m| !m.is_empty());
     if profile.is_some() {
-        ai.routes
-            .insert(Purpose::Automation, Route { profile, model });
+        let fallback = ai
+            .routes
+            .get(&Purpose::Automation)
+            .and_then(|r| r.fallback.clone());
+        ai.routes.insert(
+            Purpose::Automation,
+            Route {
+                profile,
+                model,
+                fallback,
+            },
+        );
     } else if model.is_some() {
         ai.routes.entry(Purpose::Automation).or_default().model = model;
     }

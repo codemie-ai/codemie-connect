@@ -293,13 +293,39 @@ pub enum Purpose {
     Plugin,
     /// Notes and summaries from meeting transcripts.
     Meeting,
+    /// Automations made from the Morning briefing template.
+    Briefing,
+    /// Automations made from the Inbox triage template.
+    Triage,
+    /// Automations made from the Commitments template.
+    Commitments,
+    /// Questions typed in the ⌘K box.
+    Ask,
 }
-/// An empty route uses the default profile.
+
+impl Purpose {
+    pub const ALL: [Purpose; 10] = [
+        Purpose::MailDraft,
+        Purpose::ChatDraft,
+        Purpose::Summary,
+        Purpose::Automation,
+        Purpose::Plugin,
+        Purpose::Meeting,
+        Purpose::Briefing,
+        Purpose::Triage,
+        Purpose::Commitments,
+        Purpose::Ask,
+    ];
+}
+
+/// An empty route uses its group's choice (see `workspace::ai::choose`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Route {
     pub profile: Option<String>,
     pub model: Option<String>,
+    /// The profile used when `profile` can't run; inherited on its own.
+    pub fallback: Option<String>,
 }
 
 /// `settings.ai`. `default_profile` stays `None` until the user chooses one, so no
@@ -308,7 +334,11 @@ pub struct Route {
 #[serde(rename_all = "camelCase", default)]
 pub struct AiSettings {
     pub default_profile: Option<String>,
+    pub default_model: Option<String>,
+    pub default_fallback: Option<String>,
     pub routes: std::collections::BTreeMap<Purpose, Route>,
+    /// Rows of single plugins, keyed by plugin id.
+    pub plugins: std::collections::BTreeMap<String, Route>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

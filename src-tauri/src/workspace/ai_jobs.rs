@@ -1231,6 +1231,7 @@ mod tests {
                 Route {
                     profile: None,
                     model: Some("haiku".into()),
+                    fallback: None,
                 },
             );
             r.settings_update(&s).unwrap();

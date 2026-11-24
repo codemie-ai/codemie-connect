@@ -3,6 +3,7 @@
     "connectionId": null,
     "data": {
       "ai": {
+        "fallback": null,
         "model": null,
         "profile": null
       },
@@ -50,6 +51,7 @@
     "connectionId": null,
     "data": {
       "ai": {
+        "fallback": null,
         "model": "claude-haiku-4-5",
         "profile": "claude"
       },
@@ -97,6 +99,7 @@
     "connectionId": null,
     "data": {
       "ai": {
+        "fallback": null,
         "model": null,
         "profile": null
       },

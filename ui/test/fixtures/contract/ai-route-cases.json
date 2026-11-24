@@ -1,0 +1,397 @@
+[
+  {
+    "chosen": {
+      "ask": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "automation": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "briefing": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "chat_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "commitments": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "default": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "mail_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "meeting": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "plugin": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "summary": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      },
+      "triage": {
+        "fallback": null,
+        "model": null,
+        "profile": null
+      }
+    },
+    "name": "empty",
+    "settings": {
+      "defaultFallback": null,
+      "defaultModel": null,
+      "defaultProfile": null,
+      "plugins": {},
+      "routes": {}
+    }
+  },
+  {
+    "chosen": {
+      "ask": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "automation": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "briefing": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "chat_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "commitments": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "default": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "mail_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "meeting": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "plugin": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "summary": {
+        "fallback": null,
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      },
+      "triage": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      }
+    },
+    "name": "old default and summary",
+    "settings": {
+      "defaultFallback": null,
+      "defaultModel": null,
+      "defaultProfile": "claude",
+      "plugins": {},
+      "routes": {
+        "summary": {
+          "fallback": null,
+          "model": "claude-haiku-4-5",
+          "profile": "codemie:prod"
+        }
+      }
+    }
+  },
+  {
+    "chosen": {
+      "ask": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "automation": {
+        "fallback": null,
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      },
+      "briefing": {
+        "fallback": null,
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      },
+      "chat_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "commitments": {
+        "fallback": null,
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      },
+      "default": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "mail_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "meeting": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "plugin": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "summary": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "triage": {
+        "fallback": null,
+        "model": "claude-sonnet-4-5",
+        "profile": "codemie:prod"
+      }
+    },
+    "name": "automation group gives triage",
+    "settings": {
+      "defaultFallback": null,
+      "defaultModel": null,
+      "defaultProfile": "claude",
+      "plugins": {},
+      "routes": {
+        "automation": {
+          "fallback": null,
+          "model": "claude-haiku-4-5",
+          "profile": "codemie:prod"
+        },
+        "triage": {
+          "fallback": null,
+          "model": "claude-sonnet-4-5",
+          "profile": null
+        }
+      }
+    }
+  },
+  {
+    "chosen": {
+      "ask": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "automation": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "briefing": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "chat_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "commitments": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "default": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "mail_draft": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "meeting": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "plugin": {
+        "fallback": null,
+        "model": null,
+        "profile": "codemie:prod"
+      },
+      "plugin:github": {
+        "fallback": null,
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      },
+      "plugin:knowledge": {
+        "fallback": null,
+        "model": "qwen3:8b",
+        "profile": "codemie:local-ollama"
+      },
+      "summary": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      },
+      "triage": {
+        "fallback": null,
+        "model": null,
+        "profile": "claude"
+      }
+    },
+    "name": "plugin row",
+    "settings": {
+      "defaultFallback": null,
+      "defaultModel": null,
+      "defaultProfile": "claude",
+      "plugins": {
+        "github": {
+          "fallback": null,
+          "model": "claude-haiku-4-5",
+          "profile": null
+        },
+        "knowledge": {
+          "fallback": null,
+          "model": "qwen3:8b",
+          "profile": "codemie:local-ollama"
+        }
+      },
+      "routes": {
+        "plugin": {
+          "fallback": null,
+          "model": null,
+          "profile": "codemie:prod"
+        }
+      }
+    }
+  },
+  {
+    "chosen": {
+      "ask": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "automation": {
+        "fallback": "codemie:local-ollama",
+        "model": null,
+        "profile": "claude"
+      },
+      "briefing": {
+        "fallback": null,
+        "model": null,
+        "profile": "codemie:local-ollama"
+      },
+      "chat_draft": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "commitments": {
+        "fallback": "codemie:local-ollama",
+        "model": null,
+        "profile": "claude"
+      },
+      "default": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "mail_draft": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "meeting": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "plugin": {
+        "fallback": "codemie:prod",
+        "model": null,
+        "profile": "claude"
+      },
+      "summary": {
+        "fallback": null,
+        "model": null,
+        "profile": "codemie:prod"
+      },
+      "triage": {
+        "fallback": "codemie:local-ollama",
+        "model": null,
+        "profile": "claude"
+      }
+    },
+    "name": "fallback inheritance",
+    "settings": {
+      "defaultFallback": "codemie:prod",
+      "defaultModel": null,
+      "defaultProfile": "claude",
+      "plugins": {},
+      "routes": {
+        "automation": {
+          "fallback": "codemie:local-ollama",
+          "model": null,
+          "profile": null
+        },
+        "briefing": {
+          "fallback": null,
+          "model": null,
+          "profile": "codemie:local-ollama"
+        },
+        "summary": {
+          "fallback": null,
+          "model": null,
+          "profile": "codemie:prod"
+        }
+      }
+    }
+  }
+]
