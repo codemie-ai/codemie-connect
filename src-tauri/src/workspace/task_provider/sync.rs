@@ -107,9 +107,10 @@ pub(crate) fn save_state(r: &mut Repository, provider: &str, st: &Value, now: i6
 /// Asks `provider` for everything again (design §4 "Budget": a switch, Check, or a changed
 /// provider setting such as its project): the next run pulls what changed since its cursor, then
 /// the full list, and retires cached tasks the full list no longer holds. Queues that run now.
+/// Each request is a new token, so a run that started before it keeps it (`Run::finish`).
 pub(crate) fn reread(r: &mut Repository, provider: &str, now: i64) -> Result<()> {
     let mut st = load_state(r, provider)?;
-    st["reread"] = true.into();
+    st["reread"] = id().into();
     st["lastPull"] = Value::Null;
     save_state(r, provider, &st, now)?;
     queue(r, provider, now)
@@ -192,6 +193,8 @@ struct Run<'a> {
     message: Option<String>,
     /// A pull ran this run.
     pulled: bool,
+    /// The re-read token the run started with (`null`: none asked for).
+    reread: Value,
 }
 
 /// The `task_sync` job's executor: one push and pull with `provider` (`plugin:<id>`), at `now`.
@@ -263,7 +266,9 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
         more: false,
         message: None,
         pulled: false,
+        reread: Value::Null,
     };
+    run.reread = run.st["reread"].clone();
     let mut stop = None;
     if run.updates_wait()? {
         // Pulled first, so the merge decides a field changed on both sides (ruling 3): an older
@@ -787,7 +792,7 @@ impl Run<'_> {
         }
         self.pulled = true;
         let mut cursor = self.st["cursor"].clone();
-        if self.st["reread"] == true && !cursor.is_null() {
+        if !self.st["reread"].is_null() && !cursor.is_null() {
             // Asked to read everything again: first what changed since the cursor, so what was
             // done or deleted there meanwhile follows the usual rules (I1). A cursor the provider
             // no longer takes is skipped for the full list.
@@ -1138,6 +1143,17 @@ impl Run<'_> {
         self.st["requests"] = json!(self.requests);
         self.outcome.state = self.st["state"].as_str().unwrap_or("ready").to_string();
         let mut r = self.core.repo()?;
+        // A re-read asked for while this run was on its way (a new project, Check, a switch)
+        // is kept, with its full pull still due, rather than overwritten by this run's copy.
+        let stored = load_state(&r, &self.provider)?;
+        if !stored["reread"].is_null() && stored["reread"] != self.reread {
+            self.st["reread"] = stored["reread"].clone();
+            self.st["lastPull"] = Value::Null;
+            // A run that ended ready runs it at once; a backoff keeps its own retry time.
+            if next.is_none() && self.st["state"] == "ready" {
+                next = Some(now);
+            }
+        }
         save_state(&mut r, &self.provider, &self.st, now)?;
         if let Some(due) = next {
             queue(&mut r, &self.provider, due)?;
@@ -2006,6 +2022,38 @@ mod tests {
         let last = updates.last().unwrap();
         assert_eq!(last["patch"]["owner"], Value::Null);
         assert_eq!(last["patch"]["kind"], "task", "{last}");
+    }
+
+    /// Re-review N1: a re-read asked for while a run is on its way (the project changed during
+    /// a push) is kept by that run's end, so the next run reads the new project.
+    #[tokio::test]
+    async fn a_reread_asked_for_during_a_run_is_kept() {
+        let e = env();
+        e.save(json!({"id": "t1", "text": "In the old project"}), NOW);
+        e.save(json!({"id": "t2", "text": "Also old"}), NOW);
+        e.sync(NOW).await;
+        e.save(json!({"id": "t2", "due": "2026-12-01"}), NOW + 10);
+        let core = e.core.clone();
+        let fake = e.fake.clone();
+        let old = e.task("t1").unwrap()["remote"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // While t2's update is on its way, the project setting changes.
+        e.fake.during("update", move || {
+            fake.forget_remote(&old);
+            fake.put_remote_unchanged(json!({"id": "9001", "text": "Already in Work",
+                "labels": [], "done": false}));
+            reread(&mut core.repo().unwrap(), P, NOW + 10).unwrap();
+        });
+        e.sync(NOW + 10).await;
+        e.sync(NOW + 11).await;
+        assert!(
+            e.task("todoist-9001").is_some(),
+            "the new project's task comes in"
+        );
+        assert!(e.task("t1").is_none(), "the old project's task leaves");
+        assert!(e.state().get("reread").is_none(), "{}", e.state());
     }
 
     /// A finished `taskProvider` part of the real snapshot for each state (design §2), and the
