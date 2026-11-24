@@ -1,5 +1,6 @@
 //! Automations (DESIGN 6.6): the model, its validation, when a run is due and which new
 //! messages or ended meetings start one. A due run is queued as an `automation_run` job.
+use crate::workspace::meetings::templates::Template;
 use crate::workspace::models::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -48,6 +49,8 @@ pub enum EventKind {
     ChatFrom,
     Critical,
     MeetingEnded,
+    /// A meeting's transcript is ready; starts the Formal summary run (DESIGN step 5 §6).
+    MeetingReady,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +61,8 @@ pub struct ReadSet {
     pub trigger_conversation: bool,
     pub mail_from_sender_days: u8,
     pub commitments_notes: bool,
+    /// "Messages since the last run" (DESIGN step 5 §3).
+    pub recent_messages: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +71,11 @@ pub struct Deliver {
     pub today: bool,
     pub notify: bool,
     pub draft_reply: bool,
+    /// Create tasks in the active provider (DESIGN step 5 §2).
+    pub create_tasks: bool,
+    /// A note template id: this automation makes that template's document for a meeting
+    /// (DESIGN step 5 §6). Only meaningful with the `meeting_ready` event.
+    pub meeting_summary: Option<String>,
 }
 
 impl Default for Trigger {
@@ -114,6 +124,11 @@ pub struct State {
     pub last_meeting_check: Option<i64>,
     /// The latest scheduled time each schedule automation has been handled for.
     pub last_slot: BTreeMap<String, i64>,
+    /// When each automation was last saved or turned on; a `meeting_ready` match only counts a
+    /// meeting that ended after this (DESIGN step 5 §6).
+    pub armed_at: BTreeMap<String, i64>,
+    /// The last event-run time, keyed `"<automation id>|<sender key>"` (`sender_key`, or the
+    /// meeting id for `meeting_ended`); the cooldown is per automation and sender.
     pub fired: BTreeMap<String, i64>,
     pub fired_sources: Vec<String>,
     pub runs: Vec<i64>,
@@ -128,6 +143,8 @@ pub struct MessageIn {
     pub channel: String,
     pub from_address: String,
     pub from_name: String,
+    /// The Teams chat id (`chatId`); empty for mail.
+    pub chat_id: String,
     pub title: String,
     pub text: String,
     pub is_mine: bool,
@@ -183,6 +200,26 @@ impl Automation {
             }
         )
     }
+    /// Create tasks needs something to make tasks from: a read of messages, or a message that
+    /// started the run (DESIGN step 5 §1).
+    pub fn makes_tasks_from_messages(&self) -> bool {
+        if self.read.needs_reply || self.read.recent_messages {
+            return true;
+        }
+        self.read.trigger_conversation
+            && matches!(
+                self.trigger,
+                Trigger::Event {
+                    event: EventKind::MailFrom | EventKind::ChatFrom | EventKind::Critical,
+                    ..
+                }
+            )
+    }
+    /// A Formal-summary-style automation: it queues a note template for a meeting instead of
+    /// reading anything or running Claude itself (DESIGN step 5 §6).
+    pub fn is_summary(&self) -> bool {
+        self.deliver.meeting_summary.is_some()
+    }
 }
 
 fn valid_time(time: &str) -> bool {
@@ -213,7 +250,7 @@ fn valid_sender(entry: &str, allow_name: bool) -> bool {
     allow_name && entry.chars().count() <= 100
 }
 
-pub fn validate(a: &Automation) -> Result<()> {
+pub fn validate(a: &Automation, templates: &[Template]) -> Result<()> {
     let name = a.name.trim();
     if name.is_empty() || name.chars().count() > NAME_MAX || name.contains('\0') {
         return Err(invalid_at(
@@ -222,7 +259,8 @@ pub fn validate(a: &Automation) -> Result<()> {
         ));
     }
     let prompt = a.prompt.trim();
-    if prompt.is_empty() {
+    // A summary automation's prompt becomes the run's wishes and may be empty.
+    if prompt.is_empty() && !a.is_summary() {
         return Err(invalid_at(
             "prompt",
             "Write the instructions for the automation.",
@@ -313,10 +351,43 @@ pub fn validate(a: &Automation) -> Result<()> {
             }
         }
     }
+    let is_meeting_ready = matches!(
+        a.trigger,
+        Trigger::Event {
+            event: EventKind::MeetingReady,
+            ..
+        }
+    );
+    if a.deliver.meeting_summary.is_some() && !is_meeting_ready {
+        return Err(invalid_at(
+            "deliver",
+            "A meeting summary starts when a meeting's transcript is ready.",
+        ));
+    }
+    if is_meeting_ready {
+        let Some(template_id) = a.deliver.meeting_summary.as_deref() else {
+            return Err(invalid_at("deliver", "Choose the template to make."));
+        };
+        if !templates.iter().any(|t| t.id == template_id) {
+            return Err(invalid_at("deliver", "Choose a note template."));
+        }
+        if a.read != ReadSet::default() || a.deliver.create_tasks {
+            return Err(invalid_at(
+                "deliver",
+                "A meeting summary automation reads nothing and makes no tasks.",
+            ));
+        }
+    }
     if a.deliver.draft_reply && !a.replies_to_message() {
         return Err(invalid_at(
             "deliver",
             "Reply drafts are only available when the trigger is an email or a chat message.",
+        ));
+    }
+    if a.deliver.create_tasks && !a.makes_tasks_from_messages() {
+        return Err(invalid_at(
+            "deliver",
+            "Tasks are made from messages. Tick Needs your reply or Messages since the last run, or start it from a message.",
         ));
     }
     if a.read.mail_from_sender_days > 30 {
@@ -389,29 +460,45 @@ impl State {
             self.connection_id = Some(connection_id.into());
         }
     }
-    /// Why a run must not start now, if it must not.
-    pub fn refusal(&self, id: &str, event: bool, now: i64) -> Option<&'static str> {
+    /// Why a run must not start now, if it must not. `sender` is the event's cooldown key
+    /// (`sender_key`, or the meeting id for `meeting_ended`); `None` for a schedule, a manual
+    /// run or `meeting_ready`, which have no cooldown.
+    pub fn refusal(&self, id: &str, sender: Option<&str>, now: i64) -> Option<&'static str> {
         if self.in_progress.contains(id) {
-            Some("An earlier run of this automation is still in progress.")
-        } else if event && self.fired.get(id).is_some_and(|t| now - t < COOLDOWN_SECS) {
-            Some("This automation already ran in the last 10 minutes.")
-        } else if self.runs.iter().filter(|t| now - **t < 3600).count() >= HOURLY_CAP {
-            Some("Connect already started 30 automation runs this hour.")
-        } else {
-            None
+            return Some("An earlier run of this automation is still in progress.");
         }
+        if let Some(sender) = sender {
+            if self
+                .fired
+                .get(&format!("{id}|{sender}"))
+                .is_some_and(|t| now - t < COOLDOWN_SECS)
+            {
+                return Some("This automation already ran in the last 10 minutes.");
+            }
+        }
+        if self.runs.iter().filter(|t| now - **t < 3600).count() >= HOURLY_CAP {
+            return Some("Connect already started 30 automation runs this hour.");
+        }
+        None
     }
-    pub fn started(&mut self, id: &str, now: i64) {
+    /// `sender` is recorded for the cooldown only when given (see `refusal`). Several sources
+    /// for the same automation (different senders) may each start a run in the same round; the
+    /// job queue's own state, read fresh each round, still holds back an automation with a
+    /// genuinely overlapping earlier run.
+    pub fn started(&mut self, id: &str, sender: Option<&str>, now: i64) {
         self.runs.retain(|t| now - *t < 3600);
         self.runs.push(now);
-        self.fired.insert(id.into(), now);
-        self.in_progress.insert(id.into());
+        if let Some(sender) = sender {
+            self.fired.insert(format!("{id}|{sender}"), now);
+        }
     }
     /// Drops everything remembered about a deleted automation.
     pub fn forget(&mut self, id: &str) {
         self.last_slot.remove(id);
-        self.fired.remove(id);
+        self.armed_at.remove(id);
         self.in_progress.remove(id);
+        let fired_prefix = format!("{id}|");
+        self.fired.retain(|k, _| !k.starts_with(&fired_prefix));
         let prefix = format!("{id}:");
         self.fired_sources.retain(|k| !k.starts_with(&prefix));
         self.skipped.retain(|s| s.automation_id != id);
@@ -496,13 +583,17 @@ fn message_matches(
                 && (senders.is_empty() || sender_matches(senders, m, m.channel == "chat"))
         }
         EventKind::MeetingEnded => false,
+        // `meeting_ready` is matched by the automations round from meeting records, not here
+        // (DESIGN step 5 §6).
+        EventKind::MeetingReady => false,
     };
     kind_ok && keywords_match(keywords, &format!("{} {}", m.title, m.text))
 }
 
 /// The (automation id, source id) pairs that start a run for the new messages and ended
 /// meetings. Each pair fires once; an automation is held back while a run is in progress, for
-/// ten minutes after its last event run, and when 30 runs started within the hour. A held-back
+/// ten minutes after its last event run for that sender (the mail address, the Teams chat id,
+/// or the meeting for `meeting_ended`), and when 30 runs started within the hour. A held-back
 /// match is recorded in `state.skipped` and not queued.
 pub fn match_events(
     automations: &[Automation],
@@ -522,30 +613,31 @@ pub fn match_events(
         else {
             continue;
         };
-        let sources: Vec<&str> = if *event == EventKind::MeetingEnded {
+        // The cooldown's sender key: the meeting id for `meeting_ended`, else the message's.
+        let sources: Vec<(&str, String)> = if *event == EventKind::MeetingEnded {
             ended_meetings
                 .iter()
                 .filter(|m| keywords_match(keywords, &m.title))
-                .map(|m| m.id.as_str())
+                .map(|m| (m.id.as_str(), m.id.clone()))
                 .collect()
         } else {
             new_messages
                 .iter()
                 .filter(|m| message_matches(*event, senders, keywords, m, critical_ids))
-                .map(|m| m.id.as_str())
+                .map(|m| (m.id.as_str(), sender_key(m)))
                 .collect()
         };
-        for source in sources {
+        for (source, sender) in sources {
             let key = format!("{}:{source}", a.id);
             if state.fired_sources.contains(&key) {
                 continue;
             }
             state.remember_source(key);
-            if let Some(reason) = state.refusal(&a.id, true, now) {
+            if let Some(reason) = state.refusal(&a.id, Some(&sender), now) {
                 state.skip(&a.id, source, reason, now);
                 continue;
             }
-            state.started(&a.id, now);
+            state.started(&a.id, Some(&sender), now);
             out.push((a.id.clone(), source.to_string()));
         }
     }
@@ -560,10 +652,21 @@ impl MessageIn {
             channel: text("channel"),
             from_address: text("fromAddress"),
             from_name: text("from"),
+            chat_id: text("chatId"),
             title: text("title"),
             text: text("text"),
             is_mine: r.data["isMine"] == true,
         }
+    }
+}
+
+/// The event cooldown's per-sender key: the Teams chat id for a chat message, else the
+/// lower-case mail address.
+pub fn sender_key(m: &MessageIn) -> String {
+    if m.channel == "chat" {
+        format!("chat:{}", m.chat_id)
+    } else {
+        m.from_address.trim().to_lowercase()
     }
 }
 
@@ -593,6 +696,7 @@ pub fn ended_meetings(events: &[Record], last_check: i64, now: i64) -> Vec<Meeti
 mod tests {
     use super::*;
     use chrono::DateTime;
+    use serde_json::json;
 
     fn ts(v: &str) -> i64 {
         DateTime::parse_from_rfc3339(v).unwrap().timestamp()
@@ -633,6 +737,7 @@ mod tests {
             channel: "mail".into(),
             from_address: from.into(),
             from_name: String::new(),
+            chat_id: String::new(),
             title: title.into(),
             text: text.into(),
             is_mine: false,
@@ -641,53 +746,57 @@ mod tests {
     fn message(error: Result<()>) -> String {
         error.unwrap_err().message
     }
+    /// `validate` with no note templates, for cases that don't touch `meetingSummary`.
+    fn validate0(a: &Automation) -> Result<()> {
+        validate(a, &[])
+    }
 
     #[test]
     fn validate_rejects_bad_time_empty_days_long_prompt_and_draft_on_schedule() {
-        assert!(validate(&schedule(&[1, 2, 3], "08:45")).is_ok());
+        assert!(validate0(&schedule(&[1, 2, 3], "08:45")).is_ok());
         assert_eq!(
-            message(validate(&schedule(&[1], "25:00"))),
+            message(validate0(&schedule(&[1], "25:00"))),
             "Enter the time as HH:MM, for example 08:45."
         );
         assert_eq!(
-            message(validate(&schedule(&[1], "8:45"))),
+            message(validate0(&schedule(&[1], "8:45"))),
             "Enter the time as HH:MM, for example 08:45."
         );
         assert_eq!(
-            message(validate(&schedule(&[], "08:45"))),
+            message(validate0(&schedule(&[], "08:45"))),
             "Choose at least one day for the schedule."
         );
         assert_eq!(
-            message(validate(&schedule(&[0, 8], "08:45"))),
+            message(validate0(&schedule(&[0, 8], "08:45"))),
             "Days run from Monday (1) to Sunday (7)."
         );
         let mut long = schedule(&[1], "08:45");
         long.prompt = "x".repeat(4001);
         assert_eq!(
-            message(validate(&long)),
+            message(validate0(&long)),
             "Instructions can be up to 4,000 characters."
         );
         long.prompt = "x".repeat(4000);
-        assert!(validate(&long).is_ok());
+        assert!(validate0(&long).is_ok());
         let mut draft = schedule(&[1], "08:45");
         draft.deliver.draft_reply = true;
         assert_eq!(
-            message(validate(&draft)),
+            message(validate0(&draft)),
             "Reply drafts are only available when the trigger is an email or a chat message."
         );
         let mut unnamed = schedule(&[1], "08:45");
         unnamed.name = " ".into();
         assert_eq!(
-            message(validate(&unnamed)),
+            message(validate0(&unnamed)),
             "Give the automation a name (up to 80 characters)."
         );
         // Event rules.
         assert_eq!(
-            message(validate(&event("e", EventKind::MailFrom, &[], &[]))),
+            message(validate0(&event("e", EventKind::MailFrom, &[], &[]))),
             "Add at least one sender or domain for this trigger."
         );
         assert_eq!(
-            message(validate(&event(
+            message(validate0(&event(
                 "e",
                 EventKind::MailFrom,
                 &["not an address"],
@@ -695,7 +804,7 @@ mod tests {
             ))),
             "\"not an address\" is not an email address or a domain such as epam.com."
         );
-        assert!(validate(&event(
+        assert!(validate0(&event(
             "e",
             EventKind::MailFrom,
             &["@epam.com", "ann@x.org"],
@@ -704,11 +813,11 @@ mod tests {
         .is_ok());
         let mut reply = event("e", EventKind::ChatFrom, &["Ann Lee"], &[]);
         reply.deliver.draft_reply = true;
-        assert!(validate(&reply).is_ok());
+        assert!(validate0(&reply).is_ok());
         let mut capped = event("e", EventKind::Critical, &[], &[]);
         capped.cap_usd = Some(0.0);
         assert_eq!(
-            message(validate(&capped)),
+            message(validate0(&capped)),
             "The cost cap must be between 0.01 and 100 US dollars."
         );
     }
@@ -840,8 +949,9 @@ mod tests {
             &mut state,
             1_000,
         );
-        // by-domain also matches carol's and pat's mail, but its 10 minute cooldown keeps the second.
+        // by-domain matches both carol's and pat's mail: the cooldown is per sender, and they differ.
         assert!(got.contains(&("by-domain".into(), "m1".into())));
+        assert!(got.contains(&("by-domain".into(), "m3".into())));
         assert!(got.contains(&("by-at-domain".into(), "m1".into())));
         assert!(got.contains(&("by-address".into(), "m2".into())));
         assert!(got.contains(&("chat".into(), "c1".into())));
@@ -858,14 +968,14 @@ mod tests {
             "Teams messages carry names, not addresses. Enter the name as Teams shows it, for example Ann Lee.";
         for entry in ["ann@epam.com", "@epam.com", "epam.com"] {
             assert_eq!(
-                message(validate(&event("e", EventKind::ChatFrom, &[entry], &[]))),
+                message(validate0(&event("e", EventKind::ChatFrom, &[entry], &[]))),
                 teams_only,
                 "{entry}"
             );
         }
-        assert!(validate(&event("e", EventKind::ChatFrom, &["Ann Lee"], &[])).is_ok());
+        assert!(validate0(&event("e", EventKind::ChatFrom, &["Ann Lee"], &[])).is_ok());
         // "Only from" on the critical trigger takes addresses, domains and Teams names.
-        assert!(validate(&event(
+        assert!(validate0(&event(
             "e",
             EventKind::Critical,
             &["Ann Lee", "ann@epam.com", "@epam.com"],
@@ -873,7 +983,7 @@ mod tests {
         ))
         .is_ok());
         assert_eq!(
-            message(validate(&event(
+            message(validate0(&event(
                 "e",
                 EventKind::Critical,
                 &[&"x".repeat(101)],
@@ -1097,6 +1207,158 @@ mod tests {
         assert_eq!(
             next_run(&daily, fold, "Europe/Berlin"),
             Some(ts("2026-10-26T01:30:00Z"))
+        );
+    }
+
+    fn template(id: &str) -> Template {
+        Template {
+            id: id.into(),
+            name: id.into(),
+            ..Template::default()
+        }
+    }
+
+    #[test]
+    fn stored_automations_without_new_fields_still_read() {
+        // `automation.json`'s "schedule" data as of main, before `recentMessages`, `createTasks`
+        // and `meetingSummary` existed.
+        let old = json!({
+            "ai": {"model": "claude-haiku-4-5", "profile": "claude"},
+            "capUsd": 0.5,
+            "catchUp": true,
+            "deliver": {"draftReply": false, "notify": true, "today": true},
+            "enabled": true,
+            "id": "auto-schedule",
+            "name": "Morning brief",
+            "prompt": "Summarize my day and what needs a reply.",
+            "read": {"calendarToday": true, "commitmentsNotes": true, "mailFromSenderDays": 0,
+                "needsReply": true, "triggerConversation": false},
+            "trigger": {"days": [1, 2, 3, 4, 5], "kind": "schedule", "time": "08:45"}
+        });
+        let a: Automation = serde_json::from_value(old).unwrap();
+        assert!(!a.read.recent_messages);
+        assert!(!a.deliver.create_tasks);
+        assert_eq!(a.deliver.meeting_summary, None);
+    }
+
+    #[test]
+    fn create_tasks_needs_a_message_read() {
+        let no_message = "Tasks are made from messages. Tick Needs your reply or Messages since the last run, or start it from a message.";
+        let mut calendar_only = schedule(&[1], "08:45");
+        calendar_only.read.calendar_today = true;
+        calendar_only.deliver.create_tasks = true;
+        let err = validate0(&calendar_only).unwrap_err();
+        assert_eq!(err.message, no_message);
+        assert_eq!(err.field.as_deref(), Some("deliver"));
+
+        let mut needs_reply = calendar_only.clone();
+        needs_reply.read.needs_reply = true;
+        assert!(validate0(&needs_reply).is_ok());
+
+        let mut recent = calendar_only.clone();
+        recent.read.recent_messages = true;
+        assert!(validate0(&recent).is_ok());
+
+        let mut mail_from = event("e", EventKind::MailFrom, &["epam.com"], &[]);
+        mail_from.read.trigger_conversation = true;
+        mail_from.deliver.create_tasks = true;
+        assert!(validate0(&mail_from).is_ok());
+
+        let mut meeting_ended = event("e", EventKind::MeetingEnded, &[], &[]);
+        meeting_ended.read.trigger_conversation = true;
+        meeting_ended.deliver.create_tasks = true;
+        assert_eq!(message(validate0(&meeting_ended)), no_message);
+    }
+
+    #[test]
+    fn a_summary_automation_is_meeting_ready_with_an_existing_template() {
+        let templates = vec![template("formal-summary")];
+
+        let no_template = event("e", EventKind::MeetingReady, &[], &[]);
+        assert_eq!(
+            validate(&no_template, &templates).unwrap_err().message,
+            "Choose the template to make."
+        );
+
+        let mut on_schedule = schedule(&[1], "08:45");
+        on_schedule.deliver.meeting_summary = Some("formal-summary".into());
+        assert_eq!(
+            validate(&on_schedule, &templates).unwrap_err().message,
+            "A meeting summary starts when a meeting's transcript is ready."
+        );
+
+        let mut missing = no_template.clone();
+        missing.deliver.meeting_summary = Some("nope".into());
+        assert_eq!(
+            validate(&missing, &templates).unwrap_err().message,
+            "Choose a note template."
+        );
+
+        let mut summary = no_template.clone();
+        summary.deliver.meeting_summary = Some("formal-summary".into());
+        summary.prompt = String::new();
+        assert!(validate(&summary, &templates).is_ok());
+
+        let mut with_tasks = summary.clone();
+        with_tasks.deliver.create_tasks = true;
+        assert_eq!(
+            validate(&with_tasks, &templates)
+                .unwrap_err()
+                .field
+                .as_deref(),
+            Some("deliver")
+        );
+
+        let mut with_draft = summary.clone();
+        with_draft.deliver.draft_reply = true;
+        assert_eq!(
+            validate(&with_draft, &templates)
+                .unwrap_err()
+                .field
+                .as_deref(),
+            Some("deliver")
+        );
+
+        let mut with_read = summary.clone();
+        with_read.read.needs_reply = true;
+        assert_eq!(
+            validate(&with_read, &templates)
+                .unwrap_err()
+                .field
+                .as_deref(),
+            Some("deliver")
+        );
+    }
+
+    #[test]
+    fn cooldown_is_per_sender_and_meeting_ready_has_none() {
+        let a = vec![event("e", EventKind::MailFrom, &["ann@x", "bob@y"], &[])];
+        let mut state = State::default();
+        let got = match_events(
+            &a,
+            &[
+                mail("m1", "ann@x", "", ""),
+                mail("m2", "bob@y", "", ""),
+                mail("m3", "ann@x", "", ""),
+            ],
+            &[],
+            &HashSet::new(),
+            &mut state,
+            1_000,
+        );
+        // Different senders of the same automation each start, in the same round; the repeat
+        // sender is skipped and the reason recorded.
+        assert_eq!(
+            got,
+            vec![
+                ("e".to_string(), "m1".to_string()),
+                ("e".to_string(), "m2".to_string())
+            ]
+        );
+        assert_eq!(state.skipped.last().unwrap().source_id, "m3");
+        assert_eq!(
+            state.skipped.last().unwrap().reason,
+            "This automation already ran in the last 10 minutes."
         );
     }
 }

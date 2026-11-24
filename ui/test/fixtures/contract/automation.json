@@ -9,7 +9,9 @@
       "capUsd": null,
       "catchUp": false,
       "deliver": {
+        "createTasks": false,
         "draftReply": true,
+        "meetingSummary": null,
         "notify": false,
         "today": true
       },
@@ -22,6 +24,7 @@
         "commitmentsNotes": false,
         "mailFromSenderDays": 7,
         "needsReply": false,
+        "recentMessages": false,
         "triggerConversation": true
       },
       "trigger": {
@@ -53,7 +56,9 @@
       "capUsd": 0.5,
       "catchUp": true,
       "deliver": {
+        "createTasks": false,
         "draftReply": false,
+        "meetingSummary": null,
         "notify": true,
         "today": true
       },
@@ -66,6 +71,7 @@
         "commitmentsNotes": true,
         "mailFromSenderDays": 0,
         "needsReply": true,
+        "recentMessages": false,
         "triggerConversation": false
       },
       "trigger": {
@@ -81,6 +87,48 @@
       }
     },
     "id": "auto-schedule",
+    "kind": "automation",
+    "revision": "rev-1",
+    "source": "local",
+    "updatedAt": 1795000500,
+    "workspaceId": "personal"
+  },
+  "summary": {
+    "connectionId": null,
+    "data": {
+      "ai": {
+        "model": null,
+        "profile": null
+      },
+      "capUsd": null,
+      "catchUp": false,
+      "deliver": {
+        "createTasks": false,
+        "draftReply": false,
+        "meetingSummary": "meeting-notes",
+        "notify": false,
+        "today": false
+      },
+      "enabled": true,
+      "id": "auto-summary",
+      "name": "Formal summary",
+      "prompt": "",
+      "read": {
+        "calendarToday": false,
+        "commitmentsNotes": false,
+        "mailFromSenderDays": 0,
+        "needsReply": false,
+        "recentMessages": false,
+        "triggerConversation": false
+      },
+      "trigger": {
+        "event": "meeting_ready",
+        "keywords": [],
+        "kind": "event",
+        "senders": []
+      }
+    },
+    "id": "auto-summary",
     "kind": "automation",
     "revision": "rev-1",
     "source": "local",

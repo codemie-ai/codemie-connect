@@ -1,5 +1,6 @@
 //! Engine glue: persistence, the job queue and the operations. The decisions are in `rules`.
 use super::rules::*;
+use crate::workspace::meetings::templates;
 use crate::workspace::models::*;
 use crate::workspace::{
     inbox, new_job,
@@ -137,7 +138,7 @@ impl Core {
                 };
                 // Handled either way, so a held-back or catch-up slot is never retried later.
                 state.last_slot.insert(a.id.clone(), slot);
-                if let Some(reason) = state.refusal(&a.id, false, now) {
+                if let Some(reason) = state.refusal(&a.id, None, now) {
                     state.skip(&a.id, &format!("schedule:{slot}"), reason, now);
                     continue;
                 }
@@ -147,7 +148,7 @@ impl Core {
                     format!("automation:{}:{slot}", a.id),
                     json!({"kind": kind, "scheduledAt": slot}),
                 )?;
-                state.started(&a.id, now);
+                state.started(&a.id, None, now);
             }
             if automations.iter().any(|(_, a)| {
                 matches!(
@@ -297,7 +298,8 @@ impl Core {
                 let mut a: Automation =
                     serde_json::from_value(req.data.clone()).map_err(|_| invalid_form())?;
                 a.normalize();
-                validate(&a)?;
+                let note_templates = templates::all(&r.local_records(PERSONAL, templates::KIND)?);
+                validate(&a, &note_templates)?;
                 if a.id.is_empty() {
                     a.id = req.operation_id.clone().unwrap_or_else(id);
                 } else if a.id.chars().count() > 200 {
@@ -339,6 +341,12 @@ impl Core {
                 }
                 let record = automation_record(&a)?;
                 r.save_automation(&record, card.as_ref())?;
+                // Saving (new or edited) arms the automation: a `meeting_ready` match only counts
+                // a meeting that ended after this moment.
+                let jobs = r.jobs()?;
+                let mut state = load_state(&r, &jobs);
+                state.armed_at.insert(a.id.clone(), now());
+                save_state(&mut r, &state)?;
                 Ok(json!({"record": record, "todayCard": card.is_some()}))
             }
             Operation::AutomationDelete => {
@@ -374,6 +382,13 @@ impl Core {
                 a.enabled = enabled;
                 let record = automation_record(&a)?;
                 r.put_record(&record)?;
+                if enabled {
+                    // Turning it on arms it, same as a save; turning off leaves the armed time.
+                    let jobs = r.jobs()?;
+                    let mut state = load_state(&r, &jobs);
+                    state.armed_at.insert(aid.to_string(), now());
+                    save_state(&mut r, &state)?;
+                }
                 Ok(json!({"record": record}))
             }
             Operation::AutomationRunNow => {
@@ -393,7 +408,7 @@ impl Core {
                 // A manual run counts toward the hourly cap but not the cooldown.
                 let jobs = r.jobs()?;
                 let mut state = load_state(&r, &jobs);
-                if let Some(reason) = state.refusal(aid, false, now()) {
+                if let Some(reason) = state.refusal(aid, None, now()) {
                     return Err(WorkspaceError::new("conflict", reason));
                 }
                 state.runs.push(now());
@@ -539,6 +554,14 @@ mod engine_tests {
             "read":{"triggerConversation":true,"mailFromSenderDays":7},
             "prompt":"Draft a short reply to the message that started this run.",
             "ai":{},"deliver":{"today":true,"draftReply":true},"catchUp":false})
+    }
+    /// A summary automation: `meetingSummary` names an existing note template (`meeting-notes`;
+    /// `formal-summary` is not built yet) and reads nothing.
+    fn summary_json() -> Value {
+        json!({"id":"auto-summary","name":"Formal summary","enabled":true,
+            "trigger":{"kind":"event","event":"meeting_ready"},
+            "prompt":"",
+            "deliver":{"meetingSummary":"meeting-notes"}})
     }
     fn jobs_of(core: &Core) -> Vec<Job> {
         core.repo()
@@ -1078,6 +1101,7 @@ mod engine_tests {
         for (file, data) in [
             ("automation-schedule.json", schedule_json()),
             ("automation-event.json", event_json()),
+            ("automation-summary.json", summary_json()),
         ] {
             let saved = core
                 .request(mutation(&core, Operation::AutomationSave, data))
@@ -1088,8 +1112,8 @@ mod engine_tests {
             record["updatedAt"] = 1_795_000_500.into();
             files.push((file, record));
         }
-        // One file holds both, as the brief asks: a saved schedule and a saved event automation.
-        let value = json!({"schedule": files[0].1, "event": files[1].1});
+        // One file holds all three, as the brief asks: a saved schedule, event and summary automation.
+        let value = json!({"schedule": files[0].1, "event": files[1].1, "summary": files[2].1});
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
         let path = dir.join("automation.json");
@@ -1159,14 +1183,21 @@ mod engine_tests {
         let woke = t0 + 3 * 3600;
         core.automations_round_at(woke, started).unwrap();
         let keys: Vec<String> = jobs_of(&core).into_iter().map(|j| j.key).collect();
-        // Each automation ran for the first meeting; the second waited out its cooldown.
-        assert_eq!(keys.len(), 2, "{keys:?}");
-        assert!(keys
-            .iter()
-            .all(|k| k.ends_with(":event:ev-1") || k.ends_with(":event:ev-2")));
+        // The cooldown is per meeting now, so each automation runs for both ended meetings.
+        assert_eq!(keys.len(), 4, "{keys:?}");
+        for id in ["m-a", "m-b"] {
+            assert!(
+                keys.contains(&format!("automation:{id}:event:ev-1")),
+                "{keys:?}"
+            );
+            assert!(
+                keys.contains(&format!("automation:{id}:event:ev-2")),
+                "{keys:?}"
+            );
+        }
         core.automations_round_at(woke + 15, started).unwrap();
         core.automations_round_at(woke + 7200, started).unwrap();
-        assert_eq!(jobs_of(&core).len(), 2);
+        assert_eq!(jobs_of(&core).len(), 4);
     }
 
     #[tokio::test]
@@ -1267,5 +1298,42 @@ mod engine_tests {
         .unwrap();
         let r = core.repo().unwrap();
         assert!(!load_state(&r, &[]).last_slot.contains_key("auto-schedule"));
+    }
+
+    #[tokio::test]
+    async fn saving_or_turning_on_arms_the_automation() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        let armed = |core: &Core| load_state(&core.repo().unwrap(), &[]).armed_at;
+
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        let at_save = *armed(&core).get("auto-schedule").expect("saving arms it");
+        assert!((now() - at_save).abs() <= 5);
+
+        core.request(mutation(
+            &core,
+            Operation::AutomationToggle,
+            json!({"id":"auto-schedule","enabled":false}),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            *armed(&core).get("auto-schedule").unwrap(),
+            at_save,
+            "turning off leaves the armed time"
+        );
+
+        core.request(mutation(
+            &core,
+            Operation::AutomationToggle,
+            json!({"id":"auto-schedule","enabled":true}),
+        ))
+        .await
+        .unwrap();
+        let at_on = *armed(&core).get("auto-schedule").unwrap();
+        assert!(at_on >= at_save, "turning on re-arms it");
+        assert!((now() - at_on).abs() <= 5);
     }
 }
