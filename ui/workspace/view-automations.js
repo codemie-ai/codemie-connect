@@ -342,15 +342,18 @@ function errorBox(failure) {
     </div>`;
 }
 
+const SUMMARY_RUN_NOW = 'Run now isn’t available for a meeting summary. It runs when a meeting’s notes are ready.';
+
 const DELIVERED = { today: 'Today', notification_queued: 'Notification', draft: 'Reply draft', tasks: 'Tasks', meeting_summary: 'the meeting' };
 
-/** "Tasks: 2 made in Todoist, 1 already there", "Tasks: none needed"; '' for a run that made no tasks. */
+/** "Tasks: 2 made in Todoist, 1 already there", "Tasks: none needed" ("none made" when entries
+ *  were left out); '' for a run that made no tasks. */
 export function tasksLine(run, providerName = 'Connect') {
   const t = run?.data?.tasks;
   if (!t) return '';
   const made = (t.made || []).length;
   const existing = Number(t.existing) || 0;
-  if (!made && !existing) return 'Tasks: none needed';
+  if (!made && !existing) return Number(t.dropped) > 0 ? 'Tasks: none made' : 'Tasks: none needed';
   return `Tasks: ${made} made in ${providerName}${existing ? `, ${existing} already there` : ''}`;
 }
 
@@ -487,7 +490,9 @@ function automationRow(s, rec, highlight = false) {
   const zone = s.settings.timeZone;
   const job = activeRun(s, a.id);
   const run = latestRun(s, a.id);
-  const delivers = a.deliver?.meetingSummary
+  // A meeting summary runs for a meeting whose notes are ready, never on its own.
+  const summary = !!a.deliver?.meetingSummary;
+  const delivers = summary
     ? [['meetingSummary', templateName(a.deliver.meetingSummary, s.noteTemplates)]]
     : DELIVER_LABELS.filter(([key]) => a.deliver?.[key] && (key !== 'draftReply' || REPLY_EVENTS.has(a.trigger?.event)));
   let last = '<span class="ws-muted">Not run yet</span>';
@@ -508,7 +513,7 @@ function automationRow(s, rec, highlight = false) {
     </div>
     <div class="ws-auto-last" aria-label="Last run">${last}</div>
     <div class="ws-auto-actions">
-      ${button('Run now', { action: 'automation-run', iconName: 'play', disabled: !!job, title: job ? 'This automation is running' : 'Run it once now', attrs: { 'data-id': a.id } })}
+      ${button('Run now', { action: 'automation-run', iconName: 'play', disabled: !!job || summary, title: summary ? SUMMARY_RUN_NOW : job ? 'This automation is running' : 'Run it once now', attrs: { 'data-id': a.id } })}
       <details class="ws-menu ws-menu-right" data-menu="automation-${e(a.id)}"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More for ${e(a.name)}" title="More">${icon('dots')}</summary><div class="ws-menu-panel">
         ${menuItem('automation-edit', 'edit', 'Edit')}
         ${menuItem('automation-duplicate', 'copy', 'Duplicate')}

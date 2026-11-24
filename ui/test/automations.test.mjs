@@ -620,6 +620,11 @@ test('the run detail says what tasks were made and links them', () => {
   const none = runLog([{ ...run, data: { ...run.data, handled: 0, tasks: { made: [], existing: 0, dropped: 0 } } }], { s, expanded: ['run-1'], ai: AI });
   assert.match(none, /Tasks: none needed/);
   assert.doesNotMatch(none, /Looks handled|left out/);
+  // Everything left out: none made, never "none needed" beside it.
+  const dropped = runLog([{ ...run, data: { ...run.data, handled: 0, tasks: { made: [], existing: 0, dropped: 1 } } }], { s, expanded: ['run-1'], ai: AI });
+  assert.match(dropped, /Tasks: none made/);
+  assert.match(dropped, /1 left out/);
+  assert.doesNotMatch(dropped, /none needed/);
   assert.doesNotMatch(runLog([{ ...run, data: { ...run.data, tasks: undefined, handled: undefined } }], { s, expanded: ['run-1'], ai: AI }), /Tasks:/);
   assert.match(runLog([{ ...run, data: { ...run.data, handled: 2 } }], { s, expanded: ['run-1'], ai: AI }), /Looks handled: 2 tasks flagged/);
   // Every other link is still a button that opens through native.
@@ -653,6 +658,15 @@ test('Today says Made 2 tasks in Todoist', () => {
   assert.match(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Made 1 task in Connect ›/);
   run.data.tasks.made = [];
   assert.doesNotMatch(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Made \d/);
+});
+
+test('a meeting summary automation has no Run now', () => {
+  const s = withAutomations(buildSnapshot(NOW, { photo: false }), NOW, { habits: true });
+  const html = page(s);
+  const run = tagWith(html, 'data-action="automation-run"[^>]*data-id="auto-summary"');
+  assert.match(run, /\bdisabled\b/);
+  assert.match(unescape(run), /title="Run now isn’t available for a meeting summary\. It runs when a meeting’s notes are ready\."/);
+  assert.doesNotMatch(tagWith(html, 'data-action="automation-run"[^>]*data-id="auto-triage"'), /\bdisabled\b/);
 });
 
 test('the refusals point at the Deliver section', () => {
