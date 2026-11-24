@@ -454,7 +454,8 @@ impl Core {
     }
 
     /// Runs `spec` (built on `r.profile` and `r.model`) once. When that run fails with a class
-    /// that says the profile can't run and a ready fallback was not used yet, the failed
+    /// that says the profile can't run, a ready fallback was not used yet and the run is not
+    /// in a folder (whose edits may already be made), the failed
     /// attempt is recorded here and the same run goes once more to the fallback, on its own
     /// default model. Answers the last attempt's result and spec; the caller records that one.
     pub(super) async fn run_resolved(
@@ -492,6 +493,8 @@ impl Core {
         let fallback = match (&first, &r.fallback) {
             (Err(e), Some(f))
                 if falls_back_after(e.class)
+                    // A folder run may already have changed the folder: never run it twice.
+                    && spec.folder.is_none()
                     && f.state == ProfileState::Ready
                     && r.fell_back_from.is_none()
                     && !cancel.is_cancelled() =>

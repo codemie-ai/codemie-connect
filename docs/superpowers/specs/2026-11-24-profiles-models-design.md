@@ -132,7 +132,7 @@ Step 8 (reply in the user's voice) adds context to the reply drafts, which alrea
 
 **Automations.** `Automation` gains `template: Option<String>`, the gallery template it was made from, set by Use template and kept by edits. Its row: `morning-brief` → `briefing`, `inbox-triage` → `triage`, `commitments` → `commitments`, anything else (or none) → `automation`. The automation's own pin (the editor's Claude section) still wins over its row, as `pinned` does today; the pin's fallback is its row's fallback. The run record gains `fallbackFrom`; the Run log detail says "Ran on <fallback label> because <chosen label> <reason>." Automations saved before this step have no `template` and keep the Automations row.
 
-**Plugins.** A plugin's run uses, in order: its own row when the user set a profile on it; else the profile the plugin names in `ctx.claude.run({profile})` (as today); else All plugins, else Default. A model the plugin names is used only when the profile in use offers it (as today). The fallback is the plugin row's chosen fallback.
+**Plugins.** A plugin's run uses, in order: its own row when the user set a profile on it; else the profile the plugin names in `ctx.claude.run({profile})` (as today); else All plugins, else Default. When the plugin's own row sets a profile, the row's model goes with it (none = the profile's default) and the model the plugin names is ignored; otherwise a model the plugin names is used only when the profile in use offers it (as today). The fallback is the plugin row's chosen fallback. A run in a folder is never retried on the fallback after it failed (its edits may already be in the folder); the fallback before the run still applies.
 
 ### 4. Working status per row (window)
 

@@ -199,10 +199,18 @@ impl Core {
             .map_err(|_| AiError::new(ErrorClass::Failed))?;
         let resolved =
             resolve_plugin(&settings.ai, &profiles, &run.plugin, run.profile.as_deref())?;
-        // A model the profile doesn't offer (another provider's name) gives way to the row's;
-        // a fallback runs on its own default model.
+        // A row with its own profile runs with its own model. Otherwise a model the plugin
+        // names is used when the profile offers it (not another provider's name), else the
+        // row's; a fallback runs on its own default model.
+        let own_row = settings
+            .ai
+            .plugins
+            .get(&run.plugin)
+            .and_then(|r| r.profile.as_deref())
+            .is_some_and(|p| !p.is_empty());
         let model = match resolved.fell_back_from {
             Some(_) => None,
+            None if own_row => resolved.model.clone(),
             None => run
                 .model
                 .filter(|m| !m.is_empty() && resolved.profile.models.iter().any(|c| &c.id == m))
@@ -540,8 +548,8 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             ran(0),
-            ("codemie:prod".into(), Some("sonnet".into())),
-            "a model the plugin names is used when the profile offers it"
+            ("codemie:prod".into(), Some("haiku".into())),
+            "the row's model goes with the row's profile"
         );
         core.plugin_claude(plugin_run(Some("claude"), Some("gpt-5")))
             .await
@@ -564,6 +572,64 @@ pub(crate) mod tests {
         set_ai(&core, json!({"defaultProfile": "claude"}));
         core.plugin_claude(plugin_run(None, None)).await.unwrap();
         assert_eq!(ran(4), ("claude".into(), None));
+    }
+
+    #[tokio::test]
+    async fn an_inherited_row_keeps_the_model_the_plugin_names() {
+        use crate::workspace::ai::tests::ready;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new((0..2).map(|_| answered()).collect()));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        // A row with only a fallback sets no profile: All plugins' profile, the plugin's model.
+        set_ai(
+            &core,
+            json!({"defaultProfile": "claude",
+            "routes": {"plugin": {"profile": "codemie:prod", "model": "haiku"}},
+            "plugins": {"knowledge": {"fallback": "claude"}}}),
+        );
+        core.plugin_claude(plugin_run(None, Some("sonnet")))
+            .await
+            .unwrap();
+        let c = &fake.calls()[0];
+        assert_eq!(
+            (c.profile_id.as_str(), c.model.as_deref()),
+            ("codemie:prod", Some("sonnet"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_run_is_never_retried_after_a_failure() {
+        use crate::workspace::ai::tests::ready;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Err(AiError::new(ErrorClass::RateLimited)),
+            answered(),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        set_ai(
+            &core,
+            json!({"defaultProfile": "claude",
+            "plugins": {"knowledge": {"fallback": "codemie:prod"}}}),
+        );
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let mut run = plugin_run(None, None);
+        run.folder = Some(FolderRun {
+            dir: vault,
+            edit: true,
+        });
+        let e = core.plugin_claude(run).await.unwrap_err();
+        assert_eq!(e.class, ErrorClass::RateLimited);
+        assert_eq!(
+            fake.calls().len(),
+            1,
+            "its edits may already be in the folder: no second run"
+        );
+        let runs = core.repo().unwrap().records_of_kind("ai_run").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].data["fallbackFrom"], Value::Null);
     }
 
     #[tokio::test]
