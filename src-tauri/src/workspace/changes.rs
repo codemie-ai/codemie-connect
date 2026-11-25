@@ -31,6 +31,8 @@ fn touched(
             .ok()
             .map(|m| m.data["conversationId"].as_str().unwrap_or("").to_string())
     };
+    // An incident's messages read its acknowledgement: one whose message is gone (a chat keeps
+    // its newest messages only) can't be placed.
     let mut convs = HashSet::new();
     let mut keys = HashSet::new();
     for row in rows {
@@ -44,10 +46,14 @@ fn touched(
                 if row.deleted {
                     return Ok(None);
                 }
-                let Ok(incident) = repo.record("incident", &row.id, Some(cid), None) else {
+                let Some(conversation) = repo
+                    .record("incident", &row.id, Some(cid), None)
+                    .ok()
+                    .and_then(|i| i.data["itemId"].as_str().and_then(conversation_of))
+                else {
                     return Ok(None);
                 };
-                convs.extend(incident.data["itemId"].as_str().and_then(conversation_of));
+                convs.insert(conversation);
             }
             "summary" => {
                 let Some(key) = summaries
@@ -78,9 +84,10 @@ fn touched(
 
 /// More changed records than this: the window reads the whole snapshot instead.
 const MAX_RECORDS: usize = 2000;
-/// Kinds that re-project every message (the critical rules, the chat catalog): one changed
-/// resets.
-const RESETTING: [&str; 2] = ["rule", "catalog"];
+/// Kinds that re-project every message (the critical rules): one changed resets. The chat
+/// catalog (which chats are one-to-one) re-projects the chats instead; the calendars catalog is
+/// an ordinary record.
+const RESETTING: [&str; 1] = ["rule"];
 
 fn key_of(c: &ChangeRow) -> RecordKey {
     RecordKey {
@@ -172,7 +179,13 @@ impl Core {
                 .copied()
                 .filter(|c| INBOX.contains(&c.kind.as_str()))
                 .collect();
-            if let (false, Some(c)) = (inbox_rows.is_empty(), scope.visible.as_ref()) {
+            let chats_catalog = record_rows
+                .iter()
+                .any(|c| c.kind == "catalog" && c.id == "chats");
+            if let (true, Some(c)) = (
+                !inbox_rows.is_empty() || chats_catalog,
+                scope.visible.as_ref(),
+            ) {
                 // The touched conversations, whole, projected as the snapshot projects them:
                 // their messages, with the decisions and the chat catalog beside them.
                 let mut summaries = repo.visible_records_of_kinds(&scope, &["summary"])?;
@@ -181,7 +194,16 @@ impl Core {
                     return Ok(json!({"reset": true}));
                 };
                 let convs: Vec<String> = convs.into_iter().collect();
-                let messages = repo.visible_messages_of(&scope, &convs)?;
+                let mut messages = repo.visible_messages_of(&scope, &convs)?;
+                if chats_catalog {
+                    // Which chats are one-to-one decides their messages' lanes: every chat comes.
+                    let seen: HashSet<RecordKey> = messages.iter().map(record_key).collect();
+                    messages.extend(
+                        repo.visible_chat_messages(&scope)?
+                            .into_iter()
+                            .filter(|m| !seen.contains(&record_key(m))),
+                    );
+                }
                 summary_keys.extend(messages.iter().map(prompts::conversation_key));
                 let mut projected =
                     repo.visible_records_of_kinds(&scope, &["decision", "catalog"])?;
@@ -489,7 +511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rule_or_catalog_change_resets() {
+    async fn a_rule_change_resets() {
         let (_dir, core) = core();
         connect(&core);
         let before = snapshot(&core).await;
@@ -500,12 +522,110 @@ mod tests {
         )
         .await;
         assert_eq!(since(&core, &before).await, json!({"reset": true}));
+    }
+
+    #[tokio::test]
+    async fn a_catalog_change_is_a_delta_and_the_chats_one_reprojects_the_chats() {
+        let (_dir, core) = core();
+        connect(&core);
+        put(
+            &core,
+            provider(
+                "c1",
+                "message",
+                "chat:chat-a",
+                json!({"channel": "chat", "conversationId": "chat-a", "at": 1, "isMine": false, "text": "Can you check the numbers?"}),
+            ),
+        );
+        put(
+            &core,
+            mail("m1", "conv-1", 100, false, "Can you review the Q3 budget?"),
+        );
+        let before = snapshot(&core).await;
+        // Every sync round writes the calendars catalog: the Inbox doesn't read it.
+        put(
+            &core,
+            provider(
+                "calendars",
+                "catalog",
+                "catalog",
+                json!({"values": [{"id": "cal-1"}]}),
+            ),
+        );
+        let delta = since(&core, &before).await;
+        assert_eq!(delta["reset"], false, "{delta}");
+        assert_eq!(ids(&delta, "records"), ["calendars"]);
+        // The chats catalog says which chats are one-to-one: their messages come re-projected.
         let before = snapshot(&core).await;
         put(
             &core,
-            provider("chats", "catalog", "catalog", json!({"values": []})),
+            provider(
+                "chats",
+                "catalog",
+                "catalog",
+                json!({"values": [{"id": "chat-a", "chatType": "oneOnOne"}]}),
+            ),
+        );
+        let delta = since(&core, &before).await;
+        assert_eq!(delta["reset"], false, "{delta}");
+        assert_eq!(messages(&delta), ["c1"], "the chats, not the mail");
+        assert_eq!(record(&delta, "message", "c1")["data"]["lane"], "reply");
+        let applied = apply(&before, &delta).unwrap();
+        assert_eq!(sorted(&applied), sorted(&snapshot(&core).await));
+    }
+
+    #[tokio::test]
+    async fn an_incident_whose_message_is_gone_resets() {
+        let (_dir, core) = core();
+        connect(&core);
+        let before = snapshot(&core).await;
+        put(
+            &core,
+            provider(
+                "inc-1",
+                "incident",
+                "mail:inbox",
+                json!({"itemId": "pruned", "acknowledgedAt": 5}),
+            ),
         );
         assert_eq!(since(&core, &before).await, json!({"reset": true}));
+    }
+
+    #[tokio::test]
+    async fn a_workspace_switch_or_signing_out_and_in_resets() {
+        let (_dir, core) = core();
+        connect(&core);
+        let before = snapshot(&core).await;
+        write(
+            &core,
+            Operation::WorkspaceCreate,
+            json!({"name": "Clients"}),
+        )
+        .await;
+        assert_eq!(
+            since(&core, &before).await,
+            json!({"reset": true}),
+            "another workspace"
+        );
+        write(&core, Operation::WorkspaceSelect, json!({"id": "personal"})).await;
+        let before = snapshot(&core).await;
+        let mut c = core.repo().unwrap().connection(ACCT).unwrap();
+        c.status = "needs_login".into();
+        core.repo().unwrap().save_connection(&c).unwrap();
+        assert_eq!(
+            since(&core, &before).await,
+            json!({"reset": true}),
+            "signed out"
+        );
+        let signed_out = snapshot(&core).await;
+        c.status = "connected".into();
+        c.generation += 1;
+        core.repo().unwrap().save_connection(&c).unwrap();
+        assert_eq!(
+            since(&core, &signed_out).await,
+            json!({"reset": true}),
+            "signed in again"
+        );
     }
 
     /// A mail message of conversation `conv`, from Ann or from me, at `at`.
@@ -1143,6 +1263,137 @@ mod tests {
         let delta = since(&core, &after_task).await;
         timed(
             "delta after 50 new mails in 10 conversations",
+            start,
+            delta.to_string().len(),
+        );
+        // A sync round: 100 chats of 25 messages, the catalogs read again (the calendars one the
+        // same, the chats one with a new preview), 20 mails and a job saved per Graph request.
+        let base = apply(&after_task, &delta).unwrap();
+        {
+            let mut r = core.repo().unwrap();
+            let c = r.connection(ACCT).unwrap();
+            for chat in 0..100 {
+                for i in 0..25 {
+                    let mut m = provider(
+                        &format!("chat{chat}-{i}"),
+                        "message",
+                        "chat:chat-a",
+                        json!({"channel": "chat", "conversationId": format!("chat-{chat}"), "at": i, "isMine": i % 3 == 0, "text": "Can we sync later?"}),
+                    );
+                    m.updated_at = 1_795_000_000 + i;
+                    r.put_record(&m).unwrap();
+                }
+            }
+            let calendars = provider(
+                "calendars",
+                "catalog",
+                "catalog",
+                json!({"values": [{"id": "cal-1"}]}),
+            );
+            r.commit_sync(
+                &c,
+                "catalog",
+                std::slice::from_ref(&calendars),
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
+            let chats = |preview: &str| {
+                provider(
+                    "chats",
+                    "catalog",
+                    "catalog",
+                    json!({"values": (0..100).map(|i| json!({"id": format!("chat-{i}"), "chatType": if i % 2 == 0 { "oneOnOne" } else { "group" }, "preview": preview})).collect::<Vec<_>>()}),
+                )
+            };
+            r.commit_chat_catalog(&c, &chats("a"), None).unwrap();
+        }
+        // 2500 new messages are over MAX_RECORDS: that first load is a reset, read whole.
+        assert_eq!(since(&core, &base).await, json!({"reset": true}));
+        let base = snapshot(&core).await;
+        {
+            let mut r = core.repo().unwrap();
+            let c = r.connection(ACCT).unwrap();
+            let calendars = provider(
+                "calendars",
+                "catalog",
+                "catalog",
+                json!({"values": [{"id": "cal-1"}]}),
+            );
+            r.commit_sync(
+                &c,
+                "catalog",
+                std::slice::from_ref(&calendars),
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
+            let chats = provider(
+                "chats",
+                "catalog",
+                "catalog",
+                json!({"values": (0..100).map(|i| json!({"id": format!("chat-{i}"), "chatType": if i % 2 == 0 { "oneOnOne" } else { "group" }, "preview": "b"})).collect::<Vec<_>>()}),
+            );
+            r.commit_chat_catalog(&c, &chats, None).unwrap();
+            for i in 0..20 {
+                r.put_record(&mail(
+                    &format!("sync{i}"),
+                    &format!("conv-{}", i % 5),
+                    20_000 + i,
+                    false,
+                    "New",
+                ))
+                .unwrap();
+            }
+            for i in 0..10 {
+                r.enqueue(&job(&format!("graph-{i}"), "sync", 1_795_000_000 + i))
+                    .unwrap();
+            }
+        }
+        let start = std::time::Instant::now();
+        let delta = since(&core, &base).await;
+        timed(
+            "delta after a sync round (chats catalog changed, 2500 chat messages)",
+            start,
+            delta.to_string().len(),
+        );
+        assert_eq!(delta["reset"], false);
+        {
+            let mut r = core.repo().unwrap();
+            let c = r.connection(ACCT).unwrap();
+            let calendars = provider(
+                "calendars",
+                "catalog",
+                "catalog",
+                json!({"values": [{"id": "cal-1"}]}),
+            );
+            r.commit_sync(
+                &c,
+                "catalog",
+                std::slice::from_ref(&calendars),
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
+            for i in 0..20 {
+                r.put_record(&mail(
+                    &format!("quiet{i}"),
+                    &format!("conv-{}", i % 5),
+                    30_000 + i,
+                    false,
+                    "New",
+                ))
+                .unwrap();
+            }
+        }
+        let base = apply(&base, &delta).unwrap();
+        let start = std::time::Instant::now();
+        let delta = since(&core, &base).await;
+        timed(
+            "delta after a quiet sync round (catalogs the same, 20 mails)",
             start,
             delta.to_string().len(),
         );

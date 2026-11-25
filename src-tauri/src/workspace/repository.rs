@@ -98,6 +98,7 @@ pub struct ChangeRow {
 const CHANGE_LOG: &str = "
     CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL, conversation TEXT);
     CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
+    CREATE TABLE IF NOT EXISTS changes_meta (id INTEGER PRIMARY KEY CHECK(id=1), changes_from INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS message_conversation ON records(COALESCE(json_extract(body,'$.conversationId'),'')) WHERE kind='message';
     CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
       INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
@@ -147,21 +148,24 @@ impl Repository {
             CREATE TABLE IF NOT EXISTS cursors (connection_id TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(connection_id,resource));
             {CHANGE_LOG}
             PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"))?;
-        // The revision the change log is complete from (`changes_since`).
-        let has_from: i64 = db.query_row(
+        // The revision the change log is complete from (`changes_since`), in a table of its own:
+        // every older build inserts three values into `meta` in its init, so `meta` keeps three
+        // columns. A folder an earlier build of the change log gave `meta.changes_from` is mended
+        // first, keeping the later of the two.
+        let in_meta: i64 = db.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('meta') WHERE name='changes_from'",
             [],
             |r| r.get(0),
         )?;
-        if has_from == 0 {
-            db.execute("ALTER TABLE meta ADD COLUMN changes_from INTEGER", [])?;
+        if in_meta > 0 {
+            db.execute_batch("INSERT INTO changes_meta SELECT 1, COALESCE(changes_from, revision) FROM meta WHERE id=1 ON CONFLICT(id) DO UPDATE SET changes_from=MAX(changes_meta.changes_from, excluded.changes_from); ALTER TABLE meta DROP COLUMN changes_from;")?;
         }
         db.execute(
-            "INSERT OR IGNORE INTO meta(id,revision,settings) VALUES(1,0,?1)",
+            "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
             [encode(&Settings::default())?],
         )?;
         db.execute(
-            "UPDATE meta SET changes_from=revision WHERE id=1 AND changes_from IS NULL",
+            "INSERT OR IGNORE INTO changes_meta SELECT 1, revision FROM meta WHERE id=1",
             [],
         )?;
         let personal = Workspace {
@@ -396,7 +400,7 @@ impl Repository {
     /// The revision the change log is complete from: changes since an older one may be gone.
     pub fn changes_from(&self) -> Result<i64> {
         Ok(self.db.query_row(
-            "SELECT COALESCE(changes_from,revision) FROM meta WHERE id=1",
+            "SELECT changes_from FROM changes_meta WHERE id=1",
             [],
             |r| r.get(0),
         )?)
@@ -423,8 +427,9 @@ impl Repository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
-    /// Forgets log lines older than the last `keep_revisions` revisions and `keep_secs`
-    /// seconds, and moves `changes_from` past the newest one forgotten. Returns how many went.
+    /// Forgets log lines older than the last `keep_revisions` revisions or `keep_secs` seconds
+    /// (whichever keeps less: a window that far behind reads the whole snapshot once), and moves
+    /// `changes_from` past the newest one forgotten. Returns how many went.
     pub fn prune_changes(
         &mut self,
         keep_revisions: i64,
@@ -434,7 +439,7 @@ impl Repository {
         let tx = self.db.transaction()?;
         let current: i64 =
             tx.query_row("SELECT revision FROM meta WHERE id=1", [], |r| r.get(0))?;
-        let cond = "revision<?1 AND at<?2";
+        let cond = "(revision<?1 OR at<?2)";
         let newest_gone: Option<i64> = tx.query_row(
             &format!("SELECT MAX(revision) FROM changes WHERE {cond}"),
             params![current - keep_revisions, now - keep_secs],
@@ -446,7 +451,7 @@ impl Repository {
         )?;
         if let Some(newest) = newest_gone {
             tx.execute(
-                "UPDATE meta SET changes_from=MAX(COALESCE(changes_from,0),?1) WHERE id=1",
+                "UPDATE changes_meta SET changes_from=MAX(changes_from,?1) WHERE id=1",
                 [newest + 1],
             )?;
         }
@@ -577,6 +582,11 @@ impl Repository {
             false,
         )
     }
+    /// Every chat message a view sees (at most `graph::CHAT_KEEP_MESSAGES` a chat), as the
+    /// snapshot holds them before the projection.
+    pub fn visible_chat_messages(&self, scope: &SnapshotScope) -> Result<Vec<Record>> {
+        self.visible_where(scope, " AND kind='message' AND source LIKE 'chat:%'", false)
+    }
     /// The snapshot's record queries with `wanted` added to the local and account ones; the
     /// automation runs (each automation's newest) when `runs`.
     fn visible_where(
@@ -619,11 +629,6 @@ impl Repository {
             })
             .collect())
     }
-    /// [`visible_records_in`](Self::visible_records_in) in the current scope.
-    pub fn visible_records(&self, only: Option<&[RecordKey]>) -> Result<Vec<Record>> {
-        let runs = only.is_some_and(|keys| keys.iter().any(|k| k.kind == "automation_run"));
-        self.visible_records_in(&self.snapshot_scope()?, only, runs)
-    }
     /// The jobs a view sees: the newest 300, leaving out transcript checks that found nothing
     /// (one runs per waiting meeting every few minutes and would push sync, send and AI rows out
     /// of Activity), of the active workspace and account.
@@ -640,11 +645,6 @@ impl Repository {
             .into_iter()
             .filter(|j| job_shown(j, &scope.active.id, cid))
             .collect())
-    }
-    /// The hash of what decides visibility (`SnapshotScope`): a window holding a snapshot of
-    /// another scope reads the whole snapshot again instead of a delta.
-    pub fn scope_hash(&self) -> Result<String> {
-        Ok(scope_hash_of(&self.snapshot_scope()?))
     }
     pub fn snapshot(&self) -> Result<Snapshot> {
         Ok(self.snapshot_scoped()?.0)
@@ -1223,6 +1223,11 @@ impl Repository {
             }
         }
         for r in records {
+            // A sync round reads the catalogs every time: one that says the same is not written
+            // again, so it is not a change (the change log, and the window's next read).
+            if r.kind == "catalog" && same_body(&tx, r)? {
+                continue;
+            }
             put_record(&tx, r)?;
         }
         if let Some(key) = cursor_resource {
@@ -1609,6 +1614,19 @@ fn prune_automation_runs(db: &Sqlite, automation_id: Option<&str>) -> Result<()>
 fn bump(tx: &Transaction<'_>) -> Result<()> {
     tx.execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
     Ok(())
+}
+/// Whether `r` is stored already with this source and body.
+fn same_body(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
+    let stored: Option<(String, String)> = tx
+        .query_row(
+            "SELECT source,body FROM records WHERE id=?1 AND kind=?2 AND connection_id=?3 AND workspace_id=?4",
+            params![r.id, r.kind, r.connection_id.as_deref().unwrap_or(""), r.workspace_id.as_deref().unwrap_or("")],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(stored.is_some_and(|(source, body)| {
+        source == r.source && body == encode(&r.data).unwrap_or_default()
+    }))
 }
 fn put_record(tx: &Transaction<'_>, r: &Record) -> Result<()> {
     tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=excluded.body",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&r.data)?])?;
@@ -2309,7 +2327,7 @@ mod tests {
             r.put_record(&local_note(&format!("n{i}"))).unwrap();
         }
         let current = r.revision().unwrap();
-        assert_eq!(r.prune_changes(3, 0, now() + 1).unwrap(), 7);
+        assert_eq!(r.prune_changes(3, 3600, now()).unwrap(), 7);
         let kept: Vec<i64> = r
             .changes_since_rows(0)
             .unwrap()
@@ -2318,9 +2336,100 @@ mod tests {
             .collect();
         assert_eq!(kept, [current - 3, current - 2, current - 1]);
         assert_eq!(r.changes_from().unwrap(), current - 3);
-        // Recent rows stay whatever their revision.
+        // Older than the time kept: gone whatever their revision (whichever keeps less).
         r.put_record(&local_note("n10")).unwrap();
-        assert_eq!(r.prune_changes(0, 3600, now()).unwrap(), 0);
+        assert_eq!(r.prune_changes(1_000_000, 0, now() + 10).unwrap(), 4);
+        assert_eq!(r.changes_from().unwrap(), r.revision().unwrap());
+    }
+    #[test]
+    fn an_older_connect_still_opens_the_data_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        drop(Repository::open(&path).unwrap());
+        // Every build before the change log runs this in its init.
+        let db = Sqlite::open(&path).unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
+            [encode(&Settings::default()).unwrap()],
+        )
+        .expect("an older build's init");
+        // A folder opened by an earlier build of this branch (meta.changes_from) is mended.
+        db.execute_batch(
+            "ALTER TABLE meta ADD COLUMN changes_from INTEGER; UPDATE meta SET changes_from=3;",
+        )
+        .unwrap();
+        drop(db);
+        let r = Repository::open(&path).unwrap();
+        let columns: i64 =
+            r.db.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('meta')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 3);
+        assert_eq!(r.changes_from().unwrap(), 3, "its value is kept");
+    }
+    #[test]
+    fn a_catalog_written_again_unchanged_logs_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let catalog = item(
+            "a",
+            "calendars",
+            "catalog",
+            "catalog",
+            json!({"values": [{"id": "cal-1"}]}),
+        );
+        r.commit_sync(
+            &c,
+            "catalog",
+            std::slice::from_ref(&catalog),
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        let at = r.revision().unwrap();
+        let mut again = catalog.clone();
+        again.revision = "another".into();
+        again.updated_at += 60;
+        r.commit_sync(&c, "catalog", &[again.clone()], &[], None, false)
+            .unwrap();
+        r.commit_chat_catalog(
+            &c,
+            &item("a", "chats", "catalog", "catalog", json!({"values": []})),
+            None,
+        )
+        .unwrap();
+        r.commit_chat_catalog(
+            &c,
+            &item("a", "chats", "catalog", "catalog", json!({"values": []})),
+            None,
+        )
+        .unwrap();
+        let logged: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            logged,
+            ["chats"],
+            "the unchanged calendars catalog is not written again"
+        );
+        // A changed one is.
+        again.data = json!({"values": [{"id": "cal-1"}, {"id": "cal-2"}]});
+        r.commit_sync(&c, "catalog", &[again], &[], None, false)
+            .unwrap();
+        assert!(r
+            .changes_since_rows(at)
+            .unwrap()
+            .iter()
+            .any(|c| c.id == "calendars"));
     }
     #[test]
     fn an_existing_data_folder_gets_the_log_without_a_schema_bump() {

@@ -115,6 +115,30 @@ test('a write settles on its own read, not on a background read asked after it',
   assert.deepEqual(shown, [1, 1]);
 });
 
+test('changes heard while a read is on its way ask one more read after it, not one each', async () => {
+  let clock = 0;
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { now: () => clock });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  clock = 10;
+  const first = store.refreshAfter(10);
+  assert.equal(bridge.reads.length, 2);
+  // A sync round announces each Graph request: three more while that read is on its way.
+  const later = [20, 30, 40].map(at => { clock = at; return store.refreshAfter(at); });
+  assert.equal(bridge.reads.length, 2, 'one read on its way; the rest wait for it');
+  bridge.value = 7;
+  bridge.reads[1].go();
+  await first;
+  await tick();
+  assert.equal(bridge.reads.length, 3, 'one more, for everything heard meanwhile');
+  bridge.reads[2].go();
+  const answers = await Promise.all(later);
+  assert.ok(answers.every(a => a.snapshot.value === 7));
+  assert.equal(bridge.reads.length, 3);
+});
+
 test('a read that lands after a newer one is dropped: the view never goes back', async () => {
   const bridge = slowReads();
   const store = createStore(bridge.invoke);

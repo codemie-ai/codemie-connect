@@ -107,12 +107,25 @@ export function createStore(invoke, { now = () => performance.now(), optimistic 
     return shown;
   }
 
+  // The read a workspace:changed asked that is on its way, and the one more asked after it
+  // lands for every change heard meanwhile.
+  let changedRead = null;
+  let followUp = null;
+
   /** A workspace:changed heard at `at` (`now()`): read again, unless a read asked since then
    *  already brings that change (a write's own read brings the change the write announced), or
-   *  writes are on their way (the queue's last read, asked after them, brings it). */
+   *  writes are on their way (the queue's last read, asked after them, brings it). While such a
+   *  read is on its way, the changes heard meanwhile share one more read after it: a sync round
+   *  announces each Graph request, and reads must not pile up behind each other. */
   function refreshAfter(at) {
     if (writing) return drained.then(() => shown);
-    return askedAt >= at ? lastRead : refresh();
+    if (askedAt >= at) return lastRead;
+    if (changedRead) {
+      followUp ??= changedRead.then(() => { followUp = null; return refreshAfter(at); }, () => { followUp = null; return refreshAfter(at); });
+      return followUp;
+    }
+    changedRead = refresh().finally(() => { changedRead = null; });
+    return changedRead;
   }
 
   function mutate(op, data = {}, workspaceId, { retry = REBASE_SAFE.has(op) } = {}) {
