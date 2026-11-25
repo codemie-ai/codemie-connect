@@ -329,9 +329,10 @@ impl Core {
         let terms = terms::terms_of(&target.subject, &target.text, &skip);
         Ok(Some(Prepared {
             reachable: listed.as_ref().is_some_and(|p| p.on),
-            // A provider that isn't ready (turned off, or not loaded) registered no ops, so it
-            // can't say whether it offers facts: with facts on, they count as missed.
-            facts_on: settings.facts && listed.as_ref().is_some_and(|p| p.facts || !p.ready),
+            // A provider that isn't ready (turned off, not loaded, or no longer installed)
+            // registered no ops, so it can't say whether it offers facts: with facts on, they
+            // count as missed.
+            facts_on: settings.facts && listed.as_ref().is_none_or(|p| p.facts || !p.ready),
             person_id: person.map(|p| p.id.clone()),
             provider: settings.provider,
             name,
@@ -723,8 +724,9 @@ pub(crate) mod tests {
     }
 
     /// Design §5 and § Facts "a missed ask (`unavailable`, …) sets `factsMissed`": a provider
-    /// turned off in Settings › Plugins (or not loaded) registers no ops, so it can't say it
-    /// offers facts; with facts on, the draft that couldn't have them says they were missed.
+    /// turned off in Settings › Plugins, not loaded or no longer installed registers no ops, so
+    /// it can't say it offers facts; with facts on, the draft that couldn't have them says they
+    /// were missed.
     #[tokio::test]
     async fn a_provider_turned_off_marks_facts_missed() {
         let (_dir, core) = core();
@@ -752,6 +754,11 @@ pub(crate) mod tests {
             assert_eq!(p["from"], "copy", "on {on}");
             assert_eq!(p["factsMissed"], true, "on {on}");
         }
+        // Chosen but no longer installed (not listed at all): the same.
+        fake.set_available(vec![]);
+        let p = voice_for(&core, &w, &c, "p1").await.provenance.unwrap();
+        assert_eq!(p["from"], "copy");
+        assert_eq!(p["factsMissed"], true, "not listed");
         // Facts turned off by the user: nothing was missed.
         {
             let mut r = core.repo().unwrap();
