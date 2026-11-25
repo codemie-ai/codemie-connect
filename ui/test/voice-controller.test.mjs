@@ -183,6 +183,16 @@ test('Profile reads voice_read and shows "How to write to them" and "About them"
   assert.match(text(modal.body), /From People\/priya-n\.md\. Edit it in Knowledge\./);
 });
 
+test('a voice_read refusal toasts near the Profile button instead of reaching the global handler', async () => {
+  const { ctl, calls } = harness({
+    queries: { voice_read: () => { throw refusal("Knowledge isn't answering, so nothing was saved. Try again.", null, 'unavailable'); } },
+  });
+  await ctl.handle('voice-person', el({ id: 'priya-n' }));
+  assert.equal(calls.modals.length, 0, 'no dialog opened on a refusal');
+  assert.equal(calls.toasts.at(-1).tone, 'error');
+  assert.equal(calls.toasts.at(-1).message, "Knowledge isn't answering, so nothing was saved. Try again.");
+});
+
 test('Delete Connect\'s copy asks first; Cancel is the default; confirming sends one voice_forget', async () => {
   const { ctl, calls } = harness({ answers: { voice_forget: { deleted: 7, provider: 'off' } } });
   await ctl.handle('voice-forget', el());
@@ -241,6 +251,34 @@ test('import: the pick, then one scan, then the preview with every row and every
   await tour.ctl.openImport(PREVIEW, FOLDER);
   assert.equal(tour.calls.plugins.length, 0);
   assert.match(text(tour.calls.html), /Found 6 skills\./);
+});
+
+test('a pick or scan refusal toasts near Import from skills…, not through the global handler, and opens no preview', async () => {
+  const pickRefused = harness();
+  const ctlPick = createVoiceController({
+    state: pickRefused.state,
+    snap: () => pickRefused.snapshot,
+    mutate: async () => ({}),
+    query: async () => ({}),
+    pluginsRequest: async () => { throw refusal('The plugin host is not responding.', null, 'unavailable'); },
+    render: async () => { pickRefused.calls.render++; },
+    openModal: () => null,
+    toast: (message, tone) => pickRefused.calls.toasts.push({ message, tone }),
+    go: () => {},
+    focus: () => {},
+  });
+  await ctlPick.handle('voice-import', el());
+  assert.equal(pickRefused.calls.toasts.at(-1).tone, 'error');
+  assert.equal(pickRefused.calls.toasts.at(-1).message, 'The plugin host is not responding.');
+  assert.equal(pickRefused.state.voice.import, null, 'no preview opened');
+
+  const scanRefused = harness({ picks: [{ path: FOLDER }], queries: { voice_import_scan: () => { throw refusal("Knowledge isn't answering, so nothing was saved. Try again.", null, 'unavailable'); } } });
+  await scanRefused.ctl.handle('voice-import', el());
+  assert.deepEqual(scanRefused.calls.plugins, [['pick_folder', { purpose: 'skills' }]]);
+  assert.deepEqual(scanRefused.calls.query, [['voice_import_scan', { path: FOLDER }]]);
+  assert.equal(scanRefused.calls.toasts.at(-1).tone, 'error');
+  assert.equal(scanRefused.calls.toasts.at(-1).message, "Knowledge isn't answering, so nothing was saved. Try again.");
+  assert.equal(scanRefused.state.voice.import, null, 'no preview opened');
 });
 
 test('import: Shorten with AI sends one voice_import_distil for that skill and replaces its rows with "Shortened by AI"; a refusal keeps the rows', async () => {

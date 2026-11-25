@@ -10,7 +10,7 @@ import { formatDateTime, relativeAge } from './format.js';
 import { primaryAction } from './reply-model.js';
 import { listTitle } from './view-today.js';
 import {
-  INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
+  INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, voiceContextLines, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
 } from './draft-state.js';
 
 import { summaryOffered, askDue, addedAsks, askCommitmentId } from './summary-state.js';
@@ -451,6 +451,7 @@ function automationName(s, p) {
 
 function provenanceRow(s, m, ai, ui, zone, running) {
   const p = ai.data.provenance || {};
+  const voiceItems = voiceContextLines(p.voice, zone).map(line => `<li class="ws-draft-voice">${e(line)}</li>`).join('');
   const used = (p.messageIds || []).map(id => s.records.find(r => r.kind === 'message' && r.id === id));
   const items = used.map(r => (r
     ? `<li>${avatar({ name: r.data.isMine ? (s.connection?.displayName || 'You') : r.data.from || '?', size: 20, seed: r.data.fromAddress || r.data.fromId || r.data.from })}<strong>${e(r.data.isMine ? 'You' : r.data.from || 'Unknown sender')}</strong><time>${e(formatDateTime(r.data.at, zone))}</time></li>`
@@ -466,7 +467,7 @@ function provenanceRow(s, m, ai, ui, zone, running) {
           ${button('Regenerate', { action: 'ai-draft-regenerate', variant: 'ghost', size: 'sm', iconName: 'refresh', title: 'Draft again with the same options', disabled: running, attrs: { 'data-id': m.id } })}
         </span>
       </div>
-      <ul id="draft-context" class="ws-draft-context" aria-label="Messages the draft was written from"${open ? '' : ' hidden'}>${items}</ul>
+      <ul id="draft-context" class="ws-draft-context" aria-label="Messages the draft was written from"${open ? '' : ' hidden'}>${voiceItems}${items}</ul>
     </div>`;
 }
 

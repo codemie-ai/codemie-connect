@@ -243,7 +243,14 @@ function instructionsSection(v) {
   const { rv, ui, chosen } = v;
   const rules = sortRules(rv.rules || []);
   const adding = ui.rule && ui.rule.id === null;
-  const importButton = button('Import from skills…', { action: 'voice-import', size: 'sm', disabled: !chosen, attrs: chosen ? {} : { 'aria-describedby': 'ws-voice-import-off' } });
+  // An open editor (the style card or an instruction) holds typed text Import would otherwise
+  // drop silently when it replaces this list with the preview (Task 9 review minor 2).
+  const editing = !!ui.style || !!ui.rule;
+  const importButton = button('Import from skills…', {
+    action: 'voice-import', size: 'sm', disabled: !chosen || editing,
+    title: editing ? 'Finish editing first.' : undefined,
+    attrs: chosen ? {} : { 'aria-describedby': 'ws-voice-import-off' },
+  });
   const add = button('Add', { action: 'voice-add-rule', size: 'sm', iconName: 'plus', disabled: !chosen || adding });
   const list = rules.length ? `<ul class="ws-voice-rules">${rules.map(r => ruleRow(r, v)).join('')}</ul>` : `<p class="ws-muted ws-hint">No instructions yet.</p>`;
   return `<section class="ws-voice-section" aria-labelledby="ws-voice-rules-title">
@@ -272,8 +279,10 @@ function copyRow(v) {
   const { rv, chosen, ui } = v;
   if (!chosen && !rv.copy) return '';
   const when = copyTime(rv.refreshedAt, v.zone, v.now);
+  // A chosen provider with a copy always reads as "Connect's copy", even before its first
+  // refresh gives it a `refreshedAt` (Task 9 review minor 3): never "No copy yet." once one exists.
   const line = !chosen ? `Off. Connect still keeps a copy from ${when}.`
-    : rv.copy && rv.refreshedAt ? `Connect's copy · refreshed ${agoLabel(rv.refreshedAt, v.zone, v.now)}` : 'No copy yet.';
+    : rv.copy ? (rv.refreshedAt ? `Connect's copy · refreshed ${agoLabel(rv.refreshedAt, v.zone, v.now)}` : 'Connect\'s copy') : 'No copy yet.';
   const refresh = chosen ? button(ui.busy?.refresh ? 'Refreshing…' : 'Refresh now', { action: 'voice-refresh', size: 'sm', iconName: 'refresh', disabled: !!ui.busy?.refresh }) : '';
   const forget = rv.copy ? button('Delete Connect\'s copy', { action: 'voice-forget', size: 'sm', variant: 'danger', disabled: !!ui.busy?.forget }) : '';
   return `<div class="ws-voice-section ws-voice-copy"><span class="ws-muted">${e(line)}</span><span class="ws-actions">${refresh}${forget}</span></div>`;

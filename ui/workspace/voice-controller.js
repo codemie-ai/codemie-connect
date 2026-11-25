@@ -26,13 +26,13 @@ const messageOf = err => err?.message || String(err);
 /**
  * `state.voice` is the view state (`newVoiceView()`); `snap()` the snapshot; `mutate(op, data)` a
  * fenced write that re-renders; `query(op, data)` a read; `pluginsRequest(op, data)` is
- * `plugins_request` (`pick_folder`, `set_enabled`); `render()`; `openModal`/`confirmModal` the
- * dialogs; `toast(message, tone, {label, run})`; `go(hash)` opens a Connect hash (a plugin's
- * page); `focus(selectors)` moves focus after a render.
+ * `plugins_request` (`pick_folder`, `set_enabled`); `render()`; `openModal` the dialog (the
+ * delete confirm and the profile dialog); `toast(message, tone, {label, run})`; `go(hash)` opens
+ * a Connect hash (a plugin's page); `focus(selectors)` moves focus after a render.
  */
 export function createVoiceController({
   state, snap, mutate, query = async () => null, pluginsRequest = async () => null, render = async () => {},
-  openModal = () => null, confirmModal = () => {}, toast = () => {}, go = () => {}, focus = () => {},
+  openModal = () => null, toast = () => {}, go = () => {}, focus = () => {},
 }) {
   const v = () => {
     if (!state.voice) state.voice = newVoiceView();
@@ -141,7 +141,14 @@ export function createVoiceController({
   // ---------------------------------------------------------------- people, copy
 
   async function person(id) {
-    const p = await query('voice_read', { id });
+    let p;
+    try {
+      p = await query('voice_read', { id });
+    } catch (err) {
+      // Shown near the Profile button that was pressed, not through the global failure handler.
+      toast(messageOf(err), 'error');
+      return;
+    }
     const section = (title, body) => (body ? `<h3 class="ws-voice-dialog-head">${e(title)}</h3><p class="ws-voice-text">${e(body)}</p>` : '');
     openModal({
       title: p?.name || 'Profile',
@@ -221,10 +228,24 @@ export function createVoiceController({
 
   async function startImport() {
     if (!chosen()) return;
-    const picked = await pluginsRequest('pick_folder', { purpose: 'skills' });
+    // Both the pick and the scan are shown near Import from skills…, not through the global
+    // failure handler (Task 9 review minor 4).
+    let picked;
+    try {
+      picked = await pluginsRequest('pick_folder', { purpose: 'skills' });
+    } catch (err) {
+      toast(messageOf(err), 'error');
+      return;
+    }
     const path = picked?.path;
     if (!path) return;
-    const preview = await query('voice_import_scan', { path });
+    let preview;
+    try {
+      preview = await query('voice_import_scan', { path });
+    } catch (err) {
+      toast(messageOf(err), 'error');
+      return;
+    }
     await openImport(preview, path);
   }
 

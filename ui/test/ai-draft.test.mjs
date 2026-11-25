@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
+  applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, voiceContextLines, modelLabel, providerLabel, reconcile, answer,
   draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, draftChoices, readOptions, pickOption, draftRequest, defaultOptions,
   startChange, changeRequest,
 } from '../workspace/draft-state.js';
@@ -12,7 +12,8 @@ import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../w
 import { REBASE_SAFE } from '../workspace/store.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { today } from '../workspace/view-today.js';
-import { buildSnapshot, aiStatus } from './fixtures/workspace-fixture.mjs';
+import { formatDateTime } from '../workspace/format.js';
+import { buildSnapshot, aiStatus, contractFixtures } from './fixtures/workspace-fixture.mjs';
 
 const contract = name => JSON.parse(readFileSync(new URL(`./fixtures/contract/${name}.json`, import.meta.url), 'utf8'));
 const NOW = Date.now();
@@ -23,9 +24,11 @@ function snapshot() {
 }
 const message = (s, id) => s.records.find(r => r.kind === 'message' && r.id === id);
 
-/** The contract draft record (a Teams draft for chats, an Outlook one for mail), rebound to a message of the snapshot. */
-function aiDraftFor(s, id, data = {}, extra = {}) {
-  const tpl = contract(message(s, id).data.channel === 'chat' ? 'draft-ai-chat' : 'draft-ai');
+/** The contract draft record (a Teams draft for chats, an Outlook one for mail), rebound to a
+ *  message of the snapshot. `tplName` overrides the channel's default template (`draft-ai-voice`
+ *  for a draft shaped by the user's voice). */
+function aiDraftFor(s, id, data = {}, extra = {}, tplName) {
+  const tpl = contract(tplName || (message(s, id).data.channel === 'chat' ? 'draft-ai-chat' : 'draft-ai'));
   const m = message(s, id);
   const key = draftKeyOf(m);
   const ids = conversation(s, m).map(x => x.id);
@@ -165,6 +168,73 @@ test('draft_result_fills_empty_box_and_shows_provenance', () => {
   const partial = snapshot();
   partial.records.push(aiDraftFor(partial, 'c-reply-1', { provenance: { ...draft.data.provenance, partialText: true } }));
   assert.match(view(partial), /Preview text only/);
+});
+
+// ---------------------------------------------------------------- the user's voice (reply voice design § Copy, ruling 20)
+
+test('a draft with a voice says " · in your voice"', () => {
+  const draftVoice = contractFixtures().draftVoice;
+  const withVoice = provenanceLabel(draftVoice.data.provenance);
+  assert.match(withVoice, / · in your voice$/);
+  const without = provenanceLabel({ ...draftVoice.data.provenance, voice: undefined });
+  assert.doesNotMatch(without, /in your voice/);
+});
+
+test('Context lists the voice parts, the facts and what was missed', () => {
+  const zone = 'UTC';
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: true, person: 'Priya N.', rules: 2, examples: 2, from: 'provider' }, zone),
+    ["Your voice (Knowledge): style card · Priya N.'s profile · 2 instructions · 2 earlier messages"],
+  );
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: true, person: 'Priya N.', rules: 1, examples: 1, from: 'provider' }, zone),
+    ["Your voice (Knowledge): style card · Priya N.'s profile · 1 instruction · 1 earlier message"],
+  );
+  // Only the parts used: no style card, no person, no examples.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: false, person: null, rules: 2, examples: 0, from: 'provider' }, zone),
+    ['Your voice (Knowledge): 2 instructions'],
+  );
+  // Facts.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', facts: [{ id: 'projects/atlas-rollout.md', title: 'Atlas rollout' }, { id: 'tickets/epm-1234.md', title: 'Budget 2026' }] }, zone),
+    ['Your voice (Knowledge): 1 instruction', 'Facts from Knowledge: Atlas rollout · Budget 2026'],
+  );
+  // A missed facts ask.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', factsMissed: true }, zone),
+    ['Your voice (Knowledge): 1 instruction', "Knowledge found no facts in time."],
+  );
+  // From the copy, with the copy's time.
+  const at = Date.parse('2026-11-18T13:15:00Z');
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'copy', at }, zone, Date.parse('2026-11-25T10:00:00Z')),
+    ['Your voice (Knowledge): 1 instruction', `Connect's copy from ${formatDateTime(at, zone)} — Knowledge didn't answer.`],
+  );
+  // Shortened to fit.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', cut: true }, zone),
+    ['Your voice (Knowledge): 1 instruction', 'Shortened to fit.'],
+  );
+  // No voice part applied (only a facts miss): no "Your voice (...)" line.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: false, person: null, rules: 0, examples: 0, from: 'provider', factsMissed: true }, zone),
+    ["Knowledge found no facts in time."],
+  );
+  // No provenance at all.
+  assert.deepEqual(voiceContextLines(undefined, zone), []);
+});
+
+test("the provenance row escapes the person name and fact titles", () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const s = snapshot();
+  const voice = { ...contractFixtures().draftVoice.data.provenance.voice, person: evil, facts: [{ id: 'a.md', title: evil }] };
+  const draft = aiDraftFor(s, 'm-reply-1', { provenance: { ...contractFixtures().draftVoice.data.provenance, voice } }, {}, 'draft-ai-voice');
+  s.records.push(draft);
+  const html = view(s, { selectedMessage: 'm-reply-1' });
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, / · in your voice/);
 });
 
 test('draft_result_asks_before_replacing_typed_text', () => {

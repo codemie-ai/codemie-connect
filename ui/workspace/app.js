@@ -1661,7 +1661,7 @@ if (tasksUi) {
 // ---------------------------------------------------------------- Settings › Your voice
 
 const voiceUi = store && createVoiceController({
-  state, snap, mutate, render, openModal, confirmModal, toast,
+  state, snap, mutate, render, openModal, toast,
   query: (op, data) => store.query(op, data),
   pluginsRequest: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
   go: hash => goHash(hash),

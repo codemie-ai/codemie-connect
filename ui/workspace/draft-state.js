@@ -1,5 +1,14 @@
 // Reply drafts with Claude (DESIGN 6.4): the options, the words the composer shows, and what
 // happens to the reply box when a draft arrives. Pure, so every decision is unit tested.
+//
+// `provenanceLabel` and `voiceContextLines` also carry the reply voice design (§ Copy,
+// ruling 20): a draft shaped by the user's voice says so, and Context ▾ lists what shaped and
+// grounded it (the voice parts used, the facts' page titles, and what was missed or shortened).
+import { dayKey, formatDateTime, formatTime } from './format.js';
+
+/** When a provenance's voice came from the copy (no provider answer in time), as "<time>" reads
+ *  in its line: the time today, else the date and time. */
+const copyTimeLabel = (at, zone, nowMs) => (at ? (dayKey(at, zone) === dayKey(nowMs, zone) ? formatTime(at, zone) : formatDateTime(at, zone)) : '');
 
 export const INTENTS = [['reply', 'Reply'], ['acknowledge', 'Acknowledge'], ['decline', 'Decline politely'], ['ask', 'Ask for details'], ['propose_times', 'Propose times']];
 export const TONES = [['neutral', 'Neutral'], ['friendly', 'Friendly'], ['formal', 'Formal']];
@@ -122,13 +131,44 @@ export function runningLabel(job, { nowMs = Date.now(), verb = 'Drafting' } = {}
 /**
  * "Drafted with Claude Code · Sonnet · 4 s · from 5 messages" (`verb` "Summarized" for a
  * summary). `by` names the automation that prepared it: "Drafted by “Morning brief” with …".
+ * A draft shaped by the user's voice (`p.voice`, reply voice design ruling 20) adds
+ * " · in your voice".
  */
 export function provenanceLabel(p = {}, verb = 'Drafted', by = '') {
   const n = (p.messageIds || []).length;
   const parts = [profileName(p.profile), modelLabel(p.model)];
   if (p.durationMs != null) parts.push(`${Math.max(1, Math.round(p.durationMs / 1000))} s`);
   if (n) parts.push(`from ${n} message${n === 1 ? '' : 's'}`);
-  return `${verb}${by ? ` by ${by}` : ''} with ${parts.filter(Boolean).join(' · ')}`;
+  const base = `${verb}${by ? ` by ${by}` : ''} with ${parts.filter(Boolean).join(' · ')}`;
+  return p.voice ? `${base} · in your voice` : base;
+}
+
+/**
+ * The Context ▾ lines a draft's voice provenance (`p` is `provenance.voice`; reply voice design
+ * § Copy) adds, in order: the voice parts used ("Your voice (<name>): style card · <person>'s
+ * profile · <n> instructions · <n> earlier messages", only the parts used, left out entirely
+ * when none applied), the facts' page titles, a missed-facts note, a from-the-copy note (when
+ * the provider didn't answer in time) and a shortened note. Not escaped: the view escapes each
+ * line as a whole.
+ */
+export function voiceContextLines(p, zone, nowMs = Date.now()) {
+  if (!p || typeof p !== 'object') return [];
+  const name = p.provider || '';
+  const parts = [];
+  if (p.style) parts.push('style card');
+  if (p.person) parts.push(`${p.person}'s profile`);
+  if (p.rules) parts.push(`${p.rules} instruction${p.rules === 1 ? '' : 's'}`);
+  if (p.examples) parts.push(`${p.examples} earlier message${p.examples === 1 ? '' : 's'}`);
+  const lines = [];
+  if (parts.length) lines.push(`Your voice (${name}): ${parts.join(' · ')}`);
+  if (p.facts?.length) lines.push(`Facts from ${name}: ${p.facts.map(f => f.title).join(' · ')}`);
+  if (p.factsMissed) lines.push(`${name} found no facts in time.`);
+  if (p.from === 'copy') {
+    const at = copyTimeLabel(p.at, zone, nowMs);
+    lines.push(`Connect's copy${at ? ` from ${at}` : ''} — ${name} didn't answer.`);
+  }
+  if (p.cut) lines.push('Shortened to fit.');
+  return lines;
 }
 
 // ---------------------------------------------------------------- errors (DESIGN 6.2)

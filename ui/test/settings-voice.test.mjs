@@ -251,6 +251,21 @@ test('import is disabled with Off: "Choose where your voice comes from first."',
   assert.doesNotMatch(open, /data-voice-rule=/);
 });
 
+test('Import from skills… is disabled while an editor holds typed text, so it never drops it silently', () => {
+  const style = draw('ready', { style: { text: 'My new card.', error: null } });
+  assert.match(style, /data-action="voice-import" title="Finish editing first\." disabled/);
+  const rule = draw('ready', { rule: { id: null, scope: 'everyone', value: '', channel: '', text: 'Be brief.', error: null } });
+  assert.match(rule, /data-action="voice-import" title="Finish editing first\." disabled/);
+  // No editor open: Import is enabled and carries no stray title.
+  assert.doesNotMatch(draw('ready'), /data-action="voice-import"[^>]*title=/);
+});
+
+test('a chosen provider with a copy but no refresh yet never reads "No copy yet."', () => {
+  const html = draw('ready', {}, s => { s.replyVoice.refreshedAt = null; return s; });
+  assert.match(text(part(html, 'ws-voice-copy')), /^Connect's copy Refresh now Delete Connect's copy$/);
+  assert.doesNotMatch(html, /No copy yet\./);
+});
+
 test('Default and Compact draw the same card and import markup', () => {
   const panel = view => {
     const s = snap('ready');

@@ -175,7 +175,7 @@ export function withMenuBar(s, stateName) {
 const contract = name => JSON.parse(readFileSync(new URL(`./contract/${name}.json`, import.meta.url), 'utf8'));
 export const contractFixtures = () => ({
   status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail'),
-  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), summary: contract('summary'),
+  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), draftVoice: contract('draft-ai-voice'), summary: contract('summary'),
   jobSummaryFailed: contract('job-ai-summarize-failed'), jobSummaryRunning: contract('job-ai-summarize-running'),
   jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'), jobRunning: contract('job-ai-draft-running'),
   // The `voice_import_scan` answer for the invented skills folder (reply voice design §11).
