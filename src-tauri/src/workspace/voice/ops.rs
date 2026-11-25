@@ -9,12 +9,21 @@
 //! part (`voice_op`) writes its answer into the copy and queues a refresh. Choosing Off keeps the
 //! copy; Delete Connect's copy turns the voice off and deletes it; another provider, or removing
 //! the plugin, deletes it (ruling 12).
-use super::{copy, refresh, VoiceError};
-use crate::workspace::models::{now, Operation, Request, Result, WorkspaceError};
+//!
+//! The skill import (design §11, rulings 36–38): `voice_import_scan` and `voice_import_distil`
+//! are read-style (no operation id, before the lock); `voice_import` asks the provider's
+//! `save {kind: "rules"}` before the lock like `voice_save`, in one write.
+use super::{copy, refresh, skills, VoiceError};
+use crate::ai::command::RunSpec;
+use crate::ai::stream::ErrorClass;
+use crate::workspace::ai::RouteKey;
+use crate::workspace::models::{now, Operation, Purpose, Request, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
-use crate::workspace::Core;
+use crate::workspace::{prompts, Core};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// `save` and `remove`'s limit (design §1).
@@ -28,6 +37,15 @@ const OFF: &str = "Choose where your voice comes from first.";
 const APPLIES: &str = "Say what the instruction applies to.";
 const RULE_TEXT: &str = "Write what to do, up to 2,000 characters.";
 const STYLE_TEXT: &str = "Keep the style card under 8,000 characters.";
+
+/// The import (design §11): at most 50 instructions per save; Shorten with AI's limit.
+const IMPORT_MAX: usize = 50;
+const DISTIL_LIMIT: Duration = Duration::from_secs(120);
+/// The ledger's purpose for a Shorten with AI run (on the Mail replies route).
+const DISTIL_PURPOSE: &str = "voice_import";
+const PATH_MAX: usize = 4_096;
+const NOT_READY: &str =
+    "The AI profile your Mail replies use isn't ready. Check it in Settings › AI.";
 
 fn invalid(field: &str, message: &str) -> WorkspaceError {
     let mut e = WorkspaceError::new("validation", message);
@@ -60,7 +78,7 @@ fn unanswered(name: &str) -> WorkspaceError {
 
 /// `applies` as the provider gets it: a known kind, a value for the kinds that need one, and
 /// an optional `mail` or `teams` channel.
-fn applies(v: &Value) -> Result<Value> {
+pub(super) fn applies(v: &Value) -> Result<Value> {
     let bad = || invalid("applies", APPLIES);
     let kind = v["kind"].as_str().ok_or_else(bad)?;
     let needs_value = match kind {
@@ -163,6 +181,10 @@ pub(crate) struct Asked {
     /// `Core::voice_epoch` when the provider was asked: a delete of the copy since then makes the
     /// answer stale for the copy.
     epoch: usize,
+    /// An import's counts: the instructions the provider was asked to add, and those left out
+    /// (already in the copy, or past the 200-instruction limit).
+    added: usize,
+    skipped: usize,
 }
 
 /// What a voice edit's operation id keeps as its answer (design §6): an ack with the item's id,
@@ -171,6 +193,9 @@ pub(crate) struct Asked {
 pub(in crate::workspace) fn ack(req: &Request, response: &Value) -> Value {
     if req.op == Operation::VoiceDelete {
         json!({"voiceAck": true, "ok": true, "op": "delete", "id": response["removed"]["id"]})
+    } else if req.op == Operation::VoiceImport {
+        json!({"voiceAck": true, "ok": true, "op": "import", "added": response["added"],
+               "skipped": response["skipped"]})
     } else {
         json!({"voiceAck": true, "ok": true, "op": "save", "kind": req.data["kind"],
                "id": response["item"]["id"]})
@@ -244,6 +269,13 @@ fn record(r: &mut Repository, asked: &Asked, epoch: usize, now: i64) -> Result<V
     // Still the chosen provider, and its copy not deleted since the ask (Delete, then the same
     // provider chosen again within the ask, review N1).
     let chosen = r.settings()?.voice.provider == asked.provider && asked.epoch == epoch;
+    if asked.kind == "rules" {
+        if chosen && asked.added > 0 {
+            copy::put_saved(r, &asked.provider, "rules", &asked.answer, now)?;
+            refresh::queue(r, &asked.provider, now)?;
+        }
+        return Ok(json!({"added": asked.added, "skipped": asked.skipped}));
+    }
     if let Some(rule) = &asked.removed {
         if chosen {
             copy::remove_rule(r, &rule.id)?;
@@ -289,6 +321,8 @@ impl Core {
                     answer,
                     removed: None,
                     epoch,
+                    added: 0,
+                    skipped: 0,
                 })
             }
             Operation::VoiceDelete => {
@@ -307,8 +341,11 @@ impl Core {
                     answer: Value::Null,
                     removed: Some(rule),
                     epoch,
+                    added: 0,
+                    skipped: 0,
                 })
             }
+            Operation::VoiceImport => self.voice_import_ask(&req.data).await,
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
         }
     }
@@ -326,7 +363,7 @@ impl Core {
         match req.op {
             Operation::VoiceSet => set(self, &mut r, &req.data, now),
             Operation::VoiceForget => forget(self, &mut r),
-            Operation::VoiceSave | Operation::VoiceDelete => {
+            Operation::VoiceSave | Operation::VoiceDelete | Operation::VoiceImport => {
                 let asked = asked
                     .ok_or_else(|| WorkspaceError::new("validation", "Unsupported operation."))?;
                 let epoch = self.voice_epoch.load(Ordering::SeqCst);
@@ -364,6 +401,9 @@ impl Core {
         }
         if stored["op"] == "delete" {
             return Ok(json!({"removed": {"id": stored["id"]}}));
+        }
+        if stored["op"] == "import" {
+            return Ok(json!({"added": stored["added"], "skipped": stored["skipped"]}));
         }
         let c = copy::read_copy(&*self.repo()?)?;
         let item = match (stored["kind"].as_str(), c) {
@@ -424,6 +464,209 @@ impl Core {
     }
 }
 
+/// The skills folder an import names: an absolute path the scan checks further.
+fn import_path(data: &Value) -> Result<PathBuf> {
+    data["path"]
+        .as_str()
+        .filter(|p| !p.is_empty() && p.len() <= PATH_MAX)
+        .map(PathBuf::from)
+        .ok_or_else(|| invalid("path", skills::CANT_READ))
+}
+
+/// The folder's name, as the preview's title shows it.
+fn folder_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// `voice_import`'s items checked (design §11): 1–50, each a known scope, a text of at most 600
+/// characters and the skill it came from; answered as the provider gets them.
+fn validate_import(data: &Value) -> Result<Vec<Value>> {
+    let list = data["items"]
+        .as_array()
+        .filter(|l| !l.is_empty() && l.len() <= IMPORT_MAX)
+        .ok_or_else(|| invalid("items", "Choose 1 to 50 instructions to add."))?;
+    list.iter()
+        .map(|item| {
+            let applies = applies(&item["applies"])?;
+            let text = item["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty() && t.chars().count() <= skills::ITEM_MAX)
+                .ok_or_else(|| invalid("text", "Write what to do, up to 600 characters."))?;
+            let from = item["from"]
+                .as_str()
+                .map(str::trim)
+                .filter(|f| !f.is_empty() && f.chars().count() <= ID_MAX)
+                .ok_or_else(|| invalid("from", "Say which skill it comes from."))?;
+            Ok(json!({"applies": applies, "text": text, "from": from}))
+        })
+        .collect()
+}
+
+impl Core {
+    /// The chosen provider, refused with Off (design §5's "Choose where your voice comes from
+    /// first.").
+    fn voice_chosen(&self) -> Result<String> {
+        let provider = self.repo()?.settings()?.voice.provider;
+        if provider == "off" {
+            return Err(invalid("provider", OFF));
+        }
+        Ok(provider)
+    }
+
+    /// Scans `path` off the async threads (it reads files).
+    async fn voice_skills(path: PathBuf) -> Result<Vec<skills::SkillDoc>> {
+        tokio::task::spawn_blocking(move || skills::scan(&path))
+            .await
+            .map_err(|_| invalid("path", skills::CANT_READ))?
+    }
+
+    /// `voice_import_scan {path}` (read-style, design §11): the preview of a skills folder the
+    /// user picked; nothing is stored.
+    pub(in crate::workspace) async fn voice_import_scan(&self, req: &Request) -> Result<Value> {
+        self.voice_chosen()?;
+        let path = import_path(&req.data)?;
+        let docs = Self::voice_skills(path.clone()).await?;
+        let copy = copy::read_copy(&*self.repo()?)?;
+        let preview = skills::preview(&docs, copy.as_ref(), &folder_name(&path));
+        log::info!(
+            "voice: import scan found {} skills, {} instructions, {} not imported",
+            preview.found,
+            preview.items.len(),
+            preview.skipped.len()
+        );
+        Ok(json!(preview))
+    }
+
+    /// `voice_import_distil {path, skill}` (read-style, design §11, ruling 37): one tool-free run
+    /// on the Mail replies route, outside the mutation lock, whose answer is checked before it
+    /// reaches the preview. The ledger records the run with no text.
+    pub(in crate::workspace) async fn voice_import_distil(&self, req: &Request) -> Result<Value> {
+        self.voice_chosen()?;
+        let path = import_path(&req.data)?;
+        let skill = req.data["skill"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.chars().count() <= ID_MAX)
+            .ok_or_else(|| invalid("skill", "Choose a skill."))?
+            .to_string();
+        let doc = Self::voice_skills(path)
+            .await?
+            .into_iter()
+            .find(|d| d.name.is_some() && d.problem.is_none() && d.label == skill)
+            .ok_or_else(|| invalid("skill", "That skill is no longer in the folder."))?;
+        let text = skills::distil_input(&doc);
+        let not_ready = || WorkspaceError::new("not_ready", NOT_READY);
+        let resolved = self
+            .resolve_key(&RouteKey::Purpose(Purpose::MailDraft))
+            .await
+            .map_err(|_| not_ready())?;
+        let spec = RunSpec {
+            purpose: DISTIL_PURPOSE.into(),
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
+            system: prompts::SKILL_DISTIL_SYSTEM.into(),
+            input: json!({"skill": skill, "text": format!("<message>\n{text}\n</message>")}),
+            schema: Some(prompts::schema(prompts::SKILL_DISTIL_SCHEMA)),
+            timeout: DISTIL_LIMIT,
+            cap_usd: None,
+            staging_root: self.paths.ensure_staging()?,
+            folder: None,
+        };
+        let started = std::time::Instant::now();
+        let (result, spec, _) = self
+            .run_resolved(
+                &resolved,
+                spec,
+                self.ai_cancel.child_token(),
+                Arc::new(|_| {}),
+                None,
+                &|_| {},
+            )
+            .await;
+        let mut record = self.ai_run_record(
+            &spec,
+            result.as_ref().ok(),
+            result.as_ref().err(),
+            started.elapsed(),
+            None,
+        );
+        record.data["fallbackFrom"] = json!(resolved.fallback_from(&spec));
+        self.put_ai_run(&record);
+        let didnt_fit = |message: String| WorkspaceError::new("invalid_output", message);
+        let outcome = result.map_err(|e| match e.class {
+            ErrorClass::NotInstalled
+            | ErrorClass::TooOld
+            | ErrorClass::NeedsLogin
+            | ErrorClass::NotConfigured
+            | ErrorClass::NeedsChoice => not_ready(),
+            ErrorClass::InvalidOutput => {
+                didnt_fit(format!("AI's answer didn't fit, so {skill} is unchanged."))
+            }
+            _ => e.into(),
+        })?;
+        let answer = outcome.structured.map_or(outcome.text, |v| v.to_string());
+        match skills::parse_distilled(&skill, &answer) {
+            Ok(items) => {
+                log::info!(
+                    "voice: import shortened one skill into {} instructions",
+                    items.len()
+                );
+                Ok(json!({"skill": skill, "items": items}))
+            }
+            Err(message) => {
+                log::info!("voice: import refused an AI answer that didn't fit");
+                Err(didnt_fit(message))
+            }
+        }
+    }
+
+    /// `voice_import`'s provider call, before the mutation lock (design §11): the items already
+    /// in the copy (same scope, same text after folding) and those past the 200-instruction
+    /// limit are left out, and the rest go to the provider's `save {kind: "rules"}` in one call.
+    /// Nothing left to add asks nothing.
+    async fn voice_import_ask(&self, data: &Value) -> Result<Asked> {
+        let items = validate_import(data)?;
+        let provider = self.voice_chosen()?;
+        let copy = copy::read_copy(&*self.repo()?)?;
+        let mut known = skills::copy_keys(copy.as_ref());
+        let room = 200usize.saturating_sub(copy.map_or(0, |c| c.rules.len()));
+        let fresh: Vec<Value> = items
+            .iter()
+            .filter(|i| {
+                known.insert(skills::fold_key(
+                    &i["applies"],
+                    i["text"].as_str().unwrap_or_default(),
+                ))
+            })
+            .take(room)
+            .cloned()
+            .collect();
+        let skipped = items.len() - fresh.len();
+        let epoch = self.voice_epoch.load(Ordering::SeqCst);
+        log::info!(
+            "voice: import of {} instructions, {} left out",
+            fresh.len(),
+            skipped
+        );
+        let (provider, answer) = if fresh.is_empty() {
+            (provider, Value::Null)
+        } else {
+            through(self, "save", json!({"kind": "rules", "items": fresh})).await?
+        };
+        Ok(Asked {
+            provider,
+            kind: "rules",
+            answer,
+            removed: None,
+            epoch,
+            added: fresh.len(),
+            skipped,
+        })
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::super::fake::FakeVoice;
@@ -441,6 +684,7 @@ pub(crate) mod tests {
         _dir: tempfile::TempDir,
         pub(crate) core: Arc<Core>,
         pub(crate) fake: Arc<FakeVoice>,
+        pub(crate) runner: Arc<FakeRunner>,
     }
 
     fn info(id: &str, name: &str, on: bool) -> VoiceInfo {
@@ -455,8 +699,16 @@ pub(crate) mod tests {
 
     /// A core with Knowledge (and Other) installed and on, the voice Off.
     pub(crate) fn env() -> Env {
+        env_with(vec![])
+    }
+
+    /// [`env`] whose Claude runs play `script`.
+    pub(crate) fn env_with(
+        script: Vec<std::result::Result<crate::ai::stream::RunOutcome, crate::ai::stream::AiError>>,
+    ) -> Env {
         let dir = tempfile::tempdir().unwrap();
-        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let runner = Arc::new(FakeRunner::new(script));
+        let core = test_core(dir.path(), runner.clone(), ready());
         let fake = Arc::new(FakeVoice::new());
         fake.set_available(vec![
             info(KNOWLEDGE, "Knowledge", true),
@@ -467,6 +719,7 @@ pub(crate) mod tests {
             _dir: dir,
             core,
             fake,
+            runner,
         }
     }
 
@@ -1347,5 +1600,407 @@ pub(crate) mod tests {
             None::<VoiceState>
         );
         crate::plugins::testkit::contract_fixture("voice-forget.json", &answer);
+    }
+
+    // --- Importing skills (design §11) -------------------------------------------------------
+
+    fn skills_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/voice-skills")
+    }
+
+    fn path_of(p: &std::path::Path) -> Value {
+        json!(p.display().to_string())
+    }
+
+    /// The Mail replies route on `codemie:prod`, everything else on `claude`.
+    fn route_mail_replies(e: &Env) {
+        let mut r = e.core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.ai = serde_json::from_value(json!({"defaultProfile": "claude",
+            "routes": {"mail_draft": {"profile": "codemie:prod"}}}))
+        .unwrap();
+        r.settings_update(&s).unwrap();
+    }
+
+    fn distilled(answer: Value) -> crate::ai::stream::RunOutcome {
+        crate::ai::stream::RunOutcome {
+            structured: Some(answer),
+            text: String::new(),
+            usage: Default::default(),
+            cost_usd: Some(0.01),
+            duration_ms: 900,
+            model: Some("m".into()),
+        }
+    }
+
+    fn ai_runs(e: &Env) -> Vec<Value> {
+        e.core
+            .repo()
+            .unwrap()
+            .records_of_kind("ai_run")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.data)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn scan_is_refused_with_off() {
+        let e = env();
+        let err = e
+            .op(
+                Operation::VoiceImportScan,
+                json!({"path": path_of(&skills_dir())}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, OFF);
+        e.choose_with_copy().await;
+        for path in [
+            path_of(&skills_dir().join("broken/SKILL.md")),
+            path_of(&skills_dir().join("missing")),
+            json!("relative"),
+            json!(7),
+        ] {
+            let err = e
+                .op(Operation::VoiceImportScan, json!({"path": path}))
+                .await
+                .unwrap_err();
+            assert_eq!(err.message, "That folder can't be read.", "{path}");
+        }
+        let answer = e
+            .op(
+                Operation::VoiceImportScan,
+                json!({"path": path_of(&skills_dir())}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["folder"], "voice-skills");
+        assert_eq!(answer["found"], 6);
+        // Read-only: nothing asked of the provider, nothing written.
+        assert!(e.calls_of("save").is_empty());
+    }
+
+    #[tokio::test]
+    async fn distil_runs_only_on_the_mail_replies_route_with_no_tools() {
+        let e = env_with(vec![Ok(distilled(json!({"instructions": [
+            {"applies": {"kind": "everyone"}, "text": "Lead with the answer."},
+            {"applies": {"kind": "everyone", "channel": "mail"}, "text": "Short paragraphs."}
+        ]})))]);
+        e.choose_with_copy().await;
+        route_mail_replies(&e);
+        let answer = e
+            .op(
+                Operation::VoiceImportDistil,
+                json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["skill"], "long-standard");
+        let items = answer["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1]["applies"],
+            json!({"kind": "everyone", "channel": "mail"})
+        );
+        assert_eq!(items[1]["skill"], "long-standard");
+        let calls = e.runner.calls();
+        assert_eq!(calls.len(), 1);
+        let spec = &calls[0];
+        assert_eq!(spec.profile_id, "codemie:prod", "the Mail replies route");
+        assert!(spec.folder.is_none(), "no folder, so no tools");
+        assert_eq!(spec.timeout, std::time::Duration::from_secs(120));
+        assert_eq!(spec.system, crate::workspace::prompts::SKILL_DISTIL_SYSTEM);
+        let input = spec.input.to_string();
+        assert!(input.contains("Lead with the answer or the decision"));
+        for bad in ["references/standard.md", "@", "http", "node "] {
+            assert!(!input.contains(bad), "{bad} in the input");
+        }
+        // One ledger entry, no skill text in it.
+        let runs = ai_runs(&e);
+        assert_eq!(runs.len(), 1);
+        let run = runs[0].to_string();
+        assert!(!run.contains("long-standard"), "{run}");
+        assert!(!run.contains("Lead with"), "{run}");
+        assert_eq!(runs[0]["profile"], "codemie:prod");
+        assert!(runs[0]["tools"].is_null());
+        // The deploy procedure's input holds no script line.
+        let e = env_with(vec![Ok(distilled(json!({"instructions": [
+            {"applies": {"kind": "everyone"}, "text": "Keep release notes short."}]})))]);
+        e.choose_with_copy().await;
+        route_mail_replies(&e);
+        e.op(
+            Operation::VoiceImportDistil,
+            json!({"path": path_of(&skills_dir()), "skill": "deploy-helper"}),
+        )
+        .await
+        .unwrap();
+        let input = e.runner.calls()[0].input.to_string();
+        assert!(
+            !input.contains("run.mjs") && !input.contains("deploying"),
+            "{input}"
+        );
+    }
+
+    #[tokio::test]
+    async fn distil_refuses_an_answer_that_does_not_fit() {
+        let refused = "AI's answer didn't fit, so long-standard is unchanged.";
+        let item = |applies: Value, text: &str| json!({"applies": applies, "text": text});
+        let every = json!({"kind": "everyone"});
+        let answers = vec![
+            json!({"instructions": vec![item(every.clone(), "Short."); 5]}),
+            json!({"instructions": [item(every.clone(), &"x".repeat(700))]}),
+            json!({"instructions": [item(json!({"kind": "send"}), "Short.")]}),
+            json!({"instructions": [item(every.clone(), "run the script")]}),
+            json!("not an object"),
+        ];
+        let n = answers.len();
+        let e = env_with(answers.into_iter().map(|a| Ok(distilled(a))).collect());
+        e.choose_with_copy().await;
+        route_mail_replies(&e);
+        for _ in 0..n {
+            let err = e
+                .op(
+                    Operation::VoiceImportDistil,
+                    json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.message, refused);
+        }
+        // A skill the folder doesn't hold.
+        let err = e
+            .op(
+                Operation::VoiceImportDistil,
+                json!({"path": path_of(&skills_dir()), "skill": "nope"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.field.as_deref(), Some("skill"));
+        // A route that isn't ready: no profile chosen, then one that isn't installed.
+        let e = env();
+        e.choose_with_copy().await;
+        let ready_msg =
+            "The AI profile your Mail replies use isn't ready. Check it in Settings › AI.";
+        let distil = || {
+            e.op(
+                Operation::VoiceImportDistil,
+                json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+            )
+        };
+        assert_eq!(distil().await.unwrap_err().message, ready_msg);
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_profile = Some("codemie:missing".into());
+            r.settings_update(&s).unwrap();
+        }
+        assert_eq!(distil().await.unwrap_err().message, ready_msg);
+        assert!(e.runner.calls().is_empty(), "nothing ran");
+    }
+
+    #[tokio::test]
+    async fn import_saves_through_the_provider_in_one_call() {
+        let e = env();
+        e.choose_with_copy().await;
+        e.run_jobs().await;
+        let item = |applies: Value, text: &str| json!({"applies": applies, "text": text, "from": "reply-style"});
+        let items = json!([
+            item(
+                json!({"kind": "everyone", "channel": "mail"}),
+                "Open with the first name."
+            ),
+            item(json!({"kind": "everyone"}), "never promise a DATE."),
+            item(json!({"kind": "no-profile"}), "Introduce yourself."),
+            item(
+                json!({"kind": "topic", "value": "budget request"}),
+                "Ask for the cost code."
+            ),
+        ]);
+        e.fake.answer(
+            "save",
+            json!({"items": [
+                {"id": "imp-1", "applies": {"kind": "everyone", "channel": "mail"}, "text": "Open with the first name.", "source": "Voice/rules.md", "editable": true},
+                {"id": "imp-2", "applies": {"kind": "no-profile"}, "text": "Introduce yourself.", "source": "Voice/rules.md", "editable": true},
+                {"id": "imp-3", "applies": {"kind": "topic", "value": "budget request"}, "text": "Ask for the cost code.", "source": "Voice/rules.md", "editable": true}
+            ]}),
+        );
+        let before = e.copy().unwrap().rules.len();
+        let answer = e
+            .op(Operation::VoiceImport, json!({"items": items}))
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"added": 3, "skipped": 1}));
+        let saves = e.calls_of("save");
+        assert_eq!(saves.len(), 1, "one write");
+        assert_eq!(saves[0]["kind"], "rules");
+        let sent = saves[0]["items"].as_array().unwrap();
+        assert_eq!(sent.len(), 3);
+        assert!(sent.iter().all(|i| i["from"] == "reply-style"));
+        assert!(sent.iter().all(|i| i["text"] != "never promise a DATE."));
+        assert_eq!(e.copy().unwrap().rules.len(), before + 3);
+        assert_eq!(e.refreshes_queued(), 1);
+        // A resend finds them in the copy and asks nothing.
+        let answer = e
+            .op(Operation::VoiceImport, json!({"items": items}))
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"added": 0, "skipped": 4}));
+        assert_eq!(e.calls_of("save").len(), 1);
+        // The input is checked first.
+        for bad in [
+            json!({"items": []}),
+            json!({"items": vec![item(json!({"kind": "everyone"}), "x"); 51]}),
+            json!({"items": [item(json!({"kind": "anyone"}), "x")]}),
+            json!({"items": [item(json!({"kind": "everyone"}), &"x".repeat(601))]}),
+            json!({"items": [{"applies": {"kind": "everyone"}, "text": "x"}]}),
+        ] {
+            assert!(
+                e.op(Operation::VoiceImport, bad.clone()).await.is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(e.calls_of("save").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn import_reports_a_refusal_and_an_unanswered_provider() {
+        let e = env();
+        e.choose_with_copy().await;
+        let before = e.copy().unwrap();
+        let items = json!([{"applies": {"kind": "everyone"}, "text": "Be brief.", "from": "s"}]);
+        e.fake.fail(
+            "save",
+            "refused: The page changed in your folder. Refresh and try again.",
+        );
+        let err = e
+            .op(Operation::VoiceImport, json!({"items": items}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.message,
+            "Knowledge didn't save it: The page changed in your folder. Refresh and try again."
+        );
+        let err = e
+            .op(Operation::VoiceImport, json!({"items": items}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.message,
+            "Knowledge isn't answering, so nothing was saved. Try again."
+        );
+        assert_eq!(e.copy().unwrap(), before);
+        // Off: refused before the provider is asked.
+        e.op(Operation::VoiceSet, json!({"provider": "off"}))
+            .await
+            .unwrap();
+        let err = e
+            .op(Operation::VoiceImport, json!({"items": items}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, OFF);
+        assert_eq!(e.calls_of("save").len(), 2);
+    }
+
+    /// Skill text reaches no log line, no ledger entry and no job (ruling 22).
+    #[tokio::test]
+    async fn no_log_line_carries_skill_text() {
+        crate::testing::capture_logs();
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("sentinel-style");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: sentinel-style\ndescription: How I write replies.\n---\n\n## Mail\n\n- Close with {SENTINEL}.\n"),
+        )
+        .unwrap();
+        let e = env_with(vec![
+            Ok(distilled(json!({"instructions": [
+                {"applies": {"kind": "everyone"}, "text": format!("Close with {SENTINEL}.")}]}))),
+            Ok(distilled(json!({"instructions": [
+                {"applies": {"kind": "everyone"}, "text": format!("run {SENTINEL}")}]}))),
+        ]);
+        e.choose_with_copy().await;
+        route_mail_replies(&e);
+        let path = path_of(root.path());
+        let preview = e
+            .op(Operation::VoiceImportScan, json!({"path": path}))
+            .await
+            .unwrap();
+        assert!(
+            preview.to_string().contains(SENTINEL),
+            "the preview shows it"
+        );
+        e.op(
+            Operation::VoiceImportDistil,
+            json!({"path": path, "skill": "sentinel-style"}),
+        )
+        .await
+        .unwrap();
+        let _ = e
+            .op(
+                Operation::VoiceImportDistil,
+                json!({"path": path, "skill": "sentinel-style"}),
+            )
+            .await;
+        e.fake.answer(
+            "save",
+            json!({"items": [{"id": "s1", "applies": {"kind": "everyone"},
+                   "text": format!("Close with {SENTINEL}."), "source": "Voice/rules.md"}]}),
+        );
+        e.op(
+            Operation::VoiceImport,
+            json!({"items": [{"applies": {"kind": "everyone"}, "text": format!("Close with {SENTINEL}."), "from": "sentinel-style"}]}),
+        )
+        .await
+        .unwrap();
+        e.fake.fail("save", &format!("refused: {SENTINEL}"));
+        let _ = e
+            .op(
+                Operation::VoiceImport,
+                json!({"items": [{"applies": {"kind": "everyone"}, "text": format!("Again {SENTINEL}."), "from": "sentinel-style"}]}),
+            )
+            .await;
+        let imports: Vec<String> = crate::testing::logged_lines()
+            .into_iter()
+            .filter(|l| l.starts_with("voice: import"))
+            .collect();
+        assert!(!imports.is_empty(), "the import logs its counts");
+        for line in crate::testing::logged_lines() {
+            assert!(
+                !line.contains(SENTINEL),
+                "a log line carries skill text: {line}"
+            );
+        }
+        for run in ai_runs(&e) {
+            assert!(
+                !run.to_string().contains(SENTINEL),
+                "the ledger carries skill text"
+            );
+        }
+        for job in e.core.repo().unwrap().jobs().unwrap() {
+            assert!(!serde_json::to_string(&job).unwrap().contains(SENTINEL));
+        }
+    }
+
+    /// The `voice_import_scan` answer for the invented skills folder. Regenerate with
+    /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_voice_import_preview() {
+        let e = env();
+        e.op(Operation::VoiceSet, json!({"provider": KNOWLEDGE}))
+            .await
+            .unwrap();
+        let answer = e
+            .op(
+                Operation::VoiceImportScan,
+                json!({"path": path_of(&skills_dir())}),
+            )
+            .await
+            .unwrap();
+        assert!(!answer
+            .to_string()
+            .contains(&*skills_dir().to_string_lossy()));
+        crate::plugins::testkit::contract_fixture("voice-import-preview.json", &answer);
     }
 }

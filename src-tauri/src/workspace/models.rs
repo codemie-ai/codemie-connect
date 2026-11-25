@@ -162,6 +162,9 @@ pub enum Operation {
     VoiceForget,
     VoiceRefresh,
     VoiceRead,
+    VoiceImportScan,
+    VoiceImportDistil,
+    VoiceImport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

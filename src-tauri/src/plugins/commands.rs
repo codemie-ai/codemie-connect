@@ -21,7 +21,7 @@
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
-//! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
+//! | `pick_folder` | `{purpose?}` | `{path}`: the folder the user chose for a marketplace (no `purpose`) or their skills (`purpose: "skills"`, the voice import), `null` when they cancelled |
 //! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
 //! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
 //! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
@@ -83,10 +83,9 @@ pub async fn plugins_request(
     not_restarting(&state)?;
     let running = counted?;
     if op == "pick_folder" {
-        crate::commands::tour::opens_nothing("plugins_request:pick_folder")
-            .map_err(|m| WorkspaceError::new("tour", m))?;
-        let folder = manager_of(&window)?.pick_market_folder().await;
-        return Ok(json!({"path": folder.map(|f| f.display().to_string())}));
+        let services = manager_of(&window)?.services().clone();
+        let data = data.unwrap_or(Value::Null);
+        return pick_folder(&services, &data, crate::commands::tour::running()).await;
     }
     if op == "open_link" {
         let a: LinkArg = arg(data.unwrap_or(Value::Null))?;
@@ -193,6 +192,33 @@ pub async fn plugin_call(
         .call_with_files(&id, &command, args.unwrap_or(Value::Null), &files)
         .await
         .map_err(host_error)
+}
+
+/// The native folder picker's title for what the folder is for: a marketplace (no `purpose`)
+/// or the skills folder the voice import scans (reply voice design §11).
+fn pick_title(data: &Value) -> Result<&'static str> {
+    match &data["purpose"] {
+        Value::Null => Ok("Choose a plugin marketplace folder"),
+        Value::String(p) if p == "skills" => Ok("Choose your skills folder"),
+        _ => Err(WorkspaceError::new(
+            "validation",
+            "Choose what the folder is for.",
+        )),
+    }
+}
+
+/// `pick_folder {purpose?}`: the user's choice in the native picker, `{path: null}` when they
+/// cancelled. A tour opens nothing on the user's screen (`tour`): refused before the picker.
+async fn pick_folder(
+    services: &super::services::Services,
+    data: &Value,
+    tour: bool,
+) -> Result<Value> {
+    crate::commands::tour::open_refused(tour, "plugins_request:pick_folder")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
+    let title = pick_title(data)?;
+    let folder = services.pick_folder(title).await;
+    Ok(json!({"path": folder.map(|f| f.display().to_string())}))
 }
 
 /// The plugin manager, which runs while the data folder is open.
@@ -850,6 +876,40 @@ mod tests {
     use crate::plugins::testkit::{self, manifest, FakeGit};
 
     const PINNED_TIME: &str = "2026-11-17T09:30:00Z";
+
+    #[tokio::test]
+    async fn pick_folder_for_skills_titles_the_dialog() {
+        let env = crate::plugins::services::testing::Env::new();
+        let skills = env.dir.path().join("skills");
+        env.picker.next(&skills);
+        let answer = pick_folder(&env.services, &json!({"purpose": "skills"}), false)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"path": skills.display().to_string()}));
+        // Cancelled: no path.
+        let answer = pick_folder(&env.services, &Value::Null, false)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"path": null}));
+        assert_eq!(
+            *env.picker.3.lock().unwrap(),
+            [
+                "Choose your skills folder",
+                "Choose a plugin marketplace folder"
+            ]
+        );
+        let err = pick_folder(&env.services, &json!({"purpose": "nope"}), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "validation");
+        // A tour opens nothing: refused before any picker.
+        env.picker.next(&skills);
+        let err = pick_folder(&env.services, &json!({"purpose": "skills"}), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, "The tour opens nothing.");
+        assert_eq!(env.picker.3.lock().unwrap().len(), 2, "nothing opened");
+    }
 
     #[test]
     fn open_link_opens_only_https_and_obsidian_addresses() {

@@ -22,6 +22,7 @@ pub mod fake;
 pub mod ops;
 pub mod refresh;
 pub mod sent;
+pub mod skills;
 pub mod terms;
 
 /// Settings › Your voice (design §7): which provider is active, app-wide like `tasks`, and

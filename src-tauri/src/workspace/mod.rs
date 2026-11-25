@@ -941,6 +941,15 @@ impl Core {
         if req.op == Operation::VoiceRead {
             return self.voice_read(&req);
         }
+        // Read-style: the skill import's scan reads the folder the user picked, and its Shorten
+        // with AI runs Claude (up to 120 s) — both before the mutation lock, nothing stored but
+        // the run's own `ai_run` record, so no operation id.
+        if req.op == Operation::VoiceImportScan {
+            return self.voice_import_scan(&req).await;
+        }
+        if req.op == Operation::VoiceImportDistil {
+            return self.voice_import_distil(&req).await;
+        }
         // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
         if matches!(
             req.op,
@@ -1036,7 +1045,10 @@ impl Core {
         // part writes its answer into Connect's copy. A replay of an operation id that already
         // succeeded answers its stored result, and a stale request is refused, before anything
         // is asked of the provider.
-        let asked = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
+        let asked = if matches!(
+            req.op,
+            Operation::VoiceSave | Operation::VoiceDelete | Operation::VoiceImport
+        ) {
             if !self.repo()?.peek_request(&req)? {
                 let stored = self
                     .repo()?
@@ -1518,12 +1530,16 @@ impl Core {
             Operation::VoiceSet
             | Operation::VoiceSave
             | Operation::VoiceDelete
-            | Operation::VoiceForget => self.voice_op(&req, asked)?,
+            | Operation::VoiceForget
+            | Operation::VoiceImport => self.voice_op(&req, asked)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         // A voice edit's stored answer is an ack without its text (design §6: no voice text
         // outlives Delete Connect's copy); a replay rebuilds the answer from the copy.
-        let stored = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
+        let stored = if matches!(
+            req.op,
+            Operation::VoiceSave | Operation::VoiceDelete | Operation::VoiceImport
+        ) {
             voice::ops::ack(&req, &response)
         } else {
             response.clone()

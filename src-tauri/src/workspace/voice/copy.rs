@@ -391,7 +391,8 @@ pub fn merge_context(r: &mut Repository, provider: &str, answer: &Value, at: i64
 /// Writes what a provider's `save` answered (design §7's `voice_save`: "writes the answer into
 /// the copy") — a `style` or one `rule`, cut to the copy's limits like an `export` — and answers
 /// the item as the copy keeps it, or `null` when the answer holds no usable item (the queued
-/// refresh brings it then).
+/// refresh brings it then). `rules` (the skill import, §11) writes every rule of the answer's
+/// `items` in one transaction and answers them as a list.
 pub fn put_saved(
     r: &mut Repository,
     provider: &str,
@@ -399,6 +400,21 @@ pub fn put_saved(
     answer: &Value,
     at: i64,
 ) -> Result<Value> {
+    if kind == "rules" {
+        // The import's one write (design §1: `kind: "rules"` answers `{items: [<rule>]}`).
+        let records: Vec<Record> = answer["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(parse_rule)
+            .map(|rule| item_record(KIND_RULE, &rule.id, &rule, provider, at))
+            .collect();
+        let items: Vec<Value> = records.iter().map(|r| r.data.clone()).collect();
+        if !records.is_empty() {
+            r.put_global_records(&records)?;
+        }
+        return Ok(Value::Array(items));
+    }
     let record = match kind {
         "style" => parse_style(answer).map(|s| item_record(KIND_STYLE, "style", &s, provider, at)),
         "rule" => {

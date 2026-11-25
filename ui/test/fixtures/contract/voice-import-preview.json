@@ -1,0 +1,110 @@
+{
+  "ai": [
+    "deploy-helper",
+    "long-standard"
+  ],
+  "folder": "voice-skills",
+  "found": 6,
+  "items": [
+    {
+      "applies": {
+        "kind": "topic",
+        "value": "budget request"
+      },
+      "kept": 1,
+      "key": "budget-answers#1",
+      "skill": "budget-answers",
+      "text": "Ask for the cost code and the approver before agreeing to any amount. Keep the answer under five sentences.",
+      "total": 1
+    },
+    {
+      "applies": {
+        "kind": "everyone"
+      },
+      "kept": 6,
+      "key": "long-standard#1",
+      "skill": "long-standard",
+      "text": "Lead with the answer or the decision in the first sentence, so a reader who stops after one line still knows what you need from them, what you decided, and by when it matters; put the reasons and the background after that, never before it.\nWrite for someone who reads on a phone between meetings: short paragraphs of two or three sentences, one idea per paragraph, and a blank line between them, so the message can be skimmed quickly and nobody has to scroll back to find the question.",
+      "total": 14
+    },
+    {
+      "applies": {
+        "kind": "everyone"
+      },
+      "kept": 6,
+      "key": "long-standard#2",
+      "skill": "long-standard",
+      "text": "When you disagree with someone, say what you agree with first, then say plainly what you see differently and why, using the facts both of you already have rather than opinions; offer one concrete next step that would settle it, and keep the tone calm even when the other message was sharp, because a reply written in a hurry is read slowly and kept for a long time by everyone on the thread.",
+      "total": 14
+    },
+    {
+      "applies": {
+        "kind": "everyone"
+      },
+      "kept": 6,
+      "key": "long-standard#3",
+      "skill": "long-standard",
+      "text": "Say no clearly and early when the answer is no: name the request, give the real reason in one sentence, and, when you can, say what you could do instead and when; do not hide the refusal in the middle of a long paragraph or soften it until it reads like a maybe, because a vague answer costs the other person far more time and goodwill than a clear and kind refusal ever would.",
+      "total": 14
+    },
+    {
+      "applies": {
+        "kind": "everyone"
+      },
+      "kept": 6,
+      "key": "long-standard#4",
+      "skill": "long-standard",
+      "text": "Use the words the other person used for their project, their product and their problem, even when your team calls it something else; it shows you read their message carefully and it keeps both sides from talking past each other in later replies.\nPrefer plain verbs to abstract nouns: write \"we decided\" rather than \"a decision was made\", and \"please check\" rather than \"verification is requested\"; plain verbs make it clear who does what, and they keep sentences short.",
+      "total": 14
+    },
+    {
+      "applies": {
+        "channel": "mail",
+        "kind": "everyone"
+      },
+      "kept": 7,
+      "key": "reply-style#1",
+      "skill": "reply-style",
+      "text": "Open with the person's first name, never \"Dear\".\nKeep it to three short paragraphs at most.\nSign off with \"Thanks,\" and my first name.",
+      "total": 7
+    },
+    {
+      "applies": {
+        "channel": "teams",
+        "kind": "everyone"
+      },
+      "kept": 7,
+      "key": "reply-style#2",
+      "skill": "reply-style",
+      "text": "One or two lines, no greeting.\nLowercase is fine for quick answers.",
+      "total": 7
+    },
+    {
+      "applies": {
+        "kind": "no-profile"
+      },
+      "kept": 7,
+      "key": "reply-style#3",
+      "skill": "reply-style",
+      "text": "Introduce yourself in one sentence and say why you are writing.\nUse full sentences and a polite sign-off.",
+      "total": 7
+    }
+  ],
+  "skipped": [
+    {
+      "code": "unreadable",
+      "reason": "Its SKILL.md has no name in its frontmatter.",
+      "skill": "broken"
+    },
+    {
+      "code": "procedure",
+      "reason": "A procedure that runs tools. It waits for the skill runner, a later step.",
+      "skill": "deploy-helper"
+    },
+    {
+      "code": "not_reply",
+      "reason": "Not about how you write messages.",
+      "skill": "meeting-notes"
+    }
+  ]
+}

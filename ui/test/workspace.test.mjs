@@ -1835,3 +1835,9 @@ test('the column’s markup is the same in Default and Compact', () => {
   assert.ok(a, 'the column renders');
   assert.equal(a, b, 'Default and Compact share the same markup; only --ws-mtg-items-w differs, in CSS');
 });
+
+test('the voice import resends safely; its scan and Shorten with AI are reads', () => {
+  // A resent voice_import finds the items already in Connect's copy (reply voice design §11).
+  assert.ok(REBASE_SAFE.has('voice_import'));
+  for (const op of ['voice_import_scan', 'voice_import_distil']) assert.ok(!REBASE_SAFE.has(op), op);
+});

@@ -109,6 +109,8 @@ pub struct Picked(
     pub Mutex<Vec<PathBuf>>,
     /// What the user types in the address box next.
     pub Mutex<Option<String>>,
+    /// The title of every folder picker opened, in order.
+    pub Mutex<Vec<String>>,
 );
 
 impl Picked {
@@ -124,7 +126,8 @@ impl Picked {
 }
 
 impl FolderPicker for Picked {
-    fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
+    fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>> {
+        self.3.lock().unwrap().push(title);
         let picked = self.0.lock().unwrap().take();
         Box::pin(async move { picked })
     }
