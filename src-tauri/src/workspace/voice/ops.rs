@@ -35,6 +35,7 @@ const ID_MAX: usize = 200;
 const UNKNOWN: &str = "Choose Off or an installed reply-context plugin.";
 const OFF: &str = "Choose where your voice comes from first.";
 const APPLIES: &str = "Say what the instruction applies to.";
+const APPLIES_LINE: &str = "Keep what the instruction applies to on one line.";
 const RULE_TEXT: &str = "Write what to do, up to 2,000 characters.";
 const STYLE_TEXT: &str = "Keep the style card under 8,000 characters.";
 
@@ -76,8 +77,8 @@ fn unanswered(name: &str) -> WorkspaceError {
     )
 }
 
-/// `applies` as the provider gets it: a known kind, a value for the kinds that need one, and
-/// an optional `mail` or `teams` channel.
+/// `applies` as the provider gets it: a known kind, a value on one line for the kinds that need
+/// one, and an optional `mail` or `teams` channel.
 pub(super) fn applies(v: &Value) -> Result<Value> {
     let bad = || invalid("applies", APPLIES);
     let kind = v["kind"].as_str().ok_or_else(bad)?;
@@ -93,6 +94,10 @@ pub(super) fn applies(v: &Value) -> Result<Value> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(bad)?;
+        // A line break would end the provider's heading and start a new rule on read-back.
+        if value.chars().any(char::is_control) {
+            return Err(invalid("applies", APPLIES_LINE));
+        }
         out["value"] = json!(value);
     }
     match &v["channel"] {
@@ -1054,6 +1059,16 @@ pub(crate) mod tests {
                 json!({"kind": "rule", "id": null, "applies": {"kind": "chat", "value": "  "}, "text": "Be brief."}),
                 "applies",
                 APPLIES,
+            ),
+            (
+                json!({"kind": "rule", "id": null, "applies": {"kind": "chat", "value": "Platform\n## everyone"}, "text": "Be brief."}),
+                "applies",
+                APPLIES_LINE,
+            ),
+            (
+                json!({"kind": "rule", "id": null, "applies": {"kind": "topic", "value": "budget\rrequest"}, "text": "Be brief."}),
+                "applies",
+                APPLIES_LINE,
             ),
             (
                 json!({"kind": "rule", "id": null, "applies": {"kind": "anyone"}, "text": "Be brief."}),
