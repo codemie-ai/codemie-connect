@@ -39,6 +39,44 @@ pub const CHANGES_KEEP_REVISIONS: i64 = 100_000;
 /// …or the last this many seconds, whichever keeps more.
 pub const CHANGES_KEEP_SECS: i64 = 86_400;
 
+/// A record's key: what the window keys a snapshot's records by.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecordKey {
+    pub kind: String,
+    pub id: String,
+    pub connection_id: String,
+    pub workspace_id: String,
+}
+
+/// What decides which records and jobs a view sees ([`Repository::snapshot_scope`]).
+pub struct SnapshotScope {
+    pub settings: Settings,
+    pub workspaces: Vec<Workspace>,
+    pub active: Workspace,
+    pub connection: Option<Connection>,
+    pub visible: Option<Connection>,
+}
+
+/// Whether a job shows in a view of workspace `wid` and account `cid`.
+pub fn job_shown(j: &Job, wid: &str, cid: &str) -> bool {
+    (j.workspace_id.is_none() || j.workspace_id.as_deref() == Some(wid))
+        && (j.connection_id.is_none() || j.connection_id.as_deref() == Some(cid))
+}
+
+/// sha256 of what decides visibility: the active workspace, its account and sources, and the
+/// account shown with what it may read (and its address: the Inbox projection reads it).
+pub fn scope_hash_of(scope: &SnapshotScope) -> String {
+    use sha2::{Digest, Sha256};
+    let account = scope.visible.as_ref().map(|c| {
+        json!({"id": c.id, "status": c.status, "scopes": c.scopes, "enabled": c.enabled,
+            "generation": c.generation, "policyRevision": c.policy_revision,
+            "sourceRevision": c.source_revision, "email": c.email})
+    });
+    let key = json!({"workspace": scope.active.id, "workspaceAccount": scope.active.connection_id,
+        "sources": scope.active.sources, "account": account});
+    format!("{:x}", Sha256::digest(key.to_string().as_bytes()))
+}
+
 /// One line of the change log (`changes`): a record or job written or deleted on top of
 /// `revision` (meta's revision before the write's bump). A job has no kind or scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,32 +490,66 @@ impl Repository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter().map(decode).collect()
     }
-    pub fn snapshot(&self) -> Result<Snapshot> {
+    /// What decides which records a view sees: settings, workspaces, the active one, the
+    /// account and the account it may show (none while another account is signed in).
+    pub fn snapshot_scope(&self) -> Result<SnapshotScope> {
         let settings = self.settings()?;
         let workspaces: Vec<Workspace> = self.documents("SELECT body FROM workspaces ORDER BY id='personal' DESC,json_extract(body,'$.name') COLLATE NOCASE")?;
         let active = workspaces
             .iter()
             .find(|w| w.id == settings.active_workspace)
+            .cloned()
             .ok_or_else(|| WorkspaceError::new("storage", "Active workspace is unavailable."))?;
         let connection = settings
             .active_connection
             .as_ref()
             .and_then(|s| self.connection(s).ok());
-        let visible = shown_account(connection.as_ref(), active);
+        let visible = shown_account(connection.as_ref(), &active).cloned();
+        Ok(SnapshotScope {
+            settings,
+            workspaces,
+            active,
+            connection,
+            visible,
+        })
+    }
+    /// The records a view sees, as the snapshot holds them before the Inbox projection. With
+    /// `only`, just those keys (the automation runs only with `runs`: they come whole, the
+    /// newest of each automation).
+    pub fn visible_records_in(
+        &self,
+        scope: &SnapshotScope,
+        only: Option<&[RecordKey]>,
+        runs: bool,
+    ) -> Result<Vec<Record>> {
+        let active = &scope.active;
+        let visible = scope.visible.as_ref();
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
-        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run' ORDER BY updated_at DESC")?;
+        let wanted = if let Some(keys) = only {
+            self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted(kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL); DELETE FROM wanted;")?;
+            let mut add = self.db.prepare("INSERT INTO wanted VALUES(?1,?2,?3,?4)")?;
+            for k in keys {
+                add.execute(params![k.kind, k.id, k.connection_id, k.workspace_id])?;
+            }
+            " AND (kind,id,connection_id,workspace_id) IN (SELECT kind,id,connection_id,workspace_id FROM wanted)"
+        } else {
+            ""
+        };
+        let mut local_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run'{wanted} ORDER BY updated_at DESC"))?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
-        // list and Today show: each automation's latest run and its latest run delivered to Today.
-        let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
-        raw.extend(
-            runs_stmt
-                .query_map(params![active.id, cid, None::<&str>], record_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-        );
-        let mut provider_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
+        if only.is_none() || runs {
+            // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
+            // list and Today show: each automation's latest run and its latest run delivered to Today.
+            let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
+            raw.extend(
+                runs_stmt
+                    .query_map(params![active.id, cid, None::<&str>], record_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        let mut provider_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))){wanted} ORDER BY updated_at DESC"))?;
         raw.extend(
             provider_stmt
                 .query_map(
@@ -486,40 +558,69 @@ impl Repository {
                 )?
                 .collect::<std::result::Result<Vec<_>, _>>()?,
         );
-        let mut records = Vec::new();
-        for r in raw {
-            if r.connection_id.is_none()
-                || visible.is_some_and(|c| source_permitted(&r, c)) && record_selected(&r, active)
-            {
-                records.push(r);
-            }
-        }
-        super::inbox::project(self, active, visible, &mut records)?;
-        super::ai_jobs::mark_stale_summaries(&mut records);
-        // The newest 300 jobs, leaving out transcript checks that found nothing: one runs per
-        // waiting meeting every few minutes and would push sync, send and AI rows out of Activity.
+        Ok(raw
+            .into_iter()
+            .filter(|r| {
+                r.connection_id.is_none()
+                    || visible.is_some_and(|c| source_permitted(r, c)) && record_selected(r, active)
+            })
+            .collect())
+    }
+    /// [`visible_records_in`](Self::visible_records_in) in the current scope.
+    pub fn visible_records(&self, only: Option<&[RecordKey]>) -> Result<Vec<Record>> {
+        let runs = only.is_some_and(|keys| keys.iter().any(|k| k.kind == "automation_run"));
+        self.visible_records_in(&self.snapshot_scope()?, only, runs)
+    }
+    /// The jobs a view sees: the newest 300, leaving out transcript checks that found nothing
+    /// (one runs per waiting meeting every few minutes and would push sync, send and AI rows out
+    /// of Activity), of the active workspace and account.
+    pub fn snapshot_jobs(&self, scope: &SnapshotScope) -> Result<Vec<Job>> {
+        let cid = scope
+            .visible
+            .as_ref()
+            .map(|c| c.id.as_str())
+            .unwrap_or("__unavailable__");
         let jobs: Vec<Job> = self.documents(
             "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC LIMIT 300",
         )?;
-        let jobs = jobs
+        Ok(jobs
             .into_iter()
-            .filter(|j| {
-                (j.workspace_id.is_none() || j.workspace_id.as_deref() == Some(&active.id))
-                    && (j.connection_id.is_none() || j.connection_id.as_deref() == Some(cid))
-            })
-            .collect();
-        let available = visible.is_some();
-        Ok(Snapshot {
-            revision: self.revision()?,
-            workspaces,
-            settings,
-            connection,
-            records,
-            jobs,
-            available,
-            meetings_root: None,
-            note_templates: Vec::new(),
-        })
+            .filter(|j| job_shown(j, &scope.active.id, cid))
+            .collect())
+    }
+    /// The hash of what decides visibility (`SnapshotScope`): a window holding a snapshot of
+    /// another scope reads the whole snapshot again instead of a delta.
+    pub fn scope_hash(&self) -> Result<String> {
+        Ok(scope_hash_of(&self.snapshot_scope()?))
+    }
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        Ok(self.snapshot_scoped()?.0)
+    }
+    /// The snapshot and the hash of the scope it was read in.
+    pub fn snapshot_scoped(&self) -> Result<(Snapshot, String)> {
+        // The revision first: a write landing while the records are read is then in a delta
+        // since this revision again, never lost (its log lines are at this revision or later).
+        let revision = self.revision()?;
+        let scope = self.snapshot_scope()?;
+        let mut records = self.visible_records_in(&scope, None, true)?;
+        super::inbox::project(self, &scope.active, scope.visible.as_ref(), &mut records)?;
+        super::ai_jobs::mark_stale_summaries(&mut records);
+        let jobs = self.snapshot_jobs(&scope)?;
+        let hash = scope_hash_of(&scope);
+        Ok((
+            Snapshot {
+                revision,
+                available: scope.visible.is_some(),
+                workspaces: scope.workspaces,
+                settings: scope.settings,
+                connection: scope.connection,
+                records,
+                jobs,
+                meetings_root: None,
+                note_templates: Vec::new(),
+            },
+            hash,
+        ))
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is
     /// bound to it.
@@ -1209,6 +1310,19 @@ impl Repository {
             "DELETE FROM jobs WHERE state IN ('succeeded','failed','cancelled','blocked') AND due_at<?1 AND json_extract(body,'$.kind') IN (SELECT value FROM json_each(?2))",
             params![before, encode(&kinds)?],
         )?)
+    }
+    /// The jobs with these ids that are still there.
+    pub fn jobs_by_id(&self, ids: &[&str]) -> Result<Vec<Job>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .db
+            .prepare("SELECT body FROM jobs WHERE id IN (SELECT value FROM json_each(?1))")?;
+        let rows = stmt
+            .query_map([encode(&ids)?], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.iter().map(|b| decode(b.clone())).collect()
     }
     pub fn jobs(&self) -> Result<Vec<Job>> {
         self.documents("SELECT body FROM jobs ORDER BY due_at")
