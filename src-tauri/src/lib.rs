@@ -361,14 +361,15 @@ pub fn run() {
         ]))
         .build(context)
         .expect("error while building tauri application")
-        .run(|app,event|{
+        .run(move |app,event|{
             // Quitting ends the dock's sessions, as closing Terminal.app does.
             if matches!(event,tauri::RunEvent::Exit) {
                 if let Some(t)=app.try_state::<commands::terminal::Terminals>(){t.close_all();}
             }
             if let tauri::RunEvent::ExitRequested{api,..}=event {
                 if let Some(state)=app.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{
-                    if core.installer_busy.load(std::sync::atomic::Ordering::Relaxed){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}
+                    // A tour's quit is never held back, and its window is never shown or focused.
+                    if commands::tour::quit_blocked(tour, core.installer_busy.load(std::sync::atomic::Ordering::Relaxed)){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}
                     else{core.stop_background();}
                 }}
             }

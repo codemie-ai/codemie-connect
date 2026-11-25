@@ -31,6 +31,21 @@ pub fn lifecycle_plugins(tour: bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether a quit request is held back for a running installer operation (the window is then
+/// shown and focused to ask). Never during a tour: showing or focusing the tour window activates
+/// the app over the user's own, and the tour's quit must always go through.
+pub fn quit_blocked(tour: bool, installer_busy: bool) -> bool {
+    !tour && installer_busy
+}
+
+/// Whether this launch is running a tour. Always false without the `tour` feature.
+pub fn running() -> bool {
+    #[cfg(feature = "tour")]
+    return active().is_some();
+    #[cfg(not(feature = "tour"))]
+    false
+}
+
 #[cfg(feature = "tour")]
 pub use run::*;
 
@@ -449,5 +464,13 @@ mod lifecycle_tests {
         );
         assert!(!lifecycle_plugins(true).contains(&"single-instance"));
         assert_eq!(lifecycle_plugins(true), ["notification", "autostart"]);
+    }
+
+    #[test]
+    fn a_tour_quit_is_never_blocked() {
+        assert!(quit_blocked(false, true));
+        assert!(!quit_blocked(false, false));
+        assert!(!quit_blocked(true, true));
+        assert!(!quit_blocked(true, false));
     }
 }

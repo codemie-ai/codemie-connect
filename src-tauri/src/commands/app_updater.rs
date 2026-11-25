@@ -183,6 +183,12 @@ async fn fetch_manifest(client: &Client, url: &str) -> CmdResult<(String, String
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// A tour never fetches the update manifest (offline by construction, design § 2), whatever the
+/// launch environment's proxy says.
+fn may_check(last: Option<Instant>, interval: Duration, tour: bool) -> bool {
+    !tour && should_check(last, interval)
+}
+
 fn should_check(last: Option<Instant>, interval: Duration) -> bool {
     match last {
         None => true,
@@ -224,7 +230,7 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 #[tauri::command]
 pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
-    if !should_check(last, CHECK_INTERVAL) {
+    if !may_check(last, CHECK_INTERVAL, crate::commands::tour::running()) {
         return Ok(None);
     }
 
@@ -270,6 +276,9 @@ pub async fn download_and_install(
     state: State<'_, AppState>,
     id: String,
 ) -> CmdResult<()> {
+    if crate::commands::tour::running() {
+        return Err(InstallerError::Other("The tour installs nothing.".into()));
+    }
     // Reset throttle so the next boot re-checks after the new version is running
     *state.last_update_check.lock().unwrap() = None;
 
@@ -368,6 +377,17 @@ mod tests {
     #[test]
     fn allows_when_no_prior_check() {
         assert!(should_check(None, Duration::from_secs(86400)));
+    }
+
+    #[test]
+    fn a_tour_never_checks_for_updates() {
+        assert!(may_check(None, Duration::from_secs(86400), false));
+        assert!(!may_check(None, Duration::from_secs(86400), true));
+        assert!(!may_check(
+            Some(Instant::now()),
+            Duration::from_secs(0),
+            true
+        ));
     }
 
     #[test]

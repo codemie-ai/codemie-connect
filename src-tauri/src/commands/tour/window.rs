@@ -160,9 +160,13 @@ fn encode(image: &NSImage) -> Result<Shot, String> {
             rep.isPlanar()
         ));
     }
-    // SAFETY: a meshed 32-bit rep holds `bytesPerRow * pixelsHigh` bytes at `bitmapData`, alive
-    // as long as `rep`, which outlives this slice.
-    let pixels = unsafe { std::slice::from_raw_parts(rep.bitmapData(), stride * height) };
+    let data = rep.bitmapData();
+    if data.is_null() {
+        return Err("The snapshot's bitmap has no pixel data.".into());
+    }
+    // SAFETY: `data` is non-null, and a meshed 32-bit rep holds `bytesPerRow * pixelsHigh` bytes
+    // there, alive as long as `rep`, which outlives this slice.
+    let pixels = unsafe { std::slice::from_raw_parts(data, stride * height) };
     let blank = is_blank(pixels, width, height, stride);
     let props = NSDictionary::new();
     // SAFETY: an empty property dictionary is valid for every file type.
