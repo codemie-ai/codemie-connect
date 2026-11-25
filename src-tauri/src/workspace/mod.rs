@@ -163,12 +163,14 @@ impl Drop for PluginOp {
     }
 }
 
-/// Tests flip this instead of driving the real, environment-driven tour startup: see
-/// [`tour_sends_nothing`]. A depth, not a bool: `cargo test` runs tests from the same binary
-/// concurrently, and two tests touring at once must not let the first to finish turn this back
-/// off under the second, still-running one.
 #[cfg(test)]
-static TOUR_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Tests flip this instead of driving the real, environment-driven tour startup: see
+    /// [`tour_sends_nothing`]. Per thread: `cargo test` runs tests on parallel threads of one
+    /// process, and one test touring must never turn another's `Core` quiet (final review I3).
+    /// Each `#[tokio::test]` runs on its own current-thread runtime, so its awaits stay here too.
+    static TOUR_FOR_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(feature = "tour")]
 fn touring() -> bool {
@@ -188,7 +190,7 @@ fn touring() -> bool {
 /// environment-driven tour startup.
 fn tour_sends_nothing() -> bool {
     #[cfg(test)]
-    if TOUR_FOR_TESTS.load(Ordering::SeqCst) > 0 {
+    if TOUR_FOR_TESTS.with(|depth| depth.get() > 0) {
         return true;
     }
     touring()
@@ -3311,19 +3313,19 @@ mod tests {
         assert!(connect_capabilities(&json!({"capabilities":"calendar"})).is_err());
     }
 
-    /// RAII: increments [`TOUR_FOR_TESTS`] while alive, decrements on drop (even on panic, since
+    /// RAII: increments this thread's [`TOUR_FOR_TESTS`] while alive, decrements on drop (even on panic, since
     /// unwinding still runs `Drop`). Kept alive across `.await` points by simply staying in
     /// scope, with no need for the function under test to be given a future to run inside.
     struct Touring;
     impl Touring {
         fn on() -> Self {
-            TOUR_FOR_TESTS.fetch_add(1, Ordering::SeqCst);
+            TOUR_FOR_TESTS.with(|depth| depth.set(depth.get() + 1));
             Touring
         }
     }
     impl Drop for Touring {
         fn drop(&mut self) {
-            TOUR_FOR_TESTS.fetch_sub(1, Ordering::SeqCst);
+            TOUR_FOR_TESTS.with(|depth| depth.set(depth.get() - 1));
         }
     }
 
@@ -3429,6 +3431,24 @@ mod tests {
     /// (what this task adds — exercised directly on the predicate itself, since no unit test in
     /// this crate can build a real `tauri::AppHandle` to flip the first half to `true` and
     /// isolate the second).
+    /// Tests run in parallel threads of one process: a test touring on another thread must not
+    /// turn this one's `Core` quiet (final review I3, the flaky `a_tour_core_starts_no_background_loop`).
+    #[test]
+    fn touring_on_another_thread_is_invisible_here() {
+        let (touring_tx, touring_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let _touring = Touring::on();
+            touring_tx.send(()).unwrap();
+            done_rx.recv().unwrap();
+        });
+        touring_rx.recv().unwrap();
+        let here = tour_sends_nothing();
+        done_tx.send(()).unwrap();
+        other.join().unwrap();
+        assert!(!here, "another thread's tour leaked into this one");
+    }
+
     #[test]
     fn a_tour_core_starts_no_background_loop() {
         let dir = tempfile::tempdir().unwrap();
