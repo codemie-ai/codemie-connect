@@ -1336,10 +1336,7 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-ai-table{width:100%;border-collapse:collapse;table-layout:fixed}
 .ws-ai-table th,.ws-ai-table td{padding:8px 10px 8px 0;text-align:left;vertical-align:middle;border-top:1px solid var(--ws-border)}
 .ws-ai-table thead th{padding-top:14px;font-size:var(--ws-fs-meta);line-height:14px;font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.4px}
-.ws-ai-table thead th:first-child{width:22%}
-.ws-ai-table thead th:last-child{width:24%}
 .ws-ai-table .ws-ai-group th{padding:16px 0 6px;font-size:var(--ws-fs-body-sm);line-height:18px;font-weight:600;color:var(--ws-text)}
-.ws-ai-table td.ws-ai-cell-status{vertical-align:top;padding-top:12px}
 .ws-ai-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px}
 .ws-ai-status-text{margin:4px 0 0;font-size:var(--ws-fs-secondary);line-height:16px;color:var(--ws-muted);overflow-wrap:anywhere}
 .ws-ai-routes .ws-setting-row{flex-wrap:wrap}
@@ -1348,20 +1345,17 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-ai-default{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px 10px}
 .ws-ai-default .ws-select-wrap{min-width:150px}
 .ws-ai-default-fallback{display:inline-flex;align-items:center;gap:8px;font-size:var(--ws-fs-secondary);color:var(--ws-muted)}
-/* Narrow: each job is two lines, the job and its status, then its three selects (no sideways scroll). */
-.ws-ai-routes .ws-card-body{container:ws-ai-routes/inline-size}
-@container ws-ai-routes (max-width:979px){
-  .ws-ai-table thead{display:none}
-  .ws-ai-table tr[data-ai-route-row]:not([hidden]){display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.3fr);grid-template-areas:"job job status" "profile model fallback";gap:6px 10px;padding:10px 0;border-top:1px solid var(--ws-border)}
-  .ws-ai-table tr[data-ai-route-row]>*{border-top:0;padding:0}
-  .ws-ai-table tbody th.ws-ai-job{grid-area:job;width:auto}
-  .ws-ai-table .ws-ai-cell-profile{grid-area:profile}
-  .ws-ai-table .ws-ai-cell-model{grid-area:model}
-  .ws-ai-table .ws-ai-cell-fallback{grid-area:fallback}
-  .ws-ai-table td.ws-ai-cell-status{grid-area:status;padding:0}
-  .ws-ai-table .ws-ai-group{display:block}
-  .ws-ai-table .ws-ai-group th{display:block}
-}
+/* Each job is two lines: the job and its status, then its three selects (no sideways scroll). */
+.ws-ai-table thead{display:none}
+.ws-ai-table tr[data-ai-route-row]:not([hidden]){display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.3fr);grid-template-areas:"job job status" "profile model fallback";gap:6px 10px;padding:10px 0;border-top:1px solid var(--ws-border)}
+.ws-ai-table tr[data-ai-route-row]>*{border-top:0;padding:0}
+.ws-ai-table tbody th.ws-ai-job{grid-area:job;width:auto}
+.ws-ai-table .ws-ai-cell-profile{grid-area:profile}
+.ws-ai-table .ws-ai-cell-model{grid-area:model}
+.ws-ai-table .ws-ai-cell-fallback{grid-area:fallback}
+.ws-ai-table td.ws-ai-cell-status{grid-area:status;padding:0}
+.ws-ai-table .ws-ai-group{display:block}
+.ws-ai-table .ws-ai-group th{display:block}
 .ws-ai-table tbody th strong{display:block;font-size:var(--ws-fs-body-sm);font-weight:600}
 .ws-ai-table tbody th span{display:block;font-size:var(--ws-fs-secondary);line-height:16px;font-weight:400;color:var(--ws-muted)}
 .ws-ai-table .ws-select-wrap{display:flex;width:100%}
