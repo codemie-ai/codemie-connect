@@ -3694,6 +3694,8 @@ async function boot() {
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie, meetingsUi };
+  // A tour build (CODEMIE_TOUR) hands the tour its invoke: the runner drives the app through it.
+  if (flags.tour) window.__tour = { invoke };
   if (smoke) {
     const report = await smoke.runMarketSmoke({
       invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,

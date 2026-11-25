@@ -42,6 +42,10 @@ pub mod quiet;
 #[cfg(feature = "tour")]
 pub mod seed;
 
+/// The invisible window and the in-process capture of its web content (macOS only).
+#[cfg(all(feature = "tour", target_os = "macos"))]
+pub mod window;
+
 #[cfg(feature = "tour")]
 mod run {
     use super::{requested, TOUR};

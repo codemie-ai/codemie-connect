@@ -249,6 +249,14 @@ pub fn run() {
                 );
             }
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
+            // Out of sight once set up (design § 3): transparent, click-through, behind every
+            // window on the main screen, never key, main or active.
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            if tour {
+                if let Some(window) = app.get_webview_window("main") {
+                    commands::tour::window::hide_window(&window);
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -344,6 +352,12 @@ pub fn run() {
             storage::commands::meetings_root_pick,
             plugins::commands::plugins_request,
             plugins::commands::plugin_call,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_window,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_capture,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_focus,
         ]))
         .build(context)
         .expect("error while building tauri application")
