@@ -149,6 +149,69 @@ export function quoteTime(seconds) {
 }
 
 /** Where a task sits in its column; a commitment from before the board by when it changed. */
+// ---------------------------------------------------------------- previews
+
+/** Copies `snapshot` with the task `id` replaced by `next(task)`; null when it isn't there. */
+function withTask(snapshot, id, next) {
+  const i = id ? snapshot.records.findIndex(r => r.kind === 'commitment' && r.id === id) : -1;
+  if (i < 0) return null;
+  const records = snapshot.records.slice();
+  const task = next(records[i]);
+  if (task) records[i] = task;
+  else records.splice(i, 1);
+  return { ...snapshot, records };
+}
+
+/**
+ * What `task_save` does, shown before native has it (the store lays it over the snapshot until
+ * the snapshot after the write lands): a task on the board gets its text, notes, owner, due
+ * date, order and column, with the done flag and time as tasks.rs `task_save` sets them; a new
+ * one (a quick add, Undo of a delete) appears under the id native gives it, `data.id` or else
+ * the write's operation id, at the end of its column. Times are seconds, as native's.
+ */
+export function previewTaskSave(snapshot, data, { operationId = null, now = Date.now() } = {}) {
+  const id = data?.id || operationId;
+  if (!id) return null;
+  const known = snapshot.records.some(r => r.kind === 'commitment' && r.id === id);
+  return known ? withTask(snapshot, id, task => saved(task, data, now)) : created(snapshot, id, data, now);
+}
+
+function created(snapshot, id, data, now) {
+  const { id: _id, kind: _kind, log: _log, ...fields } = data;
+  const text = typeof fields.text === 'string' ? fields.text.trim() : '';
+  if (!text) return null;
+  const status = STATUSES.includes(fields.status) ? fields.status : fields.done ? 'done' : 'todo';
+  const sec = Math.floor(now / 1000);
+  const given = Number(fields.order);
+  const order = fields.order !== null && fields.order !== undefined && Number.isFinite(given)
+    ? given
+    : Math.max(sec, ...snapshot.records.filter(r => r.kind === 'commitment').map(taskOrder)) + 1;
+  const task = {
+    id, kind: 'commitment', connectionId: null, workspaceId: snapshot.settings?.activeWorkspace ?? null, source: 'local', revision: 'preview', updatedAt: sec,
+    data: { ...fields, text, status, done: status === 'done', doneAt: status === 'done' ? fields.doneAt ?? sec : null, order, createdAt: fields.createdAt ?? sec },
+  };
+  return { ...snapshot, records: [task, ...snapshot.records] };
+}
+
+function saved(task, data, now) {
+  const d = { ...task.data };
+  const has = key => Object.hasOwn(data, key);
+  if (has('text') && typeof data.text === 'string' && data.text.trim()) d.text = data.text.trim();
+  for (const key of ['notes', 'owner', 'ownerName', 'due', 'order']) if (has(key)) d[key] = data[key];
+  if (has('owner') && (data.owner ?? null) !== (task.data.owner ?? null) && !has('ownerName')) d.ownerName = null;
+  const before = taskStatus(task);
+  const status = has('status') ? data.status : has('done') ? (data.done ? 'done' : before === 'done' ? 'todo' : before) : before;
+  if (!STATUSES.includes(status)) return task;
+  const sec = Math.floor(now / 1000);
+  d.status = status;
+  d.done = status === 'done';
+  d.doneAt = status !== 'done' ? null : before === 'done' ? task.data.doneAt ?? sec : sec;
+  return { ...task, data: d };
+}
+
+/** What `task_delete` does, shown before native has it: the task is gone. */
+export const previewTaskDelete = (snapshot, data) => withTask(snapshot, data?.id, () => null);
+
 export function taskOrder(record) {
   const o = Number(record?.data?.order);
   return Number.isFinite(o) && record?.data?.order !== null ? o : Number(record?.updatedAt) || 0;

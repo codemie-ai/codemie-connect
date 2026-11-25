@@ -3,7 +3,10 @@
 // and Escape. app.js routes the `task-*` and `tasks-*` actions here, the drawer's fields on
 // `change`, quick add on submit and the board's drag events. Everything it touches is injected,
 // so node:test drives it without a browser; only `attachBoardDrag` and the dialog's form are DOM.
-// No optimistic updates: every change is a `task_save` / `task_delete` and the snapshot after it.
+// Every change is a `task_save` / `task_delete`. The store shows it at once (tasks-model.js
+// `previewTaskSave`, `previewTaskDelete`) and the snapshot after it confirms it, so focus follows
+// the click; a toast follows native's answer (a step that failed never shows a success), and a
+// refused change comes back with its error.
 import {
   COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
 } from './tasks-model.js';
@@ -150,14 +153,16 @@ export function createTasksController({
     const from = taskStatus(t);
     const landing = landingAfter(id);
     if (ui().drawer === id) ui().drawer = null;
-    await move(id, 'dismissed', { log: 'Dismissed — not a task' });
+    const saving = move(id, 'dismissed', { log: 'Dismissed — not a task' });
     focus(landing);
+    await saving;
     toast('Dismissed. Dismissed tasks are listed below the board.', 'info', { label: 'Undo', run: () => move(id, from, { log: 'Restored' }) });
   }
 
+  /** Every card of To review to To do: queued together, each shown at once at the end of To do. */
   async function acceptAll() {
     const list = shown('review');
-    for (const t of list) await move(t.id, 'todo', { log: 'Accepted from review' });
+    await Promise.all(list.map(t => move(t.id, 'todo', { log: 'Accepted from review' })));
     if (list.length) toast(`${plural(list.length, 'task')} accepted. They’re on your board.`, 'success');
   }
 
@@ -177,8 +182,10 @@ export function createTasksController({
     if (!t) throw missing();
     const landing = landingAfter(id);
     if (ui().drawer === id) ui().drawer = null;
-    const result = await mutate('task_delete', { id });
+    const deleting = mutate('task_delete', { id });
     focus(landing);
+    // Undo needs the body native kept, so this toast waits for its answer.
+    const result = await deleting;
     toast(`Deleted “${short(t.data.text)}”`, 'info', result?.body ? { label: 'Undo', run: () => mutate('task_save', { ...result.body, id }) } : null);
   }
 
@@ -259,22 +266,27 @@ export function createTasksController({
       // The card's title, or Edit… in its menu.
       case 'task-open': case 'task-edit': return openDrawer(id);
       case 'task-close': return closeDrawer();
-      case 'task-accept':
-        await move(id, 'todo', { log: 'Accepted from review' });
+      case 'task-accept': {
+        const saving = move(id, 'todo', { log: 'Accepted from review' });
         // Unless it was accepted in the drawer, focus goes to the card in its new column.
         if (!el.closest?.('.ws-task-drawer')) focus([titleOf(id)]);
+        await saving;
         return undefined;
+      }
       case 'task-accept-all': return acceptAll();
       case 'task-dismiss': return dismiss(id);
-      case 'task-restore':
+      case 'task-restore': {
         await move(id, 'review', { log: 'Restored' });
         toast(`Restored to ${columnName('review', snap().settings)}.`, 'success');
         return undefined;
-      case 'task-move':
-        await move(id, el.dataset.col);
+      }
+      case 'task-move': {
+        const saving = move(id, el.dataset.col);
         // From a card's menu, focus follows the card to its new column (the drawer keeps its own).
         if (!el.closest?.('.ws-task-drawer')) focus([`[data-menu-trigger="${quoted(id)}"]`, titleOf(id)]);
+        await saving;
         return undefined;
+      }
       case 'task-status': return move(id, el.value);
       case 'task-done': return done(id, el);
       case 'task-owner': return mutate('task_save', { id, owner: el.value || null, ownerName: nameOf(el.value) });

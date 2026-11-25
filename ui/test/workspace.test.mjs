@@ -262,6 +262,140 @@ test('mutate rebases through a sync that keeps moving the revision, then gives u
   assert.equal(writes, 5, 'five tries, then the stale view is reported');
 });
 
+/** A native stand-in that counts what it is asked: reads, cheap revision reads and writes. Each
+ *  write moves the revision by two (native reserves one and stores one). */
+function countingNative({ refuse = () => null } = {}) {
+  const bridge = { revision: 0, value: 0, ops: [] };
+  bridge.invoke = async (_, { request: r }) => {
+    bridge.ops.push(r.op);
+    if (r.op === 'snapshot') return { snapshot: { revision: bridge.revision, value: bridge.value, settings: { activeWorkspace: 'personal' } } };
+    if (r.op === 'revision') return { revision: bridge.revision };
+    if (r.expectedRevision !== bridge.revision) throw { code: 'stale_view' };
+    await tick();
+    const refused = refuse(r);
+    if (refused) throw refused;
+    bridge.revision += 2;
+    bridge.value = r.data.value;
+    return { saved: true };
+  };
+  return bridge;
+}
+const preview = { task_save: (s, d) => ({ ...s, value: d.value }) };
+
+test('a change with a preview shows the moment it is asked, before native answers', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('task_save', { value: 1 });
+  assert.equal(store.get().snapshot.value, 1, 'shown at once');
+  assert.deepEqual(shown, [1]);
+  await tick();
+  bridge.writes[0].go();
+  await tick();
+  bridge.reads[1].go();
+  await write;
+  assert.equal(store.get().snapshot.value, 1, 'kept by the read that has it');
+});
+
+test('a refused change is taken back at once and its error still reaches the caller', async () => {
+  const bridge = countingNative({ refuse: r => (r.data.value === 2 ? { code: 'validation', message: 'No.' } : null) });
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('task_save', { value: 2 });
+  assert.equal(store.get().snapshot.value, 2);
+  await assert.rejects(write, { code: 'validation' });
+  assert.equal(store.get().snapshot.value, 0);
+  assert.equal(shown.at(-1), 0, 'drawn back');
+});
+
+test('queued rebase-safe writes share one snapshot read; between them native is asked only its revision', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [1, 2, 3].map(value => store.mutate('task_save', { value }));
+  assert.equal(store.get().snapshot.value, 3, 'every change shown at once');
+  await Promise.all(writes);
+  // Each settled when native answered it; the shared read follows.
+  await store.refreshAfter(Infinity);
+  assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'revision', 'task_save', 'snapshot']);
+  assert.equal(store.get().snapshot.value, 3);
+  assert.equal(store.get().snapshot.revision, 6);
+});
+
+test('a preview names a new record by the operation id the write is sent with', async () => {
+  const sent = [];
+  const seen = [];
+  const store = createStore(async (_, { request: r }) => {
+    if (r.op === 'snapshot') return { snapshot: { revision: sent.length, settings: { activeWorkspace: 'personal' } } };
+    sent.push(r.operationId);
+    return { id: r.operationId };
+  }, { optimistic: { task_save: (s, d, { operationId }) => { seen.push(operationId); return { ...s, added: operationId }; } } });
+  await store.refresh();
+  const write = store.mutate('task_save', { text: 'New' });
+  assert.ok(store.get().snapshot.added, 'shown at once');
+  await write;
+  assert.equal(new Set(seen).size, 1);
+  assert.deepEqual(sent, [seen[0]]);
+});
+
+test('idle settles once the queue’s read has landed, after a previewed write already has', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const write = store.mutate('task_save', { value: 1 });
+  let idle = false;
+  const waiting = store.idle().then(() => { idle = true; });
+  await tick();
+  bridge.writes[0].go();
+  await write;
+  await tick();
+  assert.equal(idle, false, 'the write settled; its read is still on its way');
+  bridge.reads[1].go();
+  await waiting;
+  assert.equal(store.get().snapshot.value, 1);
+  assert.equal((await store.idle()).snapshot.value, 1, 'nothing queued: at once');
+});
+
+test('a write that is not rebase-safe waits for a full read before it is sent', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  await Promise.all([store.mutate('task_save', { value: 1 }), store.mutate('graph_disconnect', { value: 2 })]);
+  assert.deepEqual(bridge.ops, ['task_save', 'snapshot', 'graph_disconnect', 'snapshot']);
+});
+
+test('without a revision read native answers, queued writes read the whole snapshot as before', async () => {
+  const bridge = countingNative();
+  const invoke = (cmd, args) => (args.request.op === 'revision' ? Promise.reject({ code: 'validation' }) : bridge.invoke(cmd, args));
+  const store = createStore(invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  await Promise.all([store.mutate('task_save', { value: 1 }), store.mutate('task_save', { value: 2 })]);
+  assert.deepEqual(bridge.ops, ['task_save', 'snapshot', 'task_save', 'snapshot']);
+  assert.equal(store.get().snapshot.value, 2);
+});
+
+test('a workspace:changed heard while writes are queued reads nothing: the queue’s last read brings it', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [1, 2].map(value => store.mutate('task_save', { value }));
+  await store.refreshAfter(Infinity);
+  await Promise.all(writes);
+  assert.equal(bridge.ops.filter(op => op === 'snapshot').length, 1);
+});
+
 test('sending rebases; native guards the review itself', async () => {
   // action_confirm refuses a used, expired or changed-source review (actions.rs), so a sync
   // that moved the revision while the review was open must not block Send.

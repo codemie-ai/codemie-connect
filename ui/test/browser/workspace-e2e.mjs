@@ -248,6 +248,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const SCOPES = { calendar: 'Calendars.Read', mail: 'Mail.Read', chats: 'Chat.Read', meetings: 'OnlineMeetings.Read', transcripts: 'OnlineMeetingTranscript.Read.All' };
   const ops = {
     snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
+    revision: () => ({ revision: s.revision }),
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
       const rootBefore = s.settings.meetings?.root ?? null;
@@ -1135,7 +1136,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['revision', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },

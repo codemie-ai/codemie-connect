@@ -33,11 +33,11 @@ import { createAnalyticsController, attachAnalyticsTips } from './analytics-cont
 import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
-import { newTasksView } from './tasks-model.js';
+import { newTasksView, previewTaskDelete, previewTaskSave } from './tasks-model.js';
 import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
-import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
+import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash, previewJobCancel, previewMeetingDoc, previewMeetingSet, previewRun } from './meetings-model.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
@@ -68,7 +68,19 @@ const watched = invoke && (async (cmd, args) => {
     throw err;
   }
 });
-const store = invoke ? createStore(watched) : null;
+// These writes show the moment they are asked (tasks: Accept, Dismiss, a move, a date, a new
+// one; meetings: the switch and template, Make main, delete a document, Make notes, Try again,
+// Stop); the snapshot after the write confirms them, and a refused one is taken back.
+const OPTIMISTIC = {
+  task_save: previewTaskSave,
+  task_delete: previewTaskDelete,
+  meeting_set: previewMeetingSet,
+  meeting_doc: previewMeetingDoc,
+  meeting_notes: previewRun('meeting_notes'),
+  meeting_download: previewRun('transcript_download'),
+  job_cancel: previewJobCancel,
+};
+const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC }) : null;
 
 const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',
@@ -223,6 +235,10 @@ async function mutate(op, data = {}, workspaceId) {
   } finally {
     if (ready && !modalOpen()) await render();
     flushNotification();
+    // A write shown by its preview settles when native answers, before the snapshot after it
+    // lands. Draw that one too: a focused field (the drawer's owner, say) holds back the
+    // store's own redraw, and what native added (the task's history) would wait for the next.
+    store.idle().then(() => { if (ready && !modalOpen()) render(); }).catch(() => {});
   }
 }
 

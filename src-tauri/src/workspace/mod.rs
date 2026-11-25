@@ -742,6 +742,9 @@ impl Core {
             );
         }
         // Read-only: no operation id, no revision bump.
+        if req.op == Operation::Revision {
+            return Ok(json!({"revision": self.repo()?.revision()?}));
+        }
         if req.op == Operation::AiStatus {
             return self.ai_status(&req).await;
         }
@@ -2411,6 +2414,36 @@ mod tests {
             })
             .await;
         assert!(snapshot.is_ok());
+    }
+
+    #[tokio::test]
+    async fn revision_answers_what_the_next_write_is_fenced_on_and_moves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let read = |op| Request {
+            op,
+            workspace_id: None,
+            expected_revision: None,
+            operation_id: None,
+            data: json!({}),
+        };
+        let before = core.request(read(Operation::Revision)).await.unwrap();
+        let snapshot = core.request(read(Operation::Snapshot)).await.unwrap();
+        assert_eq!(before["revision"], snapshot["snapshot"]["revision"]);
+        assert_eq!(
+            core.request(read(Operation::Revision)).await.unwrap(),
+            before
+        );
+        // A write sent on it lands, and moves it.
+        let mut req = mutation(
+            &core,
+            Operation::LocalSave,
+            json!({"kind": "commitment", "text": "Send the report"}),
+        );
+        req.expected_revision = before["revision"].as_i64();
+        core.request(req).await.unwrap();
+        let after = core.request(read(Operation::Revision)).await.unwrap();
+        assert!(after["revision"].as_i64() > before["revision"].as_i64());
     }
 
     #[tokio::test]
