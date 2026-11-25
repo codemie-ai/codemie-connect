@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates, withVoice } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingsViewChecks } from './meetings-view-checks.mjs';
@@ -24,6 +24,7 @@ import { tasksProviderChecks } from './tasks-provider-checks.mjs';
 import { automationsChecks } from './automations-checks.mjs';
 import { menuBarChecks } from './menu-bar-checks.mjs';
 import { aiRoutesChecks } from './ai-routes-checks.mjs';
+import { voiceChecks } from './voice-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -112,7 +113,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null } }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -541,7 +542,7 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
           // fresh draft; the job's "revise" never ends up on the stored draft's own options.
           const { revise, ...options } = { ...d };
           const text = revise ? `${revise} (changed: ${d.instructions})` : (result.text || t.data.text);
-          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
+          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText, ...(window.__draftVoice ? { voice: clone(window.__draftVoice) } : {}) } } };
           s.records = s.records.filter(r => r.id !== record.id).concat(record);
           job.state = 'succeeded';
           job.result = 'AI draft ready for review';
@@ -1264,6 +1265,9 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
   // refusals. `window.__voiceRefuse = {op, message, field?}` makes the next such op refuse. Nothing
   // reaches a provider: the mock keeps the copy itself.
   s.replyVoice ||= clone(voice.states.off);
+  // voice-checks.mjs V6: `__draftVoice` is the `provenance.voice` a mail or Teams draft carries
+  // (draft-ai-voice.json's with `open({ draftVoice: true })`); null drafts without a voice.
+  window.__draftVoice = draftVoice ? clone(draftVoice) : null;
   const vc = () => s.replyVoice;
   const voiceRefused = op => {
     const r = window.__voiceRefuse;
@@ -1390,9 +1394,19 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
     agreed: ['claude'], installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
     client: null, widgets: [], signin: [], addresses: [], settings: [],
   });
+  // voice-checks.mjs V7 (`open({ replyPlugin: true })`): a folder marketplace also offers an
+  // invented reply-context plugin, whose sheet carries the role's line as capabilities.rs words it.
+  const REPLY_SHEET = [{ key: 'provides_reply-context', support: { status: 'supported' }, text: 'Shape your replies: Connect asks it how you write, about the people you write to and for notes on the names and codes in a message, and adds what it answers to your AI drafts. It can read the text of messages you sent that Connect has synced.' }];
+  const replyOffer = { id: 'reply-notes', name: 'Reply notes', version: '1.0.0', summary: 'Keeps notes on how you write.', categories: ['test'], featured: false, installable: true, reason: null, installed: null, update: false };
+  const replyNotesView = () => ({
+    id: 'reply-notes', name: 'Reply notes', version: '1.0.0', summary: replyOffer.summary, market: pl.replyNotes.market,
+    source: pl.replyNotes.source, commit: null, hash: 'rnhash', enabled: true, agreed: [...pl.replyNotes.agreed],
+    installedAt: '2026-11-17T09:30:00Z', update: null, problem: null, client: null, widgets: [], signin: [], addresses: [], settings: [],
+  });
   const offerOf = market => {
     const installed = pl.installed.find(x => x.id === 'hello');
-    return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...clone(pluginInit.others)];
+    const reply = replyPlugin && market !== 'codemie' && market !== 'onetest' ? [{ ...replyOffer, installed: pl.replyNotes ? replyOffer.version : null }] : [];
+    return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...reply, ...clone(pluginInit.others)];
   };
   const marketOf = name => {
     const m = pl.markets.find(x => x.name === name);
@@ -1415,17 +1429,22 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
     inspect: d => {
       const o = offerOf(d.market).find(x => x.id === d.id);
       if (!o) fail('not_found', `The “${d.market}” marketplace has no plugin “${d.id}”.`);
-      const sheet = d.id === 'hello' ? pluginInit.hello.sheet : [{ key: 'knowledge', support: { status: 'blocking', limit: "Needs Connect's Knowledge engine (coming later)" }, text: 'Read and change your notes vaults' }];
-      return { ...o, market: d.market, source: marketOf(d.market).source, commit: null, sheet, sheetHash: d.id === 'hello' ? pluginInit.hello.sheetHash : 'k' };
+      const sheet = d.id === 'hello' ? pluginInit.hello.sheet : d.id === 'reply-notes' ? REPLY_SHEET : [{ key: 'knowledge', support: { status: 'blocking', limit: "Needs Connect's Knowledge engine (coming later)" }, text: 'Read and change your notes vaults' }];
+      return { ...o, market: d.market, source: marketOf(d.market).source, commit: null, sheet, sheetHash: d.id === 'hello' ? pluginInit.hello.sheetHash : d.id === 'reply-notes' ? 'rn' : 'k' };
     },
     install: d => {
+      if (d.id === 'reply-notes' && replyPlugin) {
+        if (d.agreed.length !== REPLY_SHEET.length) fail('consent_required', 'Agree to every line of the permission sheet to install “reply-notes”.');
+        pl.replyNotes = { market: d.market, source: marketOf(d.market).source, agreed: [...d.agreed].sort() };
+        return { status: 'installed', plugin: replyNotesView() };
+      }
       if (d.id !== 'hello') fail('blocked', 'It can’t be installed.');
       if (d.sheetHash !== pluginInit.hello.sheetHash) fail('changed', 'The permission sheet of “hello” changed.');
       if (d.agreed.length !== pluginInit.hello.sheet.length) fail('consent_required', 'Agree to every line of the permission sheet to install “hello”.');
       pl.installed.push({ id: 'hello', market: d.market, source: marketOf(d.market).source, enabled: true, agreed: [...d.agreed].sort() });
       return { status: 'installed', plugin: helloView() };
     },
-    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : []), ...(aiPlugin ? [knowledgeView()] : [])],
+    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : []), ...(aiPlugin ? [knowledgeView()] : []), ...(pl.replyNotes ? [replyNotesView()] : [])],
     set_enabled: d => {
       if (d.id === 'todoist') {
         const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
@@ -1640,7 +1659,7 @@ function aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch } = {}) {
   return out;
 }
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null, voice = null, draftVoice = false, replyPlugin = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1667,11 +1686,15 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   if (settings) Object.assign(snapshot.settings, settings);
+  // voice-checks.mjs: `voice` names a voice-states.json state for `replyVoice` (Off otherwise);
+  // `draftVoice: true` gives AI drafts draft-ai-voice.json's `provenance.voice`; `replyPlugin`
+  // offers an invented reply-context plugin in a folder marketplace.
+  if (voice) withVoice(snapshot, voice);
   // A check's own changes to the snapshot (e.g. a task provider and its tasks), before the page loads.
   if (patch) patch(snapshot, now);
-  const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
+  const { testOk, testFail, draft, draftChat, jobFailed, summary, draftVoice: voiceDraft } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport } })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
@@ -1689,8 +1712,8 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`, `voice`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes', 'voice'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
@@ -1704,6 +1727,7 @@ if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'com
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
   else if (process.env.WORKSPACE_E2E_ONLY === 'ai-routes') await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'voice') await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -3580,6 +3604,13 @@ await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OU
 // fallback run's "Ran on …" line, Default/Compact parity, and no `ai_test` from drawing or Check
 // again.
 await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Reply in the user's voice (spec docs/superpowers/specs/2026-11-25-reply-voice-design.md), V1–V13:
+// Settings › Your voice in both views/themes/three widths, every provider state's line, the style
+// card and instruction edits, the provider radio and facts, Refresh and Delete Connect's copy, a
+// draft's voice and facts provenance, the role's sheet line, Default/Compact parity, nothing sent
+// or stored by drawing, and the skill import's pick, preview, Shorten with AI, save and layout.
+await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
 // primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
