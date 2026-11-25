@@ -638,6 +638,19 @@ impl Core {
             drop(running);
         });
     }
+    /// Claims and runs every due job, one at a time, the way the background loop does (the tests
+    /// outside the crate, `testing::run_jobs`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn run_due_jobs(self: &Arc<Self>) {
+        while let Some(job) = self
+            .repo()
+            .and_then(|mut r| r.claim_ready(now(), true))
+            .ok()
+            .flatten()
+        {
+            self.clone().run_claimed_job(job).await;
+        }
+    }
     async fn run_claimed_job(self: Arc<Self>, job: Job) {
         let result = {
             let execute = self.execute_job(&job);
@@ -2662,6 +2675,19 @@ pub(crate) fn test_core(
         profiles,
         Arc::new(ai_jobs::FakeGraph::default()),
     )
+}
+
+/// [`test_core`] with no Microsoft answers, and the URLs it was asked so far
+/// (`crate::testing::core_and_graph_reads`).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn test_core_recording_graph(
+    dir: &Path,
+    runner: Arc<dyn ClaudeRunner>,
+    profiles: Vec<crate::ai::profiles::AiProfile>,
+) -> (Arc<Core>, Arc<dyn Fn() -> Vec<String> + Send + Sync>) {
+    let graph = Arc::new(ai_jobs::FakeGraph::default());
+    let core = test_core_with_graph(dir, runner, profiles, graph.clone());
+    (core, Arc::new(move || graph.calls()))
 }
 
 /// [`test_core`] whose Microsoft reads for AI runs are answered by `graph`.

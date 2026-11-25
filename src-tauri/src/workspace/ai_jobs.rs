@@ -94,6 +94,10 @@ impl FakeGraph {
         }
         (map.lock().unwrap().get(url).cloned().map(Ok), delay)
     }
+    /// Every URL read so far, in order.
+    pub(crate) fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 #[cfg(test)]
@@ -115,9 +119,6 @@ impl FakeGraph {
     /// Makes the read of `url` take `delay` before it answers.
     pub(crate) fn slow(&self, url: &str, delay: Duration) {
         self.delays.lock().unwrap().insert(url.into(), delay);
-    }
-    pub(crate) fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
     }
 }
 

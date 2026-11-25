@@ -188,6 +188,30 @@ impl super::Core {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl super::Core {
+    /// Asks the chosen provider's `op` within `limit`, as Connect asks it (the tests outside the
+    /// crate, `testing::voice_call`).
+    pub(crate) async fn voice_call_chosen(
+        &self,
+        op: &str,
+        args: Value,
+        limit: Duration,
+    ) -> std::result::Result<Value, VoiceError> {
+        let provider = self
+            .repo()
+            .and_then(|r| r.settings())
+            .map(|s| s.voice.provider)
+            .map_err(|_| VoiceError::Unavailable)?;
+        let Some(providers) = self.voice_providers.get() else {
+            return Err(VoiceError::Unavailable);
+        };
+        providers
+            .call(ops::plugin_of(&provider), op, args, limit)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

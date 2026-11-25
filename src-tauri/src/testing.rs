@@ -293,6 +293,104 @@ pub fn task_provider(core: &Core) -> Value {
     core.task_provider_snapshot(&settings)
 }
 
+// ------------------------------------------------------------------ reply voice
+
+/// [`core`], and every Microsoft URL its AI runs read so far (none is answered: each read fails
+/// like an offline one, and a draft falls back to the synced preview).
+pub fn core_and_graph_reads(
+    dir: &Path,
+    runner: Arc<FakeRunner>,
+    profiles: Vec<AiProfile>,
+) -> (Arc<Core>, Arc<dyn Fn() -> Vec<String> + Send + Sync>) {
+    crate::workspace::test_core_recording_graph(dir, runner, profiles)
+}
+
+/// One played-back Claude answer, as [`FakeRunner`]'s script takes it.
+pub type ClaudeAnswer = Result<RunOutcome, AiError>;
+
+/// A structured Claude answer (`--json-schema`), as a reply draft's run gives it.
+pub fn answer_json(structured: Value) -> Result<RunOutcome, AiError> {
+    let mut outcome = answered("");
+    outcome.structured = Some(structured);
+    Ok(outcome)
+}
+
+/// The snapshot's `replyVoice`: the chosen provider, every available one, the state and the copy
+/// as Settings › Your voice shows it.
+pub fn voice_snapshot(core: &Core) -> Value {
+    let settings = core.repo().unwrap().settings().unwrap();
+    core.voice_snapshot(&settings)
+}
+
+/// Connect's whole copy of the voice (profiles' text included), `None` when there is none.
+pub fn voice_copy(core: &Core) -> Option<Value> {
+    let r = core.repo().unwrap();
+    crate::workspace::voice::copy::read_copy(&r)
+        .unwrap()
+        .map(|c| serde_json::to_value(c).unwrap())
+}
+
+/// One `voice_refresh` of the chosen provider now, as the job runs it: answers its code
+/// (`ready`, `needs_setup`, `unavailable` or `skipped`).
+pub async fn voice_refresh(core: &Arc<Core>) -> String {
+    let provider = core.repo().unwrap().settings().unwrap().voice.provider;
+    crate::workspace::voice::refresh::run(core, &provider, crate::workspace::models::now())
+        .await
+        .unwrap()
+}
+
+/// Asks the chosen provider's `op` (`status`, `export`, `context`, `facts`, `save`, `remove`)
+/// within 10 s, as Connect asks it; a failure reads as its code (`needs_setup`, `refused: …`,
+/// `unavailable`).
+pub async fn voice_call(core: &Arc<Core>, op: &str, args: Value) -> Result<Value, String> {
+    use crate::workspace::voice::VoiceError;
+    core.voice_call_chosen(op, args, std::time::Duration::from_secs(10))
+        .await
+        .map_err(|e| match e {
+            VoiceError::NeedsSetup => "needs_setup".into(),
+            VoiceError::Refused(s) => format!("refused: {s}"),
+            VoiceError::Unavailable => "unavailable".into(),
+        })
+}
+
+/// A message the signed-in account ([`signed_in`]) synced: `data` as Connect keeps it
+/// (`channel`, `isMine`, `at`, `text`, …), filed under its mailbox or chat.
+pub fn synced_message(core: &Core, id: &str, data: Value) {
+    let at = data["at"].as_i64().unwrap_or(1);
+    let source = match data["chatId"].as_str() {
+        Some(chat) => format!("chat:{chat}"),
+        None if data["isMine"] == true => "mail:sentitems".into(),
+        None => "mail:inbox".into(),
+    };
+    core.repo()
+        .unwrap()
+        .put_record(&Record {
+            id: id.into(),
+            kind: "message".into(),
+            connection_id: Some(ACCOUNT.into()),
+            workspace_id: None,
+            source,
+            revision: "v1".into(),
+            updated_at: at,
+            data,
+        })
+        .unwrap();
+}
+
+/// Claims and runs every due job, one at a time, as the background loop does.
+pub async fn run_jobs(core: &Arc<Core>) {
+    core.run_due_jobs().await;
+}
+
+/// The reply draft `id` (`ai:<message id>`) of the personal workspace, as stored.
+pub fn draft(core: &Core, id: &str) -> Option<Value> {
+    core.repo()
+        .unwrap()
+        .record("draft", id, Some(ACCOUNT), Some("personal"))
+        .ok()
+        .map(|r| r.data)
+}
+
 /// A Todoist on loopback for the tests that run the real Todoist plugin (`tests/
 /// connect_marketplace.rs`): the endpoints of the marketplace's `tests/helpers/fake-todoist.mjs`
 /// (`GET /user`, `GET|POST /projects`, `GET|POST /tasks`, `GET|POST /tasks/{id}`,
