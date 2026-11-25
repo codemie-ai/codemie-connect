@@ -329,7 +329,9 @@ impl Core {
         let terms = terms::terms_of(&target.subject, &target.text, &skip);
         Ok(Some(Prepared {
             reachable: listed.as_ref().is_some_and(|p| p.on),
-            facts_on: settings.facts && listed.as_ref().is_some_and(|p| p.facts),
+            // A provider that isn't ready (turned off, or not loaded) registered no ops, so it
+            // can't say whether it offers facts: with facts on, they count as missed.
+            facts_on: settings.facts && listed.as_ref().is_some_and(|p| p.facts || !p.ready),
             person_id: person.map(|p| p.id.clone()),
             provider: settings.provider,
             name,
@@ -717,6 +719,47 @@ pub(crate) mod tests {
         assert!(v.facts.is_none());
         let p = v.provenance.unwrap();
         assert_eq!(p["facts"], json!([]));
+        assert_eq!(p["factsMissed"], false);
+    }
+
+    /// Design §5 and § Facts "a missed ask (`unavailable`, …) sets `factsMissed`": a provider
+    /// turned off in Settings › Plugins (or not loaded) registers no ops, so it can't say it
+    /// offers facts; with facts on, the draft that couldn't have them says they were missed.
+    #[tokio::test]
+    async fn a_provider_turned_off_marks_facts_missed() {
+        let (_dir, core) = core();
+        let (w, c) = seed(&core);
+        let fake = ready_voice(&core, "");
+        put(
+            &core,
+            priya_mail(
+                "p1",
+                "conv-1",
+                now() - 60,
+                false,
+                "Atlas",
+                "Can we move EPM-1234 for Atlas Rollout?",
+            ),
+        );
+        for (on, ready) in [(false, false), (true, false)] {
+            fake.set_available(vec![VoiceInfo {
+                on,
+                ready,
+                facts: false,
+                ..knowledge(false)
+            }]);
+            let p = voice_for(&core, &w, &c, "p1").await.provenance.unwrap();
+            assert_eq!(p["from"], "copy", "on {on}");
+            assert_eq!(p["factsMissed"], true, "on {on}");
+        }
+        // Facts turned off by the user: nothing was missed.
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.voice.facts = false;
+            r.settings_update(&s).unwrap();
+        }
+        let p = voice_for(&core, &w, &c, "p1").await.provenance.unwrap();
         assert_eq!(p["factsMissed"], false);
     }
 
