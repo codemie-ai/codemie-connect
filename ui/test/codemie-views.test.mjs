@@ -226,3 +226,29 @@ test('no_profile_offers_sign_in', () => {
   assert.match(html, /No CodeMie profile yet/);
   assert.match(html, /data-action="cm-setup-open"/);
 });
+
+test('cli_card_says_what_it_is_doing_and_stays_open_through_a_render', () => {
+  const own = cmState();
+  Object.assign(own.runtime, { ownCli: { version: '0.17.1' }, version: '0.17.1', latest: '0.17.2' });
+  own.busy.cli = 'install';
+  const installing = overviewPanel(own, {}, {});
+  assert.match(installing, /Installing 0\.17\.2…/);
+  assert.doesNotMatch(installing, /Checking…/);
+  own.busy.cli = true;
+  assert.match(overviewPanel(own, {}, {}), /Checking…/);
+  // render() keeps a details[data-menu] the person opened open (app.js), so Check for updates
+  // doesn't fold the card it was clicked in.
+  assert.match(overviewPanel(cmState(), {}, {}), /<details class="ws-advanced" data-menu="codemie-cli"/);
+});
+
+test('cli_card_offers_check_again_while_an_older_copy_runs_first', () => {
+  const cm = cmState();
+  const message = 'CodeMie 0.17.2 was installed, but Connect and Terminal still run 0.17.1 from your npm link to /Users/taylor/src/codemie-code.';
+  Object.assign(cm.runtime, { ownCli: { version: '0.17.1' }, version: '0.17.1', latest: '0.17.2', shadowed: { version: '0.17.1', message, output: '⚠ older' } });
+  cm.errors.cli = { message, output: '⚠ older' };
+  const html = overviewPanel(cm, {}, {});
+  assert.match(html, /Connect still runs CodeMie 0\.17\.1/);
+  assert.equal(html.split('your npm link to').length - 1, 1, 'the reason shows once');
+  assert.match(html, /data-action="cm-cli-check"[^>]*>[^]*?Check again/);
+  assert.doesNotMatch(html, /Install 0\.17\.2 now|data-action="cm-cli-update"/);
+});

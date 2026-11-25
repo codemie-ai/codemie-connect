@@ -6,7 +6,8 @@ import { APPS, BUILTIN_AGENT, launcherFor } from './catalog.js';
 export function emptyCodemie() {
   return {
     loaded: false,
-    runtime: { state: 'unknown', fraction: 0, error: '', ownCli: null, version: null, latest: null, updating: false },
+    // shadowed: an update went in, yet an older copy still runs first ({ version, message, output }).
+    runtime: { state: 'unknown', fraction: 0, error: '', ownCli: null, version: null, latest: null, updating: false, shadowed: null },
     config: { state: 'no-configuration', active: null, account: null },
     profiles: [],
     auth: { state: 'unknown', detail: '' },

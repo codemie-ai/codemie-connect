@@ -3159,6 +3159,16 @@ for (const theme of ['dark', 'light']) {
       assert(!(await page.locator('#legacy-host').count()), 'legacy host exists');
       assert(!(await page.locator('.ws-settings-nav :text("CLI usage analytics")').count()), 'analytics tab exists');
     });
+    if (width === 1440) await check(`${theme} codemie: Check for updates keeps the CodeMie CLI card open`, async () => {
+      const { page } = ready;
+      await page.click('.ws-settings-nav button[data-tab=cm-overview]');
+      const card = page.locator('details[data-menu="codemie-cli"]');
+      await card.locator('summary').click();
+      await page.waitForSelector('details[data-menu="codemie-cli"][open]');
+      await card.locator('button[data-action="cm-cli-check"]').click();
+      await page.waitForSelector('.ws-toast:has-text("CodeMie is up to date.")', { timeout: 6000 });
+      assert(await card.evaluate(d => d.open), 'the CodeMie CLI card folded after Check for updates');
+    });
     await check(`${theme} ${width}px codemie: settings no page errors`, async () => assert(ready.errors.length === 0, ready.errors.join(' | ')));
     await ready.context.close().catch(() => {});
   }

@@ -423,8 +423,9 @@ async function render() {
   // A field typed in keeps its caret (and selection) when the render puts focus back on it.
   const caret = refocus && typeof focused.selectionStart === 'number' ? { value: focused.value, range: [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] } : null;
   heldRender = false;
-  // A ⋯ menu the user opened stays open through an update (a minute tick, a new snapshot).
-  const openMenus = [...root.querySelectorAll('details.ws-menu[open][data-menu]')].map(d => d.dataset.menu);
+  // A ⋯ menu or a folding section the user opened stays open through an update (a minute tick,
+  // a new snapshot, a button clicked inside it).
+  const openMenus = [...root.querySelectorAll('details[open][data-menu]')].map(d => d.dataset.menu);
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
@@ -482,7 +483,7 @@ async function render() {
   const freshReply = document.getElementById('reply-body');
   if (freshReply !== keepReply && unsavedReply && freshReply?.closest('form')?.dataset.key === unsavedReply.key) freshReply.value = unsavedReply.text;
   syncReplyBox(freshReply);
-  for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
+  for (const menu of openMenus) root.querySelector(`details[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
   measureToday();
