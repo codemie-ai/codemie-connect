@@ -538,7 +538,7 @@ impl Core {
         Ok(json!(preview))
     }
 
-    /// `voice_import_distil {path, skill}` (read-style, design §11, ruling 37): one tool-free run
+    /// `voice_import_distil {path, skill, dir}` (read-style, design §11, ruling 37): one tool-free run
     /// on the Mail replies route, outside the mutation lock, whose answer is checked before it
     /// reaches the preview. The ledger records the run with no text.
     pub(in crate::workspace) async fn voice_import_distil(&self, req: &Request) -> Result<Value> {
