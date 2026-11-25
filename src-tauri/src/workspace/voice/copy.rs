@@ -11,7 +11,7 @@
 //! workspace-less, connection-less row whose kind is `plugin_item` or `plugin_widget` (design
 //! §2's "Connect keeps a copy ... the snapshot keeps out of `records`").
 use super::VoiceState;
-use crate::workspace::models::{id, Record, Result};
+use crate::workspace::models::{id, Record, Result, Settings};
 use crate::workspace::repository::Repository;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
@@ -334,7 +334,7 @@ fn item_record<T: Serialize>(kind: &str, rid: &str, body: &T, provider: &str, at
         kind: kind.to_string(),
         connection_id: None,
         workspace_id: None,
-        source: format!("plugin:{provider}"),
+        source: provider.to_string(),
         revision: id(),
         updated_at: at,
         data: serde_json::to_value(body).unwrap_or(Value::Null),
@@ -445,6 +445,12 @@ pub fn set_state(r: &mut Repository, provider: &str, state: VoiceState, at: i64)
 /// copy"), in one transaction. Answers how many records were removed.
 pub fn forget(r: &mut Repository) -> Result<usize> {
     r.delete_global_records(&KINDS)
+}
+
+/// `forget` together with writing `settings` (the voice turned Off), in one transaction (design
+/// §6's "sets Off and deletes every copy record in one transaction").
+pub fn forget_with(r: &mut Repository, settings: &Settings) -> Result<usize> {
+    r.settings_update_deleting_global(settings, &KINDS)
 }
 
 /// Reads the stored copy, or `None` when nothing has ever been replaced into it.

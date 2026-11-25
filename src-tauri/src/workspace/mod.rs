@@ -1029,8 +1029,15 @@ impl Core {
             Vec::new()
         };
         // A voice edit goes through the provider (up to 10 s), also before the lock; the locked
-        // part writes its answer into Connect's copy.
+        // part writes its answer into Connect's copy. A replay of an operation id that already
+        // succeeded answers its stored result, and a stale request is refused, before anything
+        // is asked of the provider.
         let asked = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
+            if !self.repo()?.peek_request(&req)? {
+                return self
+                    .repo()?
+                    .operation_result(req.operation_id.as_deref().unwrap_or(""));
+            }
             Some(self.voice_ask(&req).await?)
         } else {
             None
@@ -1049,7 +1056,20 @@ impl Core {
         } else {
             None
         };
-        if !self.repo()?.check_request(&req)? {
+        // A voice edit the provider already accepted is recorded even if the revision moved
+        // while it was asked (`peek_request` checked it first): refusing it as stale would have
+        // the store resend it to the provider.
+        let fresh = match &asked {
+            Some(a) => {
+                let fresh = self.repo().and_then(|r| r.reserve(&req, false));
+                if !matches!(fresh, Ok(true)) {
+                    self.voice_catch_up(a);
+                }
+                fresh?
+            }
+            None => self.repo()?.check_request(&req)?,
+        };
+        if !fresh {
             return self
                 .repo()?
                 .operation_result(req.operation_id.as_deref().unwrap_or(""));

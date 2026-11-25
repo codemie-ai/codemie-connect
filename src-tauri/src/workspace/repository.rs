@@ -18,6 +18,16 @@ fn encode<T: Serialize>(v: &T) -> Result<String> {
     serde_json::to_string(v)
         .map_err(|_| WorkspaceError::new("storage", "Cannot encode workspace data."))
 }
+/// The hash an operation id is reserved under: the same id must carry the same request.
+fn request_hash(request: &Request) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(encode(
+            &json!({"op":request.op,"workspaceId":request.workspace_id,"data":request.data})
+        )?)
+    ))
+}
 fn decode<T: DeserializeOwned>(s: String) -> Result<T> {
     serde_json::from_str(&s).map_err(|_| {
         WorkspaceError::new(
@@ -652,6 +662,28 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
+    /// Writes `settings` and deletes every global record of `kinds`, in one transaction (the
+    /// voice's Delete Connect's copy, reply-voice design §6). Answers how many records went.
+    pub fn settings_update_deleting_global(
+        &mut self,
+        settings: &Settings,
+        kinds: &[&str],
+    ) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "UPDATE meta SET settings=?1,revision=revision+1 WHERE id=1",
+            [encode(settings)?],
+        )?;
+        let mut gone = 0;
+        for kind in kinds {
+            gone += tx.execute(
+                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
+                [kind],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
     pub fn save_workspace(&mut self, ws: &Workspace) -> Result<()> {
         let previous = self.workspace(&ws.id).ok();
         let scope_changed = previous.as_ref().is_some_and(|old| {
@@ -702,19 +734,74 @@ impl Repository {
         Ok(())
     }
     pub fn check_request(&self, request: &Request) -> Result<bool> {
+        self.reserve(request, true)
+    }
+    /// `check_request` without reserving anything: `Ok(false)` for an operation id already
+    /// reserved (its result is `operation_result`), a refusal for a different request under the
+    /// same id or a stale revision, `Ok(true)` otherwise. For work asked before the mutation lock
+    /// (a voice edit through its provider), so a request that is already stale asks nothing.
+    pub fn peek_request(&self, request: &Request) -> Result<bool> {
+        if !self.fresh_id(request)? {
+            return Ok(false);
+        }
+        self.check_revision(request)?;
+        Ok(true)
+    }
+    /// Reserves the operation id like `check_request`; with `check_revision` false the revision
+    /// isn't compared — for work an outside party already accepted after `peek_request` passed
+    /// (a voice edit through its provider), which must be recorded rather than refused and resent.
+    pub fn reserve(&self, request: &Request, check_revision: bool) -> Result<bool> {
+        if !self.fresh_id(request)? {
+            return Ok(false);
+        }
+        if check_revision {
+            self.check_revision(request)?;
+        }
+        let hash = request_hash(request)?;
+        let opid = request.operation_id.as_deref().unwrap_or_default();
+        self.db.execute(
+            "INSERT INTO reservations VALUES(?1,?2,NULL)",
+            params![opid, hash],
+        )?;
+        // Reserve a revision as well as the operation ID before any asynchronous work.
+        self.db
+            .execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
+        if matches!(
+            request.op,
+            Operation::ActionPrepare
+                | Operation::ActionConfirm
+                | Operation::AiDraft
+                | Operation::AiSummarize
+                | Operation::CalendarWindow
+        ) {
+            let scope = self.request_scope(request)?;
+            let cid = scope["connectionId"].as_str().unwrap_or("");
+            self.db.execute(
+                "INSERT INTO reservation_scopes VALUES(?1,?2,?3)",
+                params![opid, cid, encode(&scope)?],
+            )?;
+        }
+        Ok(true)
+    }
+    fn check_revision(&self, request: &Request) -> Result<()> {
+        if request.expected_revision != Some(self.revision()?) {
+            return Err(WorkspaceError::new(
+                "stale_view",
+                "This view changed. Refresh and review the current values before saving.",
+            ));
+        }
+        Ok(())
+    }
+    /// Checks the operation id: `Ok(false)` when it is already reserved for this same request,
+    /// a refusal when it belongs to different content or scope, `Ok(true)` when it is new.
+    fn fresh_id(&self, request: &Request) -> Result<bool> {
         let opid = request
             .operation_id
             .as_deref()
             .ok_or_else(|| WorkspaceError::new("validation", "An operation ID is required."))?;
         uuid::Uuid::parse_str(opid)
             .map_err(|_| WorkspaceError::new("validation", "Invalid operation ID."))?;
-        use sha2::{Digest, Sha256};
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(encode(
-                &json!({"op":request.op,"workspaceId":request.workspace_id,"data":request.data})
-            )?)
-        );
+        let hash = request_hash(request)?;
         let existing: Option<String> = self
             .db
             .query_row(
@@ -747,34 +834,6 @@ impl Repository {
                 }
             }
             return Ok(false);
-        }
-        if request.expected_revision != Some(self.revision()?) {
-            return Err(WorkspaceError::new(
-                "stale_view",
-                "This view changed. Refresh and review the current values before saving.",
-            ));
-        }
-        self.db.execute(
-            "INSERT INTO reservations VALUES(?1,?2,NULL)",
-            params![opid, hash],
-        )?;
-        // Reserve a revision as well as the operation ID before any asynchronous work.
-        self.db
-            .execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
-        if matches!(
-            request.op,
-            Operation::ActionPrepare
-                | Operation::ActionConfirm
-                | Operation::AiDraft
-                | Operation::AiSummarize
-                | Operation::CalendarWindow
-        ) {
-            let scope = self.request_scope(request)?;
-            let cid = scope["connectionId"].as_str().unwrap_or("");
-            self.db.execute(
-                "INSERT INTO reservation_scopes VALUES(?1,?2,?3)",
-                params![opid, cid, encode(&scope)?],
-            )?;
         }
         Ok(true)
     }
