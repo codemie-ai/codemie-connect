@@ -336,14 +336,20 @@ fn is_feature(f: &str) -> bool {
     (1..=40).contains(&f.len()) && f.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
+/// Whether these roles and `uses` break ruling 10: `reply-context` with the network, the web, a
+/// sign-in or a delivery. Checked at install and turning on (`check_compat`), at load
+/// (`Granted::of`) and when listing voice providers.
+pub fn reaches_off_mac(provides: &[String], uses: &Map<String, Value>) -> bool {
+    provides.iter().any(|r| r == "reply-context")
+        && OFF_THIS_MAC.iter().any(|k| uses.contains_key(*k))
+}
+
 /// Refuses a plugin whose engine range excludes Connect's engine (`ENGINE`), whose `echo` range
 /// excludes the Echo API Connect provides (`ECHO_COMPAT`), that requires a feature Connect
 /// lacks (PLUGIN-ENGINE.md §3, §6), or that provides `reply-context` and also asks for the
 /// network, the web, a sign-in or a delivery (`OFF_THIS_MAC`).
 pub fn check_compat(m: &Manifest) -> Result<(), ManifestError> {
-    if m.provides.iter().any(|r| r == "reply-context")
-        && OFF_THIS_MAC.iter().any(|k| m.uses.contains_key(*k))
-    {
+    if reaches_off_mac(&m.provides, &m.uses) {
         return Err(ManifestError::ReplyContextOffMac);
     }
     let have = Version::parse(&format!("{ENGINE}.0")).expect("ENGINE is a version");

@@ -13,13 +13,20 @@ fn iso(at: i64) -> String {
         .unwrap_or_default()
 }
 
-/// A plain id or address from the plugin's arguments: trimmed, at most 320 characters, else
-/// none.
-fn word(v: &Value) -> Option<String> {
+/// An optional id or address from the plugin's arguments: missing or `null` is none; anything
+/// else must be 1–320 characters of text, or the call is refused (a filter never silently
+/// widens to every message).
+fn filter(v: &Value, what: &str) -> Result<Option<String>> {
+    if v.is_null() {
+        return Ok(None);
+    }
     v.as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.chars().count() <= 320)
-        .map(str::to_string)
+        .map(|s| Some(s.to_string()))
+        .ok_or_else(|| {
+            WorkspaceError::new("validation", format!("{what} is 1-320 characters of text"))
+        })
 }
 
 impl Core {
@@ -37,6 +44,13 @@ impl Core {
                 ))
             }
         };
+        let person = &args["person"];
+        if !(person.is_null() || person.is_object()) {
+            return Err(WorkspaceError::new(
+                "validation",
+                "person is {address, fromId}",
+            ));
+        }
         let defaults = SentFilter::default();
         let f = SentFilter {
             channel: channel.into(),
@@ -44,9 +58,9 @@ impl Core {
             limit: args["limit"]
                 .as_i64()
                 .map_or(defaults.limit, |l| l.max(0) as usize),
-            address: word(&args["person"]["address"]),
-            from_id: word(&args["person"]["fromId"]),
-            chat_id: word(&args["chatId"]),
+            address: filter(&person["address"], "person.address")?,
+            from_id: filter(&person["fromId"], "person.fromId")?,
+            chat_id: filter(&args["chatId"], "chatId")?,
         };
         let items = own_sent(&*self.repo()?, &f, now)?;
         let messages: Vec<Value> = items
@@ -61,7 +75,11 @@ impl Core {
 
     /// The plugin manager loaded the chosen voice provider again: its copy is refreshed (Task 5
     /// queues the `voice_refresh` job here).
-    pub(crate) fn voice_reloaded(&self) {}
+    pub(crate) fn voice_reloaded(&self) {
+        #[cfg(test)]
+        self.voice_reloads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -304,5 +322,134 @@ mod tests {
         let core = super::super::test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), vec![]);
         let e = core.plugin_sent(&json!({}), NOW).unwrap_err();
         assert!(e.message.contains("isn't connected"), "{}", e.message);
+    }
+
+    /// A short reply's preview runs on into the quoted original: other people's words and their
+    /// addresses never come back as the user's.
+    #[tokio::test]
+    async fn sent_cuts_quoted_originals_and_addresses() {
+        let (_dir, core, _graph) = fixture();
+        let rcpts = json!([rcpt("Priya N.", "priya.n@example.test")]);
+        let cases = [
+            ("q1", "Thanks, will do.\r\nFrom: Priya N. <priya.n@example.test>\r\nSent: Monday\r\nSubject: Budget\r\nCan you send the SOW?", "Thanks, will do."),
+            ("q2", "Sounds good. From: Priya N. <priya.n@example.test> Sent: Monday, 24 November To: Taylor Can you send it?", "Sounds good."),
+            ("q3", "Done.\n-----Original Message-----\nPlease confirm.", "Done."),
+            ("q4", "Ok, sending now.\n________________________________\nОт: Прія <priya.n@example.test>\nОтправлено: понедельник", "Ok, sending now."),
+            ("q5", "Yes, Friday works. On Mon, 24 Nov 2026, Priya N. <priya.n@example.test> wrote: can we meet?", "Yes, Friday works."),
+            ("q6", "Добре.\nВід: Прія\nНадіслано: понеділок\nЧи можна?", "Добре."),
+            ("q7", "Write to ops@example.test or call me.", "Write to or call me."),
+            ("q8", "From: Priya N. <priya.n@example.test>\nSent: Monday\nOnly the quote", ""),
+        ];
+        let mut r = core.repo().unwrap();
+        for (i, (id, text, _)) in cases.iter().enumerate() {
+            r.put_record(&mail(
+                id,
+                NOW - 1_000 - i as i64,
+                true,
+                rcpts.clone(),
+                json!({"text": text}),
+            ))
+            .unwrap();
+        }
+        drop(r);
+        let out = core
+            .plugin_sent(&json!({"channel": "mail", "days": 1}), NOW)
+            .unwrap();
+        let got: Vec<&str> = out["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["at"].as_str().unwrap() <= iso(NOW - 1_000).as_str())
+            .map(|m| m["text"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = cases
+            .iter()
+            .map(|c| c.2)
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(got, want, "the quote-only message is skipped");
+        assert!(!out.to_string().contains('@'), "{out}");
+    }
+
+    #[tokio::test]
+    async fn sent_filters_fail_closed() {
+        let (_dir, core, _graph) = fixture();
+        for args in [
+            json!({"person": {"address": ""}}),
+            json!({"person": {"address": 7}}),
+            json!({"person": {"fromId": "  "}}),
+            json!({"person": {"fromId": "x".repeat(400)}}),
+            json!({"person": "priya"}),
+            json!({"chatId": ""}),
+            json!({"chatId": ["19:team"]}),
+        ] {
+            let e = core.plugin_sent(&args, NOW).unwrap_err();
+            assert_eq!(e.code, "validation", "{args}");
+        }
+        // Null or missing reads as no filter.
+        let all = core.plugin_sent(&json!({}), NOW).unwrap();
+        assert_eq!(
+            core.plugin_sent(&json!({"person": null, "chatId": null}), NOW)
+                .unwrap(),
+            all
+        );
+        assert_eq!(
+            core.plugin_sent(
+                &json!({"person": {"address": null, "fromId": "teams-priya"}}),
+                NOW
+            )
+            .unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn sent_items_are_bounded() {
+        let (_dir, core, _graph) = fixture();
+        let many: Vec<Value> = (0..15)
+            .map(|i| {
+                rcpt(
+                    &format!("Person {i} {}", "y".repeat(100)),
+                    &format!("p{i}@example.test"),
+                )
+            })
+            .collect();
+        let mut r = core.repo().unwrap();
+        r.put_record(&mail(
+            "big",
+            NOW - 1,
+            true,
+            json!(many),
+            json!({"title": format!("Re:\u{202e} {}", "s".repeat(500))}),
+        ))
+        .unwrap();
+        r.put_record(&chat(
+            "long",
+            "19:long",
+            NOW,
+            true,
+            json!({"title": format!("Team\n{}", "t".repeat(500)), "chatType": "group"}),
+        ))
+        .unwrap();
+        drop(r);
+        let out = core.plugin_sent(&json!({"limit": 2}), NOW).unwrap();
+        let (chat, mail) = (&out["messages"][0], &out["messages"][1]);
+        let to = mail["to"].as_str().unwrap();
+        assert_eq!(to.matches("Person ").count(), 10, "{to}");
+        assert!(
+            to.chars().count() <= 10 * 80 + 9 * 2,
+            "{}",
+            to.chars().count()
+        );
+        let subject = mail["subject"].as_str().unwrap();
+        assert!(subject.chars().count() <= 200 && !subject.contains('\u{202e}'));
+        let title = chat["to"].as_str().unwrap();
+        assert!(
+            title.chars().count() <= 200 && !title.contains('\n'),
+            "{title}"
+        );
     }
 }

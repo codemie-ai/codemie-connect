@@ -547,7 +547,9 @@ impl VoiceProviders for PluginManager {
             .filter(|(id, p)| super::valid_id(id) && p.agreed.contains(&role))
             .filter_map(|(id, p)| {
                 let m = super::install::installed_manifest(&self.paths, id, p)?;
-                if !m.provides.iter().any(|r| r == "reply-context") {
+                if !m.provides.iter().any(|r| r == "reply-context")
+                    || super::manifest::reaches_off_mac(&m.provides, &m.uses)
+                {
                     return None;
                 }
                 let ops = reply_context::ops_of(&self.services, id);
@@ -1398,9 +1400,9 @@ mod tests {
     }
 
     /// A Knowledge-like reply-context provider's manifest: no network, a folder.
-    fn voice_manifest() -> Value {
+    fn voice_manifest(name: &str) -> Value {
         json!({
-            "name": "Knowledge", "provides": ["reply-context"],
+            "name": name, "provides": ["reply-context"],
             "requires": ["reply_context_provider"],
             "uses": {"folders": {"write": true}}
         })
@@ -1416,7 +1418,7 @@ mod tests {
         s.install(
             "knowledge",
             "1.0.0",
-            voice_manifest(),
+            voice_manifest("Knowledge"),
             r#"
             export function apply(ctx) {
               ctx.replyContext.provide({
@@ -1433,7 +1435,7 @@ mod tests {
         s.install(
             "notes",
             "1.0.0",
-            voice_manifest(),
+            voice_manifest("Notes"),
             r#"
             export function apply(ctx) {
               ctx.replyContext.provide({
@@ -1457,7 +1459,7 @@ mod tests {
             available,
             json!([
                 {"id": "plugin:knowledge", "name": "Knowledge", "on": true, "ready": true, "facts": false},
-                {"id": "plugin:notes", "name": "Knowledge", "on": true, "ready": true, "facts": true},
+                {"id": "plugin:notes", "name": "Notes", "on": true, "ready": true, "facts": true},
             ])
         );
         let limit = Duration::from_millis(100);
@@ -1546,5 +1548,129 @@ mod tests {
                 .await,
             Err(VoiceError::Unavailable)
         );
+    }
+
+    const OFF_MAC: &str = "A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.";
+
+    const PROVIDES_STATUS: &str = r#"
+        export function apply(ctx) {
+          ctx.replyContext.provide({ status: async () => ({ ok: true }) })
+        }
+    "#;
+
+    /// Its manifest edited on disk (or its registry entry written by hand) to add the network to
+    /// the role, with every line agreed: it never loads, and isn't listed.
+    #[tokio::test]
+    async fn a_reply_context_plugin_with_the_network_never_loads() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        for (id, key) in [
+            ("chatty", "network"),
+            ("signer", "signin"),
+            ("sender", "deliver"),
+        ] {
+            let mut m = voice_manifest("Chatty");
+            m["uses"][key] = json!({});
+            s.install(id, "1.0.0", m, PROVIDES_STATUS, true);
+        }
+        s.manager.reload().await;
+        assert!(s.manager.loaded().is_empty());
+        for id in ["chatty", "signer", "sender"] {
+            assert_eq!(s.manager.problems()[id], OFF_MAC, "{id}");
+        }
+        assert!(voices(&s).available().is_empty());
+        // Turned off, it still isn't listed.
+        s.set_enabled("chatty", false);
+        s.manager.reload().await;
+        assert!(voices(&s).available().is_empty());
+    }
+
+    /// The manifest provides the role, but its sheet line wasn't agreed: it loads without it.
+    #[tokio::test]
+    async fn a_role_not_agreed_to_is_not_taken() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "unsure",
+            "1.0.0",
+            voice_manifest("Unsure"),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.replyContext.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+            }
+            "#,
+            true,
+        );
+        Registry::update(&s.manager.paths, |r| {
+            r.installed
+                .get_mut("unsure")
+                .unwrap()
+                .agreed
+                .retain(|k| k != "provides_reply-context");
+            Ok(())
+        })
+        .unwrap();
+        s.manager.reload().await;
+        assert_eq!(s.manager.loaded(), ["unsure"], "{:?}", s.manager.problems());
+        assert_eq!(
+            s.manager.call("unsure", "refused", Value::Null).await,
+            Ok(json!(
+                "permission: unsure doesn't provide reply-context (provides in its manifest)"
+            ))
+        );
+        assert!(voices(&s).available().is_empty());
+    }
+
+    /// A reload that loads the chosen provider tells the core; one that loads another plugin,
+    /// or loads nothing new, doesn't.
+    #[tokio::test]
+    async fn loading_the_chosen_provider_tells_the_core() {
+        use std::sync::atomic::Ordering;
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "knowledge",
+            "1.0.0",
+            voice_manifest("Knowledge"),
+            PROVIDES_STATUS,
+            true,
+        );
+        s.install(
+            "other",
+            "1.0.0",
+            voice_manifest("Other"),
+            PROVIDES_STATUS,
+            false,
+        );
+        {
+            let mut r = s.core.repo().unwrap();
+            let mut settings = r.settings().unwrap();
+            settings.voice.provider = "plugin:knowledge".into();
+            r.settings_update(&settings).unwrap();
+        }
+        s.manager.reload().await;
+        assert_eq!(s.core.voice_reloads.load(Ordering::SeqCst), 1);
+        s.manager.reload().await;
+        assert_eq!(
+            s.core.voice_reloads.load(Ordering::SeqCst),
+            1,
+            "nothing new loaded"
+        );
+        s.set_enabled("other", true);
+        s.manager.reload().await;
+        assert_eq!(
+            s.core.voice_reloads.load(Ordering::SeqCst),
+            1,
+            "not the chosen one"
+        );
+        // Updated: unloaded and loaded again.
+        s.install(
+            "knowledge",
+            "1.1.0",
+            voice_manifest("Knowledge"),
+            PROVIDES_STATUS,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(s.core.voice_reloads.load(Ordering::SeqCst), 2);
     }
 }

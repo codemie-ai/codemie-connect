@@ -83,12 +83,17 @@ impl Granted {
             return Err(format!("its manifest names it “{}”", m.id));
         }
         let agreed = |k: &str| installed.agreed.iter().any(|a| a == k);
-        let uses = m.uses.into_iter().filter(|(k, _)| agreed(k)).collect();
-        let provides = m
+        let provides: Vec<String> = m
             .provides
             .into_iter()
             .filter(|r| agreed(&super::capabilities::role_key(r)))
             .collect();
+        // Ruling 10 holds whatever the registry says was agreed: a role that reads the user's
+        // sent messages never loads beside a way off the Mac, agreed to or not.
+        if super::manifest::reaches_off_mac(&provides, &m.uses) {
+            return Err(super::manifest::ManifestError::ReplyContextOffMac.to_string());
+        }
+        let uses = m.uses.into_iter().filter(|(k, _)| agreed(k)).collect();
         Ok(Granted {
             id: id.to_string(),
             name: m.name,
@@ -395,7 +400,7 @@ impl HostServices for Services {
                 "store.walk" => store::walk(me, p, args).await,
                 "web.read" => web::read(&me, &p, &args).await,
                 n if n.starts_with("m365.") => m365::call(&me, &p, n, &args).await,
-                "replyContext.sent" => reply_context::sent(&me, &p, &args),
+                "replyContext.sent" => reply_context::sent(me, p, args).await,
                 "http.askAddress" => web::ask_address(&me, &p).await,
                 n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,

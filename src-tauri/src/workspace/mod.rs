@@ -126,6 +126,10 @@ pub struct Core {
     /// Connect's way into reply-context provider plugins' host halves (`voice`), set once by
     /// the plugin manager; `None` while nothing has set it (every test with no voice provider).
     voice_providers: std::sync::OnceLock<Arc<dyn voice::VoiceProviders>>,
+    /// How often the plugin manager said it loaded the chosen voice provider
+    /// (`Core::voice_reloaded`); tests read it.
+    #[cfg(test)]
+    pub(crate) voice_reloads: AtomicUsize,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
     /// Held by one writer of meeting records and transcript files at a time
@@ -294,6 +298,8 @@ impl Core {
             events: std::sync::OnceLock::new(),
             task_providers: std::sync::OnceLock::new(),
             voice_providers: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            voice_reloads: AtomicUsize::new(0),
             meetings_told: Default::default(),
             meeting_writes: Default::default(),
             home,

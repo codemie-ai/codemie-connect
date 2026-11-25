@@ -545,6 +545,9 @@ pub fn enable(
                     format!("The files of “{id}” can’t be read. Remove it and install it again."),
                 )
             })?;
+            // The installed copy is judged again, as an install is: its files may have changed
+            // since (an edit, a reset that took it back).
+            check_compat(&m).map_err(|e| WorkspaceError::new("incompatible", sentence(e)))?;
             let lines = sheet(&m).map_err(|e| refused(id, e))?;
             let new = new_lines(&lines, p);
             if !new.is_empty() {
@@ -1390,6 +1393,95 @@ mod tests {
         testkit::local_market(&env, &[hello("1.0.0")]);
         install_shown(&env, "hello").unwrap();
         assert!(installed(&env, "hello").unwrap().enabled);
+    }
+
+    const OFF_MAC: &str = "A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.";
+
+    /// A reply-context provider, with these `uses`.
+    fn voice(id: &str, uses: serde_json::Value) -> serde_json::Value {
+        let mut m = manifest(id, "1.0.0");
+        m["provides"] = json!(["reply-context"]);
+        m["requires"] = json!(["reply_context_provider"]);
+        m["uses"] = uses;
+        m
+    }
+
+    /// Writes the installed copy's manifest of `id` 1.0.0 again (an edit on disk).
+    fn rewrite_installed(env: &Env, id: &str, m: &serde_json::Value) {
+        fs::write(
+            env.paths
+                .installed()
+                .join(id)
+                .join("1.0.0")
+                .join(MANIFEST_FILE),
+            m.to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn admit_refuses_a_reply_context_plugin_with_the_network() {
+        let env = testkit::env();
+        testkit::local_market(
+            &env,
+            &[voice(
+                "chatty",
+                json!({"network": {"hosts": ["api.example.com"]}}),
+            )],
+        );
+        let o = offer(&env.paths, &local(&env), "chatty").unwrap();
+        let refusal = o.refusal.expect("refused");
+        assert_eq!(refusal.code, "incompatible");
+        assert_eq!(refusal.message, OFF_MAC);
+        let e = install(&env.paths, "local", "chatty", NOTHING).unwrap_err();
+        assert_eq!(e.message, OFF_MAC);
+        assert!(installed(&env, "chatty").is_none());
+    }
+
+    #[test]
+    fn enable_refuses_a_reply_context_plugin_that_gained_the_network() {
+        let env = testkit::env();
+        testkit::local_market(&env, &[voice("knowing", json!({}))]);
+        install_shown(&env, "knowing").unwrap();
+        set_enabled(&env.paths, "knowing", false).unwrap();
+        rewrite_installed(
+            &env,
+            "knowing",
+            &voice(
+                "knowing",
+                json!({"network": {"hosts": ["api.example.com"]}}),
+            ),
+        );
+        let e = enable(&env.paths, "knowing", true, None).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("incompatible", OFF_MAC)
+        );
+        let p = installed(&env, "knowing").unwrap();
+        assert!(!p.enabled && !p.agreed.iter().any(|k| k == "network"));
+        // Turning it off is never refused.
+        enable(&env.paths, "knowing", false, None).unwrap();
+    }
+
+    #[test]
+    fn a_reset_registry_cannot_turn_on_a_reply_context_plugin_with_the_network() {
+        let env = testkit::env();
+        testkit::local_market(&env, &[voice("knowing", json!({}))]);
+        install_shown(&env, "knowing").unwrap();
+        rewrite_installed(
+            &env,
+            "knowing",
+            &voice("knowing", json!({"signin": {"hosts": ["github.com"]}})),
+        );
+        fs::write(env.paths.registry(), "{ broken").unwrap();
+        let reset = reset_registry(&env.paths).unwrap();
+        assert_eq!(reset.adopted, ["knowing"]);
+        let e = enable(&env.paths, "knowing", true, None).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("incompatible", OFF_MAC)
+        );
+        assert!(!installed(&env, "knowing").unwrap().enabled);
     }
 
     #[test]

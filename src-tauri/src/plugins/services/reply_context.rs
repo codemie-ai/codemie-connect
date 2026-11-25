@@ -9,6 +9,7 @@
 use super::{at, lock, permission, Granted, Services};
 use crate::plugins::host::{ErrorCode, HostError};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// The ops a reply-context provider can give.
 pub const OPS: [&str; 6] = ["status", "export", "context", "facts", "save", "remove"];
@@ -49,12 +50,17 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
 }
 
 /// `replyContext.sent(filter)`: `{messages: [{channel, at, text, subject, to, chatType}]}`; signed
-/// out, "Microsoft 365 isn't connected: …".
-pub fn sent(s: &Services, p: &Granted, args: &Value) -> Result<Value, HostError> {
-    needs_role(p)?;
-    let core = s.core()?;
-    core.plugin_sent(at(args, 0), chrono::Utc::now().timestamp())
-        .map_err(|e| HostError::new(ErrorCode::PluginError, e.message))
+/// out, "Microsoft 365 isn't connected: …". The read runs off the async runtime: it goes through
+/// every synced message of the account.
+pub async fn sent(s: Arc<Services>, p: Arc<Granted>, args: Value) -> Result<Value, HostError> {
+    needs_role(&p)?;
+    let core = s.core()?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        core.plugin_sent(at(&args, 0), chrono::Utc::now().timestamp())
+    })
+    .await
+    .map_err(|e| super::bad(e.to_string()))?
+    .map_err(|e| HostError::new(ErrorCode::PluginError, e.message))
 }
 
 /// The ops plugin `id` registered, `None` when it hasn't (or isn't loaded).
@@ -112,6 +118,39 @@ mod tests {
         assert_eq!(
             e.message,
             "todoist doesn't provide reply-context (provides in its manifest)"
+        );
+    }
+
+    /// A reply-context plugin can't hand what it read to a sibling plugin that has the network:
+    /// it can read its marketplace's shared values, never set them.
+    #[test]
+    fn a_reply_context_plugin_cannot_set_shared_values() {
+        let env = Env::new();
+        env.provider("knowledge", &["reply-context"], json!([]));
+        env.plugin("sibling", json!({}), json!([]));
+        let e = env
+            .call(
+                "knowledge",
+                "shared.set",
+                json!(["acme.style", "VOICE_SENTINEL_9f3a"]),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Permission);
+        assert_eq!(
+            e.message,
+            "knowledge provides reply-context, so it can't set shared values"
+        );
+        assert!(!e.message.contains("VOICE_SENTINEL_9f3a"));
+        assert_eq!(
+            env.call("knowledge", "shared.get", json!(["acme.style"])),
+            Ok(Value::Null)
+        );
+        // Another plugin of the marketplace still can.
+        env.call("sibling", "shared.set", json!(["acme.mode", "on"]))
+            .unwrap();
+        assert_eq!(
+            env.call("knowledge", "shared.get", json!(["acme.mode"])),
+            Ok(json!("on"))
         );
     }
 }
