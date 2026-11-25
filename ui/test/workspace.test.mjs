@@ -396,6 +396,62 @@ test('a workspace:changed heard while writes are queued reads nothing: the queue
   assert.equal(bridge.ops.filter(op => op === 'snapshot').length, 1);
 });
 
+/** A native stand-in that answers `changes_since` with a delta of what `value` became (or a
+ *  reset when told to), and counts its requests. */
+function deltaNative() {
+  const bridge = { revision: 1, value: 0, scope: 's1', ops: [], reset: false, fail: false };
+  const answer = () => ({ snapshot: { revision: bridge.revision, records: [{ kind: 'v', id: 'v', connectionId: null, workspaceId: 'personal', data: { value: bridge.value } }], jobs: [], settings: { activeWorkspace: 'personal' } }, scope: bridge.scope, authPending: false, authError: null });
+  bridge.invoke = async (_, { request: r }) => {
+    bridge.ops.push(r.op);
+    if (r.op === 'snapshot') return answer();
+    if (r.op === 'revision') return { revision: bridge.revision };
+    if (r.op === 'changes_since') {
+      if (bridge.fail) throw { code: 'storage', message: 'boom' };
+      if (bridge.reset || r.data.scope !== bridge.scope) return { reset: true };
+      const a = answer();
+      return { reset: false, revision: bridge.revision, scope: bridge.scope, records: a.snapshot.records, removed: [], replace: [], jobs: [], removedJobs: [], jobsAll: false, settings: a.snapshot.settings, workspaces: [], connection: null, available: true, meetingsRoot: null, noteTemplates: [], authPending: false, authError: null };
+    }
+    if (r.expectedRevision !== bridge.revision) throw { code: 'stale_view' };
+    bridge.revision += 2;
+    bridge.value = r.data.value;
+    return { saved: true };
+  };
+  return bridge;
+}
+const valueOf = store => store.get().snapshot.records.find(r => r.kind === 'v').data.value;
+
+test('with a snapshot in hand a read asks changes_since and applies it; a reset or an error reads the snapshot', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true });
+  await store.refresh();
+  bridge.value = 3;
+  bridge.revision = 4;
+  await store.refresh();
+  assert.deepEqual(bridge.ops, ['snapshot', 'changes_since']);
+  assert.equal(valueOf(store), 3);
+  assert.equal(store.get().snapshot.revision, 4);
+  bridge.reset = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(2), ['changes_since', 'snapshot']);
+  bridge.reset = false;
+  bridge.fail = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(4), ['changes_since', 'snapshot']);
+});
+
+test('a write with a preview settles on a delta, the preview laid over it until then', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true, optimistic: { task_save: (s, d) => ({ ...s, records: s.records.map(r => (r.kind === 'v' ? { ...r, data: { value: d.value } } : r)) }) } });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [5, 6].map(value => store.mutate('task_save', { value }));
+  assert.equal(valueOf(store), 6, 'shown at once');
+  await Promise.all(writes);
+  await store.idle();
+  assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'changes_since']);
+  assert.equal(valueOf(store), 6);
+});
+
 test('sending rebases; native guards the review itself', async () => {
   // action_confirm refuses a used, expired or changed-source review (actions.rs), so a sync
   // that moved the revision while the review was open must not block Send.

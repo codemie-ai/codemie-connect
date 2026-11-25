@@ -80,7 +80,8 @@ const OPTIMISTIC = {
   meeting_download: previewRun('transcript_download'),
   job_cancel: previewJobCancel,
 };
-const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC }) : null;
+// A read with a snapshot in hand asks only what changed since it (changes.js).
+const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC, deltas: true }) : null;
 
 const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',

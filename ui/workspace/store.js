@@ -20,6 +20,8 @@
 // person reviews what will go out; `action_confirm` sends only that reviewed action and refuses
 // (`conflict`) when it was used, expired or its source changed since (actions.rs `confirm_action`).
 // Sync now, Retry, a calendar range and a test notification act on things as they are when they run.
+import { applyChanges } from './changes.js';
+
 export const REBASE_SAFE = new Set(['action_prepare', 'action_confirm', 'sync_request', 'job_retry', 'calendar_window', 'notification_test', 'settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
 
 /** How many times a rebase-safe operation is sent before a stale view is reported. */
@@ -28,8 +30,10 @@ const REBASE_TRIES = 5;
 /** `now()` is the clock `refreshAfter` compares with (the caller's `performance.now()`);
  *  `optimistic` maps an operation to its preview, `(snapshot, data, { operationId }) => snapshot`
  *  (null: none). The operation id is the one sent, so a record native names by it (a new task)
- *  is shown under its final id. */
-export function createStore(invoke, { now = () => performance.now(), optimistic = {} } = {}) {
+ *  is shown under its final id. With `deltas`, a read with a snapshot in hand asks native what
+ *  changed since it (`changes_since`, changes.js) and reads the whole snapshot only at first, on
+ *  a reset or when that fails. */
+export function createStore(invoke, { now = () => performance.now(), optimistic = {}, deltas = false } = {}) {
   // What native last gave, and what is shown: that with the changes on their way laid over it.
   let state = null;
   let shown = null;
@@ -74,7 +78,15 @@ export function createStore(invoke, { now = () => performance.now(), optimistic 
   function read() {
     const n = ++asked;
     askedAt = now();
-    const landed = invoke('workspace_request', { request: { op: 'snapshot' } }).then(result => {
+    const whole = () => invoke('workspace_request', { request: { op: 'snapshot' } });
+    // A delta is applied to the state this read was asked on: whatever lands meanwhile, the
+    // result is native's state at the delta's revision.
+    const base = deltas && state?.scope ? state : null;
+    const answer = base
+      ? invoke('workspace_request', { request: { op: 'changes_since', data: { revision: base.snapshot.revision, scope: base.scope } } })
+        .then(delta => applyChanges(base, delta) ?? whole(), whole)
+      : whole();
+    const landed = answer.then(result => {
       if (n <= applied) return false;
       applied = n;
       state = result;
