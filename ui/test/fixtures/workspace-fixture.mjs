@@ -178,7 +178,21 @@ export const contractFixtures = () => ({
   draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), summary: contract('summary'),
   jobSummaryFailed: contract('job-ai-summarize-failed'), jobSummaryRunning: contract('job-ai-summarize-running'),
   jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'), jobRunning: contract('job-ai-draft-running'),
+  // The `voice_import_scan` answer for the invented skills folder (reply voice design §11).
+  voiceImport: contract('voice-import-preview'),
 });
+
+// ---------------------------------------------------------------- reply voice (Task 9)
+// Written by the Rust test that projects the real snapshot's `replyVoice` (voice-states.json):
+// `off`, `offWithCopy`, `ready`, `needsSetup`, `unavailable`, `pluginOff`, `loading`, `noFacts`.
+
+export const voiceStates = () => contract('voice-states');
+
+/** `snapshot.replyVoice` replaced with one of the named states from voice-states.json. */
+export function withVoice(s, stateName) {
+  s.replyVoice = voiceStates()[stateName];
+  return s;
+}
 
 // A test-only mirror of Rust `workspace::ai::choose` for the browser mock and the presets below.
 // The window never resolves rows itself; `chooses_like_rust` (ai-settings.test.mjs) pins this

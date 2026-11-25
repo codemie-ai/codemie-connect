@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingsViewChecks } from './meetings-view-checks.mjs';
@@ -112,7 +112,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null } }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -1259,6 +1259,100 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       return { id: d.id };
     },
   });
+  // Settings › Your voice (reply voice design §5–§7, §11): `replyVoice` is Off from
+  // voice-states.json unless a check sets another state; the ops answer in native's shapes and
+  // refusals. `window.__voiceRefuse = {op, message, field?}` makes the next such op refuse. Nothing
+  // reaches a provider: the mock keeps the copy itself.
+  s.replyVoice ||= clone(voice.states.off);
+  const vc = () => s.replyVoice;
+  const voiceRefused = op => {
+    const r = window.__voiceRefuse;
+    if (!r || r.op !== op) return;
+    window.__voiceRefuse = null;
+    throw r.field ? { code: 'validation', message: r.message, field: r.field } : { code: r.code || 'refused', message: r.message };
+  };
+  const voiceName = () => vc().name || 'Knowledge';
+  const PROFILES = {
+    'priya-n': { text: 'Short sentences; no small talk.', about: 'Product lead; prefers mornings.' },
+    'jordan-lee': { text: 'Engineering manager. Bullet points.', about: '' },
+    'marek-novak': { text: 'Finance contact. Formal.', about: '' },
+  };
+  Object.assign(ops, {
+    voice_set: d => {
+      calls.push(['voice_set', clone(d)]);
+      voiceRefused('voice_set');
+      const v = vc();
+      if (d.provider !== 'off') {
+        const listed = (v.available || []).find(a => a.id === d.provider);
+        if (!listed) refuse('provider', 'Choose Off or an installed reply-context plugin.');
+        if (d.provider !== v.provider && listed.on === false) refuse('provider', `Turn ${listed.name} on in Settings › Plugins first.`);
+        Object.assign(v, { name: listed.name, state: listed.on === false ? 'unavailable' : 'ready', facts: { on: d.facts ?? v.facts.on, offered: !!listed.facts } });
+      } else {
+        Object.assign(v, { name: null, state: 'off', facts: { on: d.facts ?? v.facts.on, offered: false } });
+      }
+      v.provider = d.provider;
+      return { provider: v.provider, facts: v.facts.on };
+    },
+    voice_save: d => {
+      calls.push(['voice_save', clone(d)]);
+      voiceRefused('voice_save');
+      const v = vc();
+      if (v.provider === 'off') refuse('provider', 'Choose where your voice comes from first.');
+      if (d.kind === 'style') {
+        if (String(d.text).length > 8000) refuse('text', 'Keep the style card under 8,000 characters.');
+        v.style = { ...(v.style || { source: 'Voice/style.md', head: null }), text: d.text, basedOn: null, updatedAt: new Date(now() * 1000).toISOString() };
+        return { item: clone(v.style) };
+      }
+      const a = d.applies || {};
+      if (!['to', 'chat', 'domain', 'topic', 'no-profile', 'everyone'].includes(a.kind) || (['to', 'chat', 'domain', 'topic'].includes(a.kind) && !String(a.value || '').trim())) refuse('applies', 'Say what the instruction applies to.');
+      if (!String(d.text || '').trim() || String(d.text).length > 2000) refuse('text', 'Write what to do, up to 2,000 characters.');
+      const rule = { id: d.id || `${a.kind}-${crypto.randomUUID().slice(0, 8)}`, applies: { kind: a.kind, value: a.value ?? null, channel: a.channel ?? null }, text: d.text.trim(), source: 'Voice/rules.md', editable: true };
+      v.rules = d.id ? v.rules.map(r => (r.id === d.id ? rule : r)) : [...v.rules, rule];
+      v.copy = true;
+      return { item: clone(rule) };
+    },
+    voice_delete: d => {
+      calls.push(['voice_delete', clone(d)]);
+      voiceRefused('voice_delete');
+      const v = vc();
+      const rule = v.rules.find(r => r.id === d.id);
+      if (!rule) fail('not_found', 'This instruction is no longer there.');
+      v.rules = v.rules.filter(r => r !== rule);
+      return { removed: clone(rule) };
+    },
+    voice_forget: d => {
+      calls.push(['voice_forget', clone(d)]);
+      const deleted = vc().rules.length + vc().people.length + (vc().style ? 1 : 0);
+      s.replyVoice = { ...clone(voice.states.off), available: clone(vc().available || []) };
+      return { deleted, provider: 'off' };
+    },
+    voice_refresh: d => { calls.push(['voice_refresh', clone(d)]); voiceRefused('voice_refresh'); return { queued: true }; },
+    voice_read: d => {
+      calls.push(['voice_read', clone(d)]);
+      const p = vc().people.find(x => x.id === d.id);
+      if (!p) fail('not_found', "This person is no longer in Connect's copy.");
+      return { id: p.id, name: p.name, ...(PROFILES[p.id] || { text: '', about: '' }), source: p.source };
+    },
+    voice_import_scan: d => {
+      calls.push(['voice_import_scan', clone(d)]);
+      voiceRefused('voice_import_scan');
+      if (vc().provider === 'off') refuse('provider', 'Choose where your voice comes from first.');
+      return { ...clone(voice.preview), folder: String(d.path).split('/').filter(Boolean).at(-1) || voice.preview.folder };
+    },
+    voice_import_distil: async d => {
+      calls.push(['voice_import_distil', clone(d)]);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      voiceRefused('voice_import_distil');
+      return { skill: d.skill, items: [{ applies: { kind: 'everyone' }, text: 'Lead with the answer, then the reasons.' }, { applies: { kind: 'everyone', channel: 'mail' }, text: 'Short paragraphs, one idea each.' }] };
+    },
+    voice_import: d => {
+      calls.push(['voice_import', clone(d)]);
+      voiceRefused('voice_import');
+      const v = vc();
+      for (const item of d.items) v.rules.push({ id: `imported-${crypto.randomUUID().slice(0, 8)}`, applies: { kind: item.applies.kind, value: item.applies.value ?? null, channel: item.applies.channel ?? null }, text: item.text, source: 'Voice/rules.md', editable: true });
+      return { added: d.items.length, skipped: 0 };
+    },
+  });
   // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
@@ -1307,7 +1401,8 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
   };
   const pluginOps = {
     markets: () => pl.markets,
-    pick_folder: () => ({ path: '/Users/qa/Plugins/acme-market' }),
+    // Settings › Your voice's import asks for the skills folder: `__skillsFolder` (null cancels).
+    pick_folder: d => (d.purpose === 'skills' ? { path: window.__skillsFolder ?? null } : { path: '/Users/qa/Plugins/acme-market' }),
     market_add: d => {
       if (!d.source.startsWith('/')) fail('invalid', 'The stand-in adds folders only.');
       const m = { builtIn: false, commit: null, fetchedAt: null, kind: 'local', name: 'acme', ready: true, ref: null, source: d.source };
@@ -1455,7 +1550,7 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check', 'voice_refresh', 'voice_read', 'voice_import_scan', 'voice_import_distil'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -1576,7 +1671,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport } })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);

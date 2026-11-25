@@ -13,6 +13,7 @@ import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView,
 import { viewOf } from './view-mode.js';
 import { providerSettings, whereTasksLive } from './settings-tasks.js';
 import { menuBarCard } from './menu-bar.js';
+import { voiceCard } from './settings-voice.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -22,6 +23,7 @@ export const SETTINGS_TABS = [
   ['', 'layout', 'Layout', 'layout'],
   ['', 'notifications', 'Notifications', 'bell'],
   ['', 'meetings-tasks', 'Tasks', 'tasks'],
+  ['', 'voice', 'Your voice', 'reply'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
   ['', 'plugins', 'Plugins', 'puzzle'],
@@ -66,6 +68,7 @@ const TAB_DESCRIPTIONS = {
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
   notifications: 'Desktop reminders, critical alerts, quiet hours and the menu-bar count.',
+  voice: 'What Connect adds to your AI reply drafts so they sound like you.',
   queues: 'Critical keywords and scheduled reminders.',
   privacy: 'What is stored on this device and how to remove it.',
   activity: 'Background work: synchronization, reminders and drafts.',
@@ -84,6 +87,9 @@ export function settings(s, ctx) {
     appearance: () => appearancePanel(s),
     layout: () => layoutPanel(s, ctx.layout),
     notifications: () => notificationsPanel(s),
+    // Settings › Your voice (reply voice design §5): the controller's view state and the
+    // installed plugins (a provider's name while it loads).
+    voice: () => voiceCard(s, { ...(state.voice || {}), now: ctx.now ?? Date.now(), plugins: ctx.plugins?.ui?.installed || [] }),
     queues: () => queuesPanel(s),
     privacy: () => privacyPanel(s),
     activity: () => activityPanel(s),

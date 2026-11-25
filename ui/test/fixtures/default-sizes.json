@@ -28,15 +28,15 @@
     "sha256": "9eca459133b1f86e58f8c1352097f3c4fa08687a402ecac167bf2db9298da5da"
   },
   "settings-general": {
-    "count": 782,
-    "sha256": "4c0959fb6745e300d78c1413c6f88b4002f11c24f689ccad6d9a1bac9725deff"
+    "count": 787,
+    "sha256": "8c0c14024491e5acd97ae0e31b3f4835e02519ceaf6bf9d4659d3e669a603b4c"
   },
   "settings-appearance": {
-    "count": 299,
-    "sha256": "2cdc2de98ca6b165978df05df1db91473717a4cd74ffb4f31c2bafcd8571a723"
+    "count": 304,
+    "sha256": "3fb12cdce3f41a448e156e91362a44ddc1a2a537e34d4ddd199e10cba1d74f49"
   },
   "settings-layout": {
-    "count": 494,
-    "sha256": "e88647fde2d20211a90538a03e5fecb462c3e7f940470351742df6ea34aca79c"
+    "count": 499,
+    "sha256": "4df9d2e38f1f42db4b20186931661a92beaac3b90b909d14dbbce3ce638ac4b6"
   }
 }

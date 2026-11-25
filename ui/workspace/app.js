@@ -40,6 +40,7 @@ import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view
 import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
+import { createVoiceController, newVoiceView } from './voice-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
 import { seenToSend, openTarget, sendSeen } from './menu-bar.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
@@ -119,6 +120,9 @@ const state = {
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
   meetingsSettings: newMeetingsSettingsView(),
+  // Settings › Your voice: the open style card or instruction editor (with what was typed), the
+  // skill import preview, busy flags (view state only; the voice is native's).
+  voice: newVoiceView(),
   // Today: Customize mode, undo and redo, the open options panel, the gallery search, renaming.
   today: newTodayView(),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
@@ -1654,6 +1658,16 @@ if (tasksUi) {
   });
 }
 
+// ---------------------------------------------------------------- Settings › Your voice
+
+const voiceUi = store && createVoiceController({
+  state, snap, mutate, render, openModal, confirmModal, toast,
+  query: (op, data) => store.query(op, data),
+  pluginsRequest: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
+  go: hash => goHash(hash),
+  focus: focusFirst,
+});
+
 // ---------------------------------------------------------------- Today layout (spec "Interactions")
 
 const todayUi = store && createTodayController({
@@ -2260,6 +2274,7 @@ async function handle(action, el, ev) {
     return tasksOf(snap()).some(r => r.id === el.dataset.id) ? tasksUi.openDrawer(el.dataset.id) : undefined;
   }
   if (action.startsWith('meetings-settings-')) return meetingsSettingsUi.handle(action, el);
+  if (action.startsWith('voice-')) return voiceUi.handle(action, el);
   if (action.startsWith('meeting-') || action.startsWith('doc-')) {
     // From the calendar's event card, a step that opens a dialog or the page closes the card first.
     const card = el.closest?.('.ws-event-modal');
@@ -2917,6 +2932,11 @@ document.addEventListener('submit', async ev => {
 
 document.addEventListener('input', ev => {
   if (codemie.input(ev.target)) return;
+  // Settings › Your voice: what is typed in its editors is kept in its view state (no render).
+  if (ev.target.matches?.('[data-voice-input]')) {
+    voiceUi?.input(ev.target);
+    return;
+  }
   if (ev.target.matches?.('[data-settings-find]') && !ev.isComposing) {
     state.settingsQuery = ev.target.value;
     render().catch(fail);
@@ -3046,6 +3066,15 @@ document.addEventListener('keydown', ev => {
     ev.stopImmediatePropagation();
     ev.target.value = '';
   }
+}, true);
+
+// Settings › Your voice: Esc in its style card or instruction editor cancels it and puts focus
+// back on Edit or Add (design § Accessibility).
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape' || ev.isComposing || modalOpen() || !ev.target?.closest?.('.ws-voice-editor,.ws-voice-rule-editor')) return;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  voiceUi?.cancel().catch(fail);
 }, true);
 
 // A box the user leaves saves its text at once.
