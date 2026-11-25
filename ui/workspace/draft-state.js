@@ -140,7 +140,7 @@ const retry = (job, label = 'Try again', kind = 'draft') => ({
   attrs: { 'data-id': kind === 'automation' ? job.payload?.automationId : job.id },
 });
 const CHOOSE = { draft: 'ai-draft-choose', summary: 'ai-summarize-choose', automation: 'automation-choose' };
-const settingsAction = { label: 'Open Claude settings', action: 'ai-open-settings', iconName: 'settings' };
+const settingsAction = { label: 'Open AI settings', action: 'ai-open-settings', iconName: 'settings' };
 const setupAction = { label: 'Set up CodeMie', action: 'cm-setup-open', iconName: 'download' };
 const signInAction = (profileId) => ({ label: 'Sign in', action: 'cm-profile-login', iconName: 'link', attrs: { 'data-id': profileId.slice('codemie:'.length) } });
 

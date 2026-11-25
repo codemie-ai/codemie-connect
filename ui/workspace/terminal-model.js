@@ -79,7 +79,7 @@ export function endedText(info) {
   if (info.code === 127) {
     return {
       title: `Connect couldn’t find ${program} on this Mac`,
-      detail: program === 'Claude Code' ? 'Install it in Settings → Claude, then start again.' : 'Install it in Settings → CodeMie, then start again.',
+      detail: program === 'Claude Code' ? 'Install it in Settings → AI, then start again.' : 'Install it in Settings → CodeMie, then start again.',
       tone: 'error',
     };
   }

@@ -465,7 +465,7 @@ export function createMeetingsController({
   function problem(err, id) {
     switch (err?.code) {
       case 'needs_choice':
-        return toast('Choose which Claude writes your meeting notes.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        return toast('Choose which Claude writes your meeting notes.', 'error', { label: 'Open Settings › AI', run: () => route('settings', 'ai') });
       case 'folder_missing':
         return toast(`The folder of “${titleOf(id)}” is gone.`, 'error', id && record(id)?.data?.transcriptIds?.length && !record(id)?.data?.imported ? { label: 'Download again', run: () => download(id) } : { label: 'Import', run: () => importDialog(id) });
       case 'folder_unwritable':
@@ -479,7 +479,7 @@ export function createMeetingsController({
       case 'needs_login':
         // A meeting operation answers needs_login for the Microsoft account (target(),
         // active_workspace); only an error that carries Claude's class is Claude's sign-in.
-        if (err.class === 'needs_login') return toast(err.message || 'Claude needs you to sign in again.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        if (err.class === 'needs_login') return toast(err.message || 'Claude needs you to sign in again.', 'error', { label: 'Open Settings › AI', run: () => route('settings', 'ai') });
         return toast(err.message || 'Microsoft 365 needs you to sign in again.', 'error', { label: 'Sign in to Microsoft', run: () => (connect ? connect([]) : route('settings', 'microsoft')) });
       default:
         throw err;

@@ -186,7 +186,7 @@ export function makeNotesForm(p, mc, { kept = null, tab = false } = {}) {
         <label class="ws-check"><input type="checkbox" name="findTasks"${findTasks ? ' checked' : ''}${make}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Find tasks and owners</span><small>${review ? 'New ones land in To review; ones already found are kept.' : 'They go straight to To do; ones already found are kept.'}</small></span></label>
         ${remember}
       </div>
-      <p class="ws-mtg-privacy">${icon('shield')}<span>The transcript goes only to the Claude chosen for Meeting notes in <button type="button" class="ws-link ws-mtg-linkbtn" data-action="ai-open-settings">Settings › Claude</button>.${folder ? ` Everything is saved in <code>${e(folder)}</code>.` : ' Everything is saved in the meeting’s folder.'}</span></p>
+      <p class="ws-mtg-privacy">${icon('shield')}<span>The transcript goes only to the Claude chosen for Meeting notes in <button type="button" class="ws-link ws-mtg-linkbtn" data-action="ai-open-settings">Settings › AI</button>.${folder ? ` Everything is saved in <code>${e(folder)}</code>.` : ' Everything is saved in the meeting’s folder.'}</span></p>
     </div>
   </div>`;
 }

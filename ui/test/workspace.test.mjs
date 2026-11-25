@@ -700,7 +700,7 @@ test('old_ai_pin_controls_are_gone', async () => {
   const { readFile } = await import('node:fs/promises');
   const general = settings(buildSnapshot(Date.now()), ctx({ settingsTab: 'general' }));
   assert.doesNotMatch(general, /ai-probe|ai-pin|Pin profile|Re-pin/);
-  assert.match(general, /data-action="settings-tab"[^>]*data-tab="ai"[^>]*>(?:(?!<\/button>).)*Claude settings/);
+  assert.match(general, /data-action="settings-tab"[^>]*data-tab="ai"[^>]*>(?:(?!<\/button>).)*AI settings/);
   assert.match(general, /Choose Claude Code or a CodeMie profile/);
   for (const file of ['app.js', 'view-inbox.js', 'view-settings.js']) {
     const source = await readFile(new URL(`../workspace/${file}`, import.meta.url), 'utf8');

@@ -188,7 +188,7 @@ function generalPanel(s, storage = {}) {
       </form>
       ${settingRow({ title: 'Keep running in the menu bar', text: 'Closing the window keeps Connect syncing and reminding. Quit from the menu bar stops it.', control: toggle({ action: 'setting-toggle', checked: s.settings.background, attrs: { 'data-key': 'background', 'aria-label': 'Keep running in the menu bar' } }) })}
       ${settingRow({ title: 'Launch at login', text: 'Start Connect when you sign in to your computer.', control: toggle({ action: 'setting-toggle', checked: s.settings.launchAtLogin, attrs: { 'data-key': 'launchAtLogin', 'aria-label': 'Launch at login' } }) })}
-      ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Nothing is sent without your click.', control: button('Claude settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
+      ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Nothing is sent without your click.', control: button('AI settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
   }) + storageCard(storage.info, storage);
 }
 

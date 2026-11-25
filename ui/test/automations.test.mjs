@@ -545,7 +545,7 @@ test('a summary automation shows Make, keywords and Wishes, not Read or Claude',
   assert.match(html, /Only meetings whose title mentions \(optional\)/);
   assert.match(html, /<label[^>]*for="auto-prompt"[^>]*>Wishes \(optional\)<\/label>/);
   assert.match(html, /placeholder="e\.g\. Keep it to one page"/);
-  assert.match(html, /Runs with the Claude route for meeting notes \(Settings › Claude\)\. Pin it as a summary tab in Settings › Meetings to open meetings on it\./);
+  assert.match(html, /Runs with the Claude route for meeting notes \(Settings › AI\)\. Pin it as a summary tab in Settings › Meetings to open meetings on it\./);
   assert.doesNotMatch(html, /Instructions<\/label>/);
   // Read, Claude and the Claude deliveries are hidden, not merely styled away.
   assert.match(html, /<fieldset class="ws-auto-section" id="auto-read" hidden>/);

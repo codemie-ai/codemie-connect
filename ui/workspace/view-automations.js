@@ -954,7 +954,7 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null, p
       ${textArea(draft.prompt, { id: 'auto-prompt', name: 'auto-prompt', rows: summary ? 3 : 5, maxlength: PROMPT_MAX, placeholder: summary ? 'e.g. Keep it to one page' : 'What should Claude do with what it reads? e.g. List what needs my attention today, most urgent first.', ...invalid('auto-prompt', error) })}
       ${errorText('auto-prompt', error)}
     </div>
-    ${summary ? `<p class="ws-muted ws-hint ws-auto-privacy">${icon('info')}<span>Runs with the Claude route for meeting notes (Settings › Claude). Pin it as a summary tab in Settings › Meetings to open meetings on it.</span></p>` : ''}
+    ${summary ? `<p class="ws-muted ws-hint ws-auto-privacy">${icon('info')}<span>Runs with the Claude route for meeting notes (Settings › AI). Pin it as a summary tab in Settings › Meetings to open meetings on it.</span></p>` : ''}
 
     ${aiSection(draft, ai, error, summary)}
 

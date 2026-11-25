@@ -390,7 +390,7 @@ test('needs_choice, blocked transcripts and missing folders lead to the next ste
   await ctl.handle('meeting-retry', control({ id: 'mtg-critique' }));
   const toast = calls.toasts.at(-1);
   assert.equal(toast.tone, 'error');
-  assert.equal(toast.action.label, 'Open Settings › Claude');
+  assert.equal(toast.action.label, 'Open Settings › AI');
   await toast.action.run();
   assert.deepEqual(calls.routes.at(-1), ['settings', 'ai']);
   // Teams blocked the transcript: a ready message for the organizer, copied.
@@ -426,7 +426,7 @@ test('a failed step never ends with a success toast', async () => {
   assert.match(h.calls.toasts.at(-1).message, /^Making notes for 2 of 3 meetings · 1 needs you/);
 });
 
-test('a Microsoft sign-in leads to Microsoft and a Claude one to Settings › Claude', async () => {
+test('a Microsoft sign-in leads to Microsoft and a Claude one to Settings › AI', async () => {
   // needs_login from a meeting operation is the Microsoft account (target()/active_workspace).
   const signedOut = failure('needs_login', 'Connect Microsoft.');
   const connected = [];
@@ -437,12 +437,12 @@ test('a Microsoft sign-in leads to Microsoft and a Claude one to Settings › Cl
   assert.equal(toast.action.label, 'Sign in to Microsoft');
   await toast.action.run();
   assert.deepEqual(connected, [[]], 'Microsoft sign-in, no extra access');
-  assert.ok(!ms.calls.routes.some(([, tab]) => tab === 'ai'), 'not Settings › Claude');
-  // A Claude sign-in (its class says so) is Settings › Claude.
+  assert.ok(!ms.calls.routes.some(([, tab]) => tab === 'ai'), 'not Settings › AI');
+  // A Claude sign-in (its class says so) is Settings › AI.
   const claude = Object.assign(failure('needs_login', 'Claude is not signed in.'), { class: 'needs_login' });
   const c = harnessWithConnect([], { meeting_notes: claude });
   await c.ctl.handle('meeting-retry', control({ id: 'mtg-critique' }));
-  assert.equal(c.calls.toasts.at(-1).action.label, 'Open Settings › Claude');
+  assert.equal(c.calls.toasts.at(-1).action.label, 'Open Settings › AI');
 });
 
 test('Cancel on a save says Connect won’t try again by itself; on notes, that nothing changed', async () => {
