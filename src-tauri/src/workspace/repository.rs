@@ -1212,7 +1212,14 @@ impl Repository {
         let tx = self.db.transaction()?;
         if reconcile {
             if let Some((start, end)) = range {
-                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind='event' AND CAST(strftime('%s',json_extract(body,'$.start')) AS INTEGER) < ?4 AND CAST(strftime('%s',json_extract(body,'$.end')) AS INTEGER) > ?3",params![c.id,resource,start,end])?;
+                // The events of the window the round no longer has; the ones it has are written
+                // below, and only when they changed (a round reads every event every time).
+                let kept: Vec<&str> = records
+                    .iter()
+                    .filter(|r| r.kind == "event")
+                    .map(|r| r.id.as_str())
+                    .collect();
+                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind='event' AND CAST(strftime('%s',json_extract(body,'$.start')) AS INTEGER) < ?4 AND CAST(strftime('%s',json_extract(body,'$.end')) AS INTEGER) > ?3 AND id NOT IN (SELECT value FROM json_each(?5))",params![c.id,resource,start,end,encode(&kept)?])?;
             } else {
                 tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind IN ('event','message') AND EXISTS(SELECT 1 FROM records d WHERE d.kind='decision' AND d.connection_id=records.connection_id AND d.id=records.id AND json_extract(d.body,'$.lifecycle') IN ('archived','resolved')) AND NOT EXISTS(SELECT 1 FROM workspaces w WHERE json_extract(w.body,'$.connectionId')=records.connection_id AND ((json_extract(w.body,'$.sources.all')=1 AND (records.source LIKE 'mail:%' OR records.source LIKE 'chat:%' OR records.source LIKE 'calendar:%')) OR (records.source LIKE 'mail:%' AND json_extract(w.body,'$.sources.mail')=1) OR records.source IN(SELECT 'chat:'||value FROM json_each(w.body,'$.sources.chats'))) AND NOT EXISTS(SELECT 1 FROM records own WHERE own.kind='decision' AND own.id=records.id AND own.connection_id=records.connection_id AND own.workspace_id=w.id AND json_extract(own.body,'$.lifecycle') IN ('archived','resolved')))",params![c.id,resource])?;
             }
@@ -1228,6 +1235,10 @@ impl Repository {
             // A sync round reads the catalogs every time: one that says the same is not written
             // again, so it is not a change (the change log, and the window's next read).
             if r.kind == "catalog" && same_body(&tx, r)? {
+                continue;
+            }
+            // An event the same as stored, change key included (reminders and edits go by it).
+            if r.kind == "event" && same_body(&tx, r)? && same_revision(&tx, r)? {
                 continue;
             }
             put_record(&tx, r)?;
@@ -1629,6 +1640,17 @@ fn same_body(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
     Ok(stored.is_some_and(|(source, body)| {
         source == r.source && body == encode(&r.data).unwrap_or_default()
     }))
+}
+/// Whether `r` is stored already with this revision (a provider's change key).
+fn same_revision(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT revision FROM records WHERE id=?1 AND kind=?2 AND connection_id=?3 AND workspace_id=?4",
+            params![r.id, r.kind, r.connection_id.as_deref().unwrap_or(""), r.workspace_id.as_deref().unwrap_or("")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(stored.as_deref() == Some(r.revision.as_str()))
 }
 fn put_record(tx: &Transaction<'_>, r: &Record) -> Result<()> {
     tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=excluded.body",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&r.data)?])?;
@@ -2432,6 +2454,101 @@ mod tests {
             .unwrap()
             .iter()
             .any(|c| c.id == "calendars"));
+    }
+    #[test]
+    fn a_calendar_round_writes_only_the_events_that_changed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let event = |id: &str, title: &str, key: &str| Record {
+            id: id.into(),
+            kind: "event".into(),
+            connection_id: Some("a".into()),
+            workspace_id: None,
+            source: "calendar:cal-1".into(),
+            revision: key.into(),
+            updated_at: now(),
+            data: json!({"title": title, "start": "2026-11-25T10:00:00Z", "end": "2026-11-25T11:00:00Z"}),
+        };
+        let window = (1_795_564_800, 1_795_651_200); // 25 Nov 2026, the whole day (UTC)
+        let mut round = |r: &mut Repository, events: &[Record]| {
+            r.commit_calendar_round(
+                &c,
+                "calendar:cal-1",
+                events,
+                &[],
+                CalendarRound {
+                    window,
+                    full: true,
+                    cursor_key: "calendar:cal-1",
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1"),
+                event("e2", "Review", "k2"),
+                event("e4", "Lunch", "k4"),
+            ],
+        );
+        let at = r.revision().unwrap();
+        // The next round: e1 the same, e2 changed, e3 new, e4 gone from the calendar.
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1"),
+                event("e2", "Review moved", "k2b"),
+                event("e3", "Retro", "k3"),
+            ],
+        );
+        let mut logged: Vec<(String, bool)> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.kind == "event")
+            .map(|c| (c.id, c.deleted))
+            .collect();
+        logged.sort();
+        assert_eq!(
+            logged,
+            [
+                ("e2".to_string(), false),
+                ("e3".to_string(), false),
+                ("e4".to_string(), true)
+            ]
+        );
+        let events: Vec<String> = r
+            .provider_records("a", "event")
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert!(
+            events.contains(&"e1".to_string()) && !events.contains(&"e4".to_string()),
+            "{events:?}"
+        );
+        // A new change key alone is a change: reminders and edits go by it.
+        let at = r.revision().unwrap();
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1b"),
+                event("e2", "Review moved", "k2b"),
+                event("e3", "Retro", "k3"),
+            ],
+        );
+        let logged: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.kind == "event")
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(logged, ["e1"]);
     }
     #[test]
     fn an_existing_data_folder_gets_the_log_without_a_schema_bump() {
