@@ -163,7 +163,13 @@ pub fn run() {
             #[cfg(feature = "tour")]
             let tour_tasks = if tour {
                 match commands::tour::seed::import(&default_root) {
-                    Ok((_counts, provider)) => Some(provider),
+                    Ok((counts, provider)) => {
+                        eprintln!(
+                            "CODEMIE_TOUR: seed imported, {} records, {} connections",
+                            counts.records, counts.connections
+                        );
+                        Some(provider)
+                    }
                     Err(e) => {
                         eprintln!("{}", e.message);
                         std::process::exit(3);

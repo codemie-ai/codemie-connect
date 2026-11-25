@@ -12,7 +12,7 @@ use crate::workspace::task_provider::{fake::FakeProvider, ProviderInfo};
 use crate::workspace::CorePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 /// The seed file Node writes at the test root (`scripts/tour/seed.mjs`, Task 4).
@@ -61,12 +61,6 @@ fn names_a_secret(key: &str) -> bool {
         .any(|needle| key.contains(needle))
 }
 
-/// A string that reads as an absolute filesystem path. Nothing else the seed holds (ids, e-mail
-/// addresses, labels, hashes) starts with `/`.
-fn looks_like_a_path(s: &str) -> bool {
-    s.starts_with('/') && s.len() > 1
-}
-
 fn child(path: &str, key: &str) -> String {
     if path.is_empty() {
         key.to_string()
@@ -81,10 +75,11 @@ fn refused(message: impl Into<String>, field: String) -> WorkspaceError {
     e
 }
 
-/// Walks every value the seed holds, refusing the first secret-named key or out-of-folder path
-/// it finds (design § 4). Runs before anything is written, so a refusal leaves no database
-/// behind and the next run still sees a fresh folder.
-fn check(value: &Value, path: &str, test_dir: &Path) -> Result<()> {
+/// Walks every value the seed holds, refusing the first key that case-insensitively names a
+/// secret (design § 4: "The seed holds no secret."). Runs before the seed is even deserialized
+/// into [`Seed`], so it covers every field, typed or not (including `provider.remote`'s
+/// free-form task bodies).
+fn check_secrets(value: &Value, path: &str) -> Result<()> {
     match value {
         Value::Object(map) => {
             for (key, v) in map {
@@ -94,24 +89,114 @@ fn check(value: &Value, path: &str, test_dir: &Path) -> Result<()> {
                         child(path, key),
                     ));
                 }
-                check(v, &child(path, key), test_dir)?;
+                check_secrets(v, &child(path, key))?;
             }
             Ok(())
         }
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                check(v, &format!("{path}[{i}]"), test_dir)?;
+                check_secrets(v, &format!("{path}[{i}]"))?;
             }
             Ok(())
         }
-        Value::String(s) if looks_like_a_path(s) && !Path::new(s).starts_with(test_dir) => {
-            Err(refused(
-                format!("This path is outside the tour's test folder: {s}."),
-                path.to_string(),
-            ))
-        }
         _ => Ok(()),
     }
+}
+
+/// `path.canonicalize()`, but for a path that may not exist yet in full (a meeting folder the
+/// seed describes before Node has created it, or simply a path a test doesn't create): resolves
+/// the longest ancestor that does exist on disk — which resolves any symlink in it — and appends
+/// whatever is left literally. What's appended never contains `..`: [`confine`] already refuses
+/// that before calling this.
+fn canonicalize_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
+    let existing = path
+        .ancestors()
+        .find(|a| a.exists())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no existing ancestor"))?;
+    let real = existing.canonicalize()?;
+    Ok(match path.strip_prefix(existing) {
+        Ok(rest) if !rest.as_os_str().is_empty() => real.join(rest),
+        _ => real,
+    })
+}
+
+/// Refuses `value` (a path-valued seed field named `field`) unless it stays inside the test
+/// folder (design § 4: "No path in it points outside the test folder"):
+/// - any `..` component, anywhere in the string, refuses it outright — whether `value` is
+///   relative (`"../../etc/passwd"`) or absolute with an embedded `..`
+///   (`"<test_dir>/../../etc/passwd"`), which a lexical `Path::starts_with` alone would miss;
+/// - a relative `value` (no `..` left to find) is resolved against `test_dir`;
+/// - what's left is canonicalized as far as it exists ([`canonicalize_existing_prefix`]), which
+///   resolves a symlink inside the test folder that points out, and the result must stay inside
+///   `canonical_root` (`test_dir`, already canonicalized once by the caller).
+fn confine(value: &str, field: &str, test_dir: &Path, canonical_root: &Path) -> Result<()> {
+    let candidate = Path::new(value);
+    let outside = || {
+        refused(
+            format!("This path is outside the tour's test folder: {value}."),
+            field.to_string(),
+        )
+    };
+    if candidate.components().any(|c| c == Component::ParentDir) {
+        return Err(outside());
+    }
+    let absolute = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        test_dir.join(candidate)
+    };
+    let resolved = canonicalize_existing_prefix(&absolute)
+        .map_err(|_| WorkspaceError::new("storage", "A seeded path could not be resolved."))?;
+    if !resolved.starts_with(canonical_root) {
+        return Err(outside());
+    }
+    Ok(())
+}
+
+/// The seed's path-valued fields, decided from its schema (`Settings::meetings` and the
+/// `meeting`/`note_template` record kinds), not from what a string looks like: a free-form
+/// string elsewhere (a task title, a note) is never treated as a path just because it starts
+/// with `/`.
+fn check_paths(seed: &Seed, test_dir: &Path) -> Result<()> {
+    let canonical_root = test_dir.canonicalize().map_err(|_| {
+        WorkspaceError::new("storage", "The tour's test folder could not be resolved.")
+    })?;
+    let meetings = &seed.settings.meetings;
+    if let Some(root) = &meetings.root {
+        confine(root, "settings.meetings.root", test_dir, &canonical_root)?;
+    }
+    if let Some(file) = &meetings.glossary_file {
+        confine(
+            file,
+            "settings.meetings.glossaryFile",
+            test_dir,
+            &canonical_root,
+        )?;
+    }
+    if let Some(file) = &meetings.tags_file {
+        confine(
+            file,
+            "settings.meetings.tagsFile",
+            test_dir,
+            &canonical_root,
+        )?;
+    }
+    for (i, record) in seed.records.iter().enumerate() {
+        let key = match record.kind.as_str() {
+            "meeting" => "folder",
+            "note_template" => "skillPath",
+            _ => continue,
+        };
+        if let Some(value) = record.data.get(key).and_then(Value::as_str) {
+            confine(
+                value,
+                &format!("records[{i}].data.{key}"),
+                test_dir,
+                &canonical_root,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Imports `<test_dir>/tour-seed.json` into `<test_dir>/workspace.sqlite` (`CorePaths::database`
@@ -129,13 +214,14 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
     })?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|_| WorkspaceError::new("validation", "tour-seed.json is not valid JSON."))?;
-    check(&value, "", test_dir)?;
+    check_secrets(&value, "")?;
     let seed: Seed = serde_json::from_value(value).map_err(|_| {
         WorkspaceError::new(
             "validation",
             "tour-seed.json does not match the seed Task 3 reads.",
         )
     })?;
+    check_paths(&seed, test_dir)?;
 
     let paths = CorePaths {
         data: test_dir.to_path_buf(),
@@ -306,6 +392,80 @@ mod tests {
         assert_eq!(err.code, "validation");
         assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
         assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_a_bare_relative_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({"folder": "../../etc/passwd"}),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_an_absolute_path_with_an_embedded_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        // Lexically starts with the test dir's own path, so a plain `Path::starts_with` (no `..`
+        // resolution) would wrongly call this confined.
+        let escaping = format!("{}/../../etc/passwd", dir.path().display());
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({"folder": escaping}),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_refuses_a_symlink_inside_the_test_dir_that_points_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = dir.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({"folder": link.display().to_string()}),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_leaves_a_free_form_remote_task_text_alone_even_with_a_leading_slash() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        // Not a path field by the seed's schema (`ProviderSeed::remote` is free-form task data):
+        // a leading `/` here must not be treated as a path, let alone refused as one outside it.
+        seed.provider.remote = vec![json!({
+            "id": "9001",
+            "title": "/urgent: call back",
+            "done": false,
+        })];
+        write_seed(dir.path(), &seed);
+
+        let (_counts, provider) = import(dir.path()).unwrap();
+        assert_eq!(provider.tasks().len(), 1);
+        assert_eq!(provider.tasks()[0]["title"], "/urgent: call back");
     }
 
     #[test]
