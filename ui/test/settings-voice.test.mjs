@@ -46,7 +46,7 @@ test('ready: radio Off and Knowledge, Knowledge checked, the state line, facts c
 
   assert.match(html, /<input type="checkbox" data-voice-facts data-action="voice-facts" checked aria-describedby="ws-voice-facts-hint">/);
   assert.match(text(html), /Add facts from Knowledge Before each draft, Connect sends Knowledge the names, codes and amounts it finds in the message, never the message, and adds the notes it finds\./);
-  assert.match(text(part(html, 'ws-voice-privacy')), /^Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make\. Facts are looked up for each draft and never kept\. It goes only to the AI profile your Mail and Teams replies use \(Settings › AI\)\.$/);
+  assert.match(text(part(html, 'ws-voice-privacy')), /^Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make\. Facts are looked up for each draft and never kept\. It goes only to the AI profile that writes the draft: the one your Mail and Teams replies use \(Settings › AI\), or an automation's own\.$/);
 
   assert.equal(text(part(html, 'data-voice-style-head')), 'From your page people/me.md · edit it in Knowledge Prefers short replies and plain words.');
   assert.match(text(html), new RegExp(`Style card From 12 mail previews and 140 Teams messages · updated ${agoLabel('2026-11-24T09:00:00Z', 'UTC', NOW)}`));

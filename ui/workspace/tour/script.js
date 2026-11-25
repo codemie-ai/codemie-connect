@@ -425,7 +425,7 @@ const VOICE_STOPS = [
       { name: 'facts: "never the message"', selector: '#ws-voice-facts-hint', text: 'never the message' },
       { name: 'six instructions', selector: '[data-voice-rule]', count: 6 },
       { name: 'a chat, a domain on mail only and no profile on Teams only', selector: '.ws-voice-rules', text: ['In the chat “Platform review”', 'Anyone at bank.example.test · mail only', 'Anyone without a profile · Teams only'] },
-      { name: 'the privacy line', selector: '.ws-voice-privacy', text: ['goes only to the AI profile', 'never kept'] },
+      { name: 'the privacy line', selector: '.ws-voice-privacy', text: ['goes only to the AI profile that writes the draft', "or an automation's own", 'never kept'] },
       { name: 'Refresh now', selector: '[data-action="voice-refresh"]', exact: 'Refresh now' },
       { name: 'Delete Connect’s copy', selector: '[data-action="voice-forget"]', exact: 'Delete Connect\'s copy' },
     ],

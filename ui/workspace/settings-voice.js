@@ -161,7 +161,7 @@ function providerSection(v) {
   return `<div class="ws-voice-section ws-voice-where">
     <fieldset class="ws-voice-provider" data-voice-provider><legend class="ws-voice-legend">Where your voice comes from</legend><div class="ws-voice-options">${options}</div></fieldset>
     ${v.chosen ? factsRow(v) : ''}
-    <p class="ws-muted ws-hint ws-voice-privacy">Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make. Facts are looked up for each draft and never kept. It goes only to the AI profile your Mail and Teams replies use (Settings › AI).</p>
+    <p class="ws-muted ws-hint ws-voice-privacy">Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make. Facts are looked up for each draft and never kept. It goes only to the AI profile that writes the draft: the one your Mail and Teams replies use (Settings › AI), or an automation's own.</p>
   </div>`;
 }
 

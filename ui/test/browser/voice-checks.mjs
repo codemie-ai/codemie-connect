@@ -17,7 +17,7 @@ const dialog = '.ws-modal[open]';
 const submit = `${dialog} .ws-modal-footer button[type=submit]`;
 const SKILLS = '/Users/qa/Skills/voice-skills';
 const SHEET_LINE = 'Shape your replies: Connect asks it how you write, about the people you write to and for notes on the names and codes in a message, and adds what it answers to your AI drafts. It can read the text of messages you sent that Connect has synced.';
-const PRIVACY = 'Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make. Facts are looked up for each draft and never kept. It goes only to the AI profile your Mail and Teams replies use (Settings › AI).';
+const PRIVACY = 'Connect keeps a copy on this Mac and adds the parts that fit to each reply draft, including drafts automations make. Facts are looked up for each draft and never kept. It goes only to the AI profile that writes the draft: the one your Mail and Teams replies use (Settings › AI), or an automation's own.';
 /** voice-states.json's six rules in matching order, as their rows name them. */
 const SCOPES = ['To priya.n@example.test', 'In the chat “Platform review”', 'Anyone at bank.example.test · mail only', 'About “budget request”', 'Anyone without a profile · Teams only', 'Everyone'];
 /** voice-states.json's copy time (1764000000) in Europe/Kyiv, on a day other than FIXED_NOW's. */
