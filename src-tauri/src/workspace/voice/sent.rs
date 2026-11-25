@@ -5,7 +5,7 @@
 //! quoted original, so mail text is cut at the first quoted-reply marker, and every text loses
 //! its email addresses: nothing someone else wrote, and no address, comes back as the user's.
 use super::super::models::{Record, Result};
-use super::super::prompts::{sanitize_line, sanitize_text};
+use super::super::prompts::{cap_chars, sanitize_line, sanitize_text};
 use super::super::repository::Repository;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -105,14 +105,97 @@ fn lines_at(text: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// "… Priya <priya.n@example.test> написал(а):", "пн, 24 нояб. …, Priya <priya@…>:": a line
-/// naming someone by `<address>` and ending in a colon introduces a quote, in any language.
+/// naming someone by `<address>` and ending in a colon introduces a quote, in any language. The
+/// word before `<` must look like a name (a capital, then another letter), so a line of the
+/// user's own such as "Write to me <me@…>:" stays.
 fn is_attribution(line: &str) -> bool {
     let line = line.trim_end();
     line.ends_with(':')
         && line.find('<').is_some_and(|open| {
             let rest = &line[open..];
-            rest.find('@').is_some_and(|at| rest[at..].contains('>'))
+            let named = line[..open]
+                .split_whitespace()
+                .next_back()
+                .is_some_and(name_like);
+            named && rest.find('@').is_some_and(|at| rest[at..].contains('>'))
         })
+}
+
+/// A capital letter followed by at least one more letter ("Priya", "Прія").
+fn name_like(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(char::is_uppercase) && chars.next().is_some_and(char::is_alphabetic)
+}
+
+/// Graph's preview is the body's first 255 characters; a preview this long may be cut inside a
+/// client's attribution.
+const PREVIEW_CUT: usize = 240;
+/// How an attribution or a quoted header starts; a cut line that is the start of one of these,
+/// or starts with one, is dropped.
+const OPENERS: [&str; 28] = [
+    "On ",
+    "From:",
+    "От:",
+    "Від:",
+    "Von:",
+    "De:",
+    "Sent:",
+    "To:",
+    "Mon,",
+    "Tue,",
+    "Wed,",
+    "Thu,",
+    "Fri,",
+    "Sat,",
+    "Sun,",
+    "пн,",
+    "вт,",
+    "ср,",
+    "чт,",
+    "пт,",
+    "сб,",
+    "вс,",
+    "нд,",
+    "Отправлено:",
+    "Надіслано:",
+    "Кому:",
+    "Subject:",
+    "Тема:",
+];
+
+/// Whether `line`, the last of a cut preview, may be the start of an attribution or a quoted
+/// header: an opener or the start of one, a date ("24 нояб.", "2026-11-24"), a separator, an
+/// unclosed `<`, or any `@`.
+fn looks_cut(line: &str) -> bool {
+    let opener = OPENERS
+        .iter()
+        .any(|o| line.starts_with(o) || o.starts_with(line));
+    let date = line.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let separator = line.chars().all(|c| matches!(c, '_' | '-' | '='));
+    let unclosed = ['<', '‹'].iter().any(|open| {
+        line.rfind(*open)
+            .is_some_and(|at| !line[at..].contains(['>', '›']))
+    });
+    opener || date || separator || unclosed || line.contains('@')
+}
+
+/// A preview cut at Graph's limit with no quote found: its last lines go while they may be the
+/// start of an attribution (at most four, the longest a client's header runs before the cut).
+fn without_cut_attribution(text: &str) -> &str {
+    if text.chars().count() < PREVIEW_CUT {
+        return text;
+    }
+    let mut t = text;
+    for _ in 0..4 {
+        let trimmed = t.trim_end();
+        let start = line_start(trimmed, trimmed.len());
+        let line = trimmed[start..].trim();
+        if line.is_empty() || !looks_cut(line) {
+            return trimmed;
+        }
+        t = &trimmed[..start];
+    }
+    t
 }
 
 /// Where the quoted original starts in a mail preview, if it does.
@@ -156,26 +239,29 @@ fn is_footer(line: &str) -> bool {
     line.chars().count() <= FOOTER_MAX && FOOTERS.iter().any(|f| line.starts_with(f))
 }
 
-/// `text` without its email addresses: each word holding an `@` with a dot after it goes, with
-/// the space after it.
+/// `text` without its email addresses: each word holding an `@` goes (a cut address has no dot
+/// after it), with the space after it (a line break after it stays).
 fn without_addresses(text: &str) -> String {
     text.split_inclusive(char::is_whitespace)
-        .filter(|seg| {
-            let word = seg.trim_end();
-            !word
-                .split_once('@')
-                .is_some_and(|(_, host)| host.contains('.'))
+        .map(|seg| match seg.contains('@') {
+            false => seg,
+            true if seg.ends_with('\n') => "\n",
+            true => "",
         })
         .collect()
 }
 
-/// A message's text as the user wrote it: a mail's quoted original cut off, with its `>` lines
-/// and a client's footer dropped; sanitized and cut to `TEXT_MAX`, then addresses removed (after
-/// sanitizing, so a character it deletes can't join an address back together).
+/// A message's text as the user wrote it: a mail's quoted original cut off (or, in a preview cut
+/// at Graph's limit, a cut attribution), with its `>` lines and a client's footer dropped;
+/// sanitized, then addresses removed (after sanitizing, so a character it deletes can't join an
+/// address back together), then cut to `TEXT_MAX`.
 fn own_text(raw: &str, mail: bool) -> String {
     let mine = if mail {
-        raw[..quote_start(raw).unwrap_or(raw.len())]
-            .lines()
+        let kept = match quote_start(raw) {
+            Some(at) => &raw[..at],
+            None => without_cut_attribution(raw),
+        };
+        kept.lines()
             .filter(|l| {
                 let l = l.trim();
                 !l.starts_with('>') && !is_footer(l)
@@ -185,9 +271,10 @@ fn own_text(raw: &str, mail: bool) -> String {
     } else {
         raw.to_string()
     };
-    without_addresses(&sanitize_text(&mine, TEXT_MAX))
-        .trim()
-        .to_string()
+    // Capped last, so the cap can't leave part of an address behind.
+    let clean = without_addresses(&sanitize_text(&mine, usize::MAX));
+    let lines: Vec<&str> = clean.lines().map(str::trim_end).collect();
+    cap_chars(lines.join("\n").trim(), TEXT_MAX)
 }
 
 /// What to read: `channel` `mail`, `chat` or `all`; `days` 1–180; `limit` 1–200 (both clamped);
@@ -456,5 +543,76 @@ mod tests {
                 "{mine:?}"
             );
         }
+    }
+
+    /// Graph's preview is the body's first 255 characters: wherever that cut falls inside a
+    /// client's attribution, neither the name nor any part of the address comes back.
+    #[test]
+    fn a_preview_cut_inside_an_attribution_leaks_nothing() {
+        const PREVIEW: usize = 255;
+        let forms = [
+            "On Mon, 24 Nov 2026 at 10:00, Priya Natarajan <priya.natarajan@example.test> wrote:\r\n",
+            "пн, 24 нояб. 2026 г. в 10:00, Priya Natarajan <priya.natarajan@example.test>:\r\n",
+            "пн, 24 лист. 2026 р. о 10:00 Priya Natarajan <priya.natarajan@example.test> пише:\r\n",
+            "On 24 Nov 2026, at 10:00, Priya Natarajan <priya.natarajan@example.test> wrote:\r\n",
+            "24 нояб. 2026 г., в 10:00, Прія Натараджан <priya.natarajan@example.test> написал(а):\r\n",
+            "24 лист. 2026 р. о 10:00 Прія Натараджан <priya.natarajan@example.test> написав(-ла):\r\n",
+            "________________________________\r\nFrom: Priya Natarajan <priya.natarajan@example.test>\r\nSent: Monday, November 24, 2026 10:00\r\nTo: Taylor Reed <taylor@example.test>\r\nSubject: Budget\r\n",
+            "________________________________\r\nОт: Прія Натараджан <priya.natarajan@example.test>\r\nОтправлено: 24 ноября 2026 г. 10:00\r\nКому: Taylor Reed\r\n",
+            "________________________________\r\nВід: Прія Натараджан <priya.natarajan@example.test>\r\nНадіслано: 24 листопада 2026 р. 10:00\r\nКому: Taylor Reed\r\n",
+        ];
+        let words =
+            "Sounds good, I will send the deck tomorrow morning and we can go over it then. ";
+        for form in forms {
+            let quoted = format!("\r\n\r\n{form}\r\nCan you send the SOW by Friday?");
+            let chars: Vec<char> = quoted.chars().collect();
+            for p in 0..=chars.len() {
+                let Some(mine_len) = PREVIEW.checked_sub(p).filter(|n| *n >= 20) else {
+                    continue;
+                };
+                let mine: String = words.repeat(4).chars().take(mine_len).collect();
+                let raw = format!("{mine}{}", chars[..p].iter().collect::<String>());
+                let out = own_text(&raw, true);
+                assert_eq!(out, mine.trim(), "{form:?} cut at {p}: {raw:?}");
+            }
+        }
+    }
+
+    /// A short message is never taken for a cut preview.
+    #[test]
+    fn a_short_message_keeps_its_last_line() {
+        for raw in [
+            "On my way.",
+            "Ok\r\n\r\nOn Monday then.",
+            "Ok\r\nFri works",
+            "Done\r\n24 copies printed",
+        ] {
+            assert_eq!(own_text(raw, true), sanitize_text(raw, TEXT_MAX), "{raw:?}");
+        }
+    }
+
+    /// Any word holding `@` goes, a cut address too, and a long Teams text is capped only after.
+    #[test]
+    fn partial_addresses_go_and_the_cap_comes_after() {
+        assert_eq!(own_text("Ping priya.natarajan@exa", false), "Ping");
+        assert_eq!(own_text("Ping @priya now", false), "Ping now");
+        let long = format!("{} priya.natarajan@example.test end", "a".repeat(1_990));
+        let out = own_text(&long, false);
+        assert!(!out.contains("priya"), "{}", &out[out.len() - 20..]);
+        assert!(out.chars().count() <= TEXT_MAX && out.ends_with("end"));
+    }
+
+    /// A line of the user's own that holds an address and ends in a colon stays, unless a name
+    /// stands before the address.
+    #[test]
+    fn the_attribution_rule_needs_a_name_before_the_address() {
+        assert_eq!(
+            own_text("Write to me <me@example.test>:\r\n1. deck", true),
+            "Write to me\n1. deck"
+        );
+        assert_eq!(
+            own_text("Ok\r\nпн, Priya <priya@example.test>:\r\nМожешь?", true),
+            "Ok"
+        );
     }
 }
