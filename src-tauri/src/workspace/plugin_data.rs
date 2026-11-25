@@ -111,7 +111,6 @@ impl Core {
 
     /// Sets Connect's way into reply-context provider plugins' host halves
     /// (`voice::VoiceProviders`), once, as the plugin manager does for task providers.
-    #[allow(dead_code)] // the plugin manager calls this once the role and host exist (a later task)
     pub(crate) fn set_voice_providers(&self, providers: Arc<dyn super::voice::VoiceProviders>) {
         if self.voice_providers.set(providers).is_err() {
             log::warn!("plugins: the voice providers were set already");

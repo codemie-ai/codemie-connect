@@ -18,6 +18,7 @@ pub mod facts;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a voice provider yet
 pub mod fake;
+pub mod sent;
 pub mod terms;
 
 /// Settings › Your voice (design §7): which provider is active, app-wide like `tasks`, and

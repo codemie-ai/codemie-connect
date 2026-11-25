@@ -18,6 +18,7 @@ mod paths;
 mod plugin_calls;
 pub(crate) mod plugin_data;
 mod plugin_m365;
+mod plugin_voice;
 mod prompts;
 pub mod repository;
 pub mod schedules;

@@ -17,16 +17,21 @@ pub const ENGINE: &str = "1.0";
 /// as needing a newer Connect instead of installing and failing.
 pub const ECHO_COMPAT: &str = "0.10.1";
 /// The optional features (`requires`, PLUGIN-ENGINE.md §6) Connect has.
-const FEATURES: [&str; 5] = [
+const FEATURES: [&str; 6] = [
     "work",
     "deliver",
     "deliver_provider",
     "echo",
     "tasks_provider",
+    "reply_context_provider",
 ];
 /// The roles a plugin can take in Connect (`provides`): `tasks` holds the user's tasks
-/// (`ctx.tasks.provide`).
-pub const ROLES: [&str; 1] = ["tasks"];
+/// (`ctx.tasks.provide`); `reply-context` shapes the user's reply drafts
+/// (`ctx.replyContext.provide`, reply-voice design §1).
+pub const ROLES: [&str; 2] = ["tasks", "reply-context"];
+/// What a `reply-context` plugin may not also ask for (reply-voice ruling 10): it reads the
+/// user's sent messages, so nothing it reads may leave the Mac.
+const OFF_THIS_MAC: [&str; 4] = ["network", "web", "signin", "deliver"];
 const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
 /// The kinds of widget Echo draws (and Connect's Today draws) for a plugin.
 pub const WIDGET_KINDS: [&str; 8] = [
@@ -55,6 +60,8 @@ pub enum ManifestError {
     UnknownKey(String),
     #[error("\"{key}\" is asked for in a way Connect can't read: {why}")]
     BadValue { key: String, why: String },
+    #[error("A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.")]
+    ReplyContextOffMac,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -330,9 +337,15 @@ fn is_feature(f: &str) -> bool {
 }
 
 /// Refuses a plugin whose engine range excludes Connect's engine (`ENGINE`), whose `echo` range
-/// excludes the Echo API Connect provides (`ECHO_COMPAT`), or that requires a feature Connect
-/// lacks (PLUGIN-ENGINE.md §3, §6).
+/// excludes the Echo API Connect provides (`ECHO_COMPAT`), that requires a feature Connect
+/// lacks (PLUGIN-ENGINE.md §3, §6), or that provides `reply-context` and also asks for the
+/// network, the web, a sign-in or a delivery (`OFF_THIS_MAC`).
 pub fn check_compat(m: &Manifest) -> Result<(), ManifestError> {
+    if m.provides.iter().any(|r| r == "reply-context")
+        && OFF_THIS_MAC.iter().any(|k| m.uses.contains_key(*k))
+    {
+        return Err(ManifestError::ReplyContextOffMac);
+    }
     let have = Version::parse(&format!("{ENGINE}.0")).expect("ENGINE is a version");
     if !m.engine.matches(&have) {
         return Err(ManifestError::Incompatible {
@@ -568,6 +581,52 @@ mod tests {
             parse_manifest(package(j).path()),
             Err(ManifestError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn reply_context_role_needs_its_feature_and_is_known() {
+        for provides in [json!("reply-context"), json!(["reply-context"])] {
+            let mut j = base();
+            j["uses"] = json!({});
+            j["provides"] = provides.clone();
+            j["requires"] = json!(["reply_context_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(m.provides, ["reply-context"], "{provides}");
+            assert!(
+                check_compat(&m).is_ok(),
+                "reply_context_provider is a feature Connect has"
+            );
+        }
+        let mut j = base();
+        j["provides"] = json!(["reply-voice"]);
+        assert_eq!(
+            parse_manifest(package(j).path()).unwrap_err(),
+            ManifestError::Invalid("provides a role Connect doesn't know (reply-voice)".into())
+        );
+    }
+
+    #[test]
+    fn reply_context_plugin_cannot_use_the_network() {
+        for key in ["network", "web", "signin", "deliver"] {
+            let mut j = base();
+            j["uses"] = json!({ key: {} });
+            j["provides"] = json!(["reply-context"]);
+            j["requires"] = json!(["reply_context_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(
+                check_compat(&m).unwrap_err().to_string(),
+                "A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.",
+                "{key}"
+            );
+        }
+        // Reading folders and Claude stays allowed; a tasks provider may still use the network.
+        let mut j = base();
+        j["uses"] = json!({"folders": {"write": true}, "claude": {}});
+        j["provides"] = json!(["reply-context"]);
+        assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
+        let mut j = base();
+        j["provides"] = json!(["tasks"]);
+        assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
     }
 
     #[test]

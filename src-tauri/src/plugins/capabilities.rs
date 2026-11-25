@@ -205,6 +205,7 @@ pub fn role_key(role: &str) -> String {
 fn role_text(role: &str) -> &'static str {
     match role {
         "tasks" => "Hold your tasks: what you add and change in Connect goes to it, and Connect shows the tasks it lists.",
+        "reply-context" => "Shape your replies: Connect asks it how you write, about the people you write to and for notes on the names and codes in a message, and adds what it answers to your AI drafts. It can read the text of messages you sent that Connect has synced.",
         _ => unreachable!("parse_manifest vets the role"),
     }
 }
@@ -712,6 +713,25 @@ mod tests {
             .unwrap()
             .iter()
             .all(|l| l.key != "provides_tasks"));
+    }
+
+    #[test]
+    fn the_sheet_has_the_role_line() {
+        let d = tempfile::tempdir().unwrap();
+        let j = json!({"id": "knowledge", "name": "Knowledge", "version": "1.0.0",
+                       "provides": ["reply-context"], "requires": ["reply_context_provider"],
+                       "uses": {"folders": {"write": true}}});
+        std::fs::write(d.path().join(MANIFEST_FILE), j.to_string()).unwrap();
+        let lines = sheet(&parse_manifest(d.path()).unwrap()).unwrap();
+        let role = lines
+            .iter()
+            .find(|l| l.key == "provides_reply-context")
+            .expect("a line for the role");
+        assert_eq!(
+            role.text,
+            "Shape your replies: Connect asks it how you write, about the people you write to and for notes on the names and codes in a message, and adds what it answers to your AI drafts. It can read the text of messages you sent that Connect has synced."
+        );
+        assert_eq!(role.support, Support::Supported);
     }
 
     #[test]

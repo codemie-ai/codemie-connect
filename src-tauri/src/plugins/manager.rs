@@ -1,17 +1,20 @@
 //! The `PluginManager` (DESIGN 7.2): it starts after `Core`, loads every enabled plugin's host
 //! half into the `PluginHost` with Connect's `Services`, and reloads when the registry changes
 //! (install, update, enable, disable, remove, reset). It gives `Core` its event sink and its way
-//! into task providers (`TaskProviders`), keeps Today's plugin records to the plugins that are
-//! on, and on its tick asks the plugins' widget and work-row providers (on load, after
-//! `refresh`, after `changed()`), refreshes what `ctx.profiles()` answers, and starts again
-//! plugins stopped for a fault.
+//! into task providers (`TaskProviders`) and reply-context providers (`VoiceProviders`), keeps
+//! Today's plugin records to the plugins that are on, and on its tick asks the plugins' widget and
+//! work-row providers (on load, after `refresh`, after `changed()`), refreshes what
+//! `ctx.profiles()` answers, and starts again plugins stopped for a fault.
 use super::host::{ErrorCode, Grants, HostError, Limits, PluginHost};
 use super::registry::{Installed, PluginPaths, Registry};
 use super::services::events::HostEvents;
 use super::services::signin::{self, GhCli};
 use super::services::today::{widget_record, work_record};
-use super::services::{http, lock, settings, tasks, FolderPicker, Granted, Outside, Services};
+use super::services::{
+    http, lock, reply_context, settings, tasks, FolderPicker, Granted, Outside, Services,
+};
 use crate::workspace::task_provider::{ProviderError, ProviderInfo, TaskProviders};
+use crate::workspace::voice::{VoiceError, VoiceInfo, VoiceProviders};
 use crate::workspace::Core;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -82,6 +85,7 @@ impl PluginManager {
         core.set_event_sink(Arc::new(HostEvents(Arc::downgrade(&host))));
         Arc::new_cyclic(|me| {
             core.set_task_providers(Arc::new(ManagerTasks(me.clone())));
+            core.set_voice_providers(Arc::new(ManagerVoice(me.clone())));
             PluginManager {
                 paths,
                 core,
@@ -178,10 +182,25 @@ impl PluginManager {
             );
         }
         lock(&self.problems).retain(|id, _| want.contains_key(id));
+        let mut loaded_now = Vec::new();
         for (id, p) in &want {
             if !lock(&self.loaded).contains_key(id) {
                 self.load(id, p).await;
+                loaded_now.push(id.clone());
             }
+        }
+        // The chosen voice provider (re)loaded: its copy is refreshed.
+        let chosen = self
+            .core
+            .repo()
+            .and_then(|r| r.settings())
+            .map(|s| s.voice.provider)
+            .unwrap_or_default();
+        let reloaded = loaded_now
+            .iter()
+            .any(|id| chosen == format!("plugin:{id}") && lock(&self.loaded).contains_key(id));
+        if reloaded {
+            self.core.voice_reloaded();
         }
     }
 
@@ -483,6 +502,71 @@ impl TaskProviders for PluginManager {
     }
 }
 
+/// Connect's way into the reply-context providers (reply-voice design §1): a provider plugin's
+/// `replyContext:<op>` asked through the host within `limit`. A host `timeout`, no answer in
+/// time, or anything a provider throws without a known code is `Unavailable`.
+impl VoiceProviders for PluginManager {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+        limit: Duration,
+    ) -> BoxFuture<'static, Result<Value, VoiceError>> {
+        let (host, paths) = (self.host.clone(), self.paths.clone());
+        let (plugin, provider) = (plugin.to_string(), format!("replyContext:{op}"));
+        Box::pin(async move {
+            match tokio::time::timeout(limit, host.ask(&plugin, &provider, args)).await {
+                Ok(Ok(answer)) => Ok(answer),
+                Ok(Err(e)) if e.code == ErrorCode::Timeout => Err(VoiceError::Unavailable),
+                // A refusal echoing a stored secret keeps no sentence (checked whole, before the
+                // cut to 200 characters).
+                Ok(Err(e)) if secret_in(&paths, &plugin, &e.message) => {
+                    Err(match VoiceError::parse(&e.message) {
+                        VoiceError::Refused(_) => VoiceError::Refused(String::new()),
+                        other => other,
+                    })
+                }
+                Ok(Err(e)) => Err(VoiceError::parse(&e.message)),
+                Err(_) => Err(VoiceError::Unavailable),
+            }
+        })
+    }
+
+    /// Every installed plugin whose manifest provides reply-context (agreed to on its sheet): on
+    /// when it is turned on, ready once it is loaded and registered its ops
+    /// (`ctx.replyContext.provide`), offering facts when it registered `facts`.
+    fn available(&self) -> Vec<VoiceInfo> {
+        let Ok(reg) = Registry::load(&self.paths) else {
+            return Vec::new();
+        };
+        let role = super::capabilities::role_key("reply-context");
+        let loaded: Vec<String> = lock(&self.loaded).keys().cloned().collect();
+        reg.installed
+            .iter()
+            .filter(|(id, p)| super::valid_id(id) && p.agreed.contains(&role))
+            .filter_map(|(id, p)| {
+                let m = super::install::installed_manifest(&self.paths, id, p)?;
+                if !m.provides.iter().any(|r| r == "reply-context") {
+                    return None;
+                }
+                let ops = reply_context::ops_of(&self.services, id);
+                Some(VoiceInfo {
+                    id: format!("plugin:{id}"),
+                    name: m.name,
+                    on: p.enabled,
+                    ready: p.enabled && loaded.contains(id) && ops.is_some(),
+                    facts: ops.is_some_and(|ops| ops.iter().any(|op| op == "facts")),
+                })
+            })
+            .collect()
+    }
+
+    fn loading(&self) -> bool {
+        self.reloads_pending() > 0
+    }
+}
+
 /// Whether `text` contains one of plugin `plugin`'s stored secrets.
 fn secret_in(paths: &PluginPaths, plugin: &str, text: &str) -> bool {
     settings::secret_values(paths, plugin)
@@ -507,17 +591,53 @@ impl TaskProviders for ManagerTasks {
     }
 
     fn available(&self) -> Vec<ProviderInfo> {
-        self.0.upgrade().map(|m| m.available()).unwrap_or_default()
+        self.0
+            .upgrade()
+            .map(|m| TaskProviders::available(&*m))
+            .unwrap_or_default()
     }
 
     fn loading(&self) -> bool {
-        self.0.upgrade().is_some_and(|m| m.loading())
+        self.0
+            .upgrade()
+            .is_some_and(|m| TaskProviders::loading(&*m))
     }
 
     fn secret_matches(&self, plugin: &str, text: &str) -> bool {
         self.0
             .upgrade()
             .is_some_and(|m| m.secret_matches(plugin, text))
+    }
+}
+
+/// What `Core` holds of the manager for the reply-context providers.
+struct ManagerVoice(Weak<PluginManager>);
+
+impl VoiceProviders for ManagerVoice {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+        limit: Duration,
+    ) -> BoxFuture<'static, Result<Value, VoiceError>> {
+        match self.0.upgrade() {
+            Some(m) => VoiceProviders::call(&*m, plugin, op, args, limit),
+            None => Box::pin(async { Err(VoiceError::Unavailable) }),
+        }
+    }
+
+    fn available(&self) -> Vec<VoiceInfo> {
+        self.0
+            .upgrade()
+            .map(|m| VoiceProviders::available(&*m))
+            .unwrap_or_default()
+    }
+
+    fn loading(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|m| VoiceProviders::loading(&*m))
     }
 }
 
@@ -694,6 +814,7 @@ mod tests {
     use crate::plugins::services::testing::{FakeGh, Picked};
     use crate::workspace::task_provider::{ProviderError, TaskProviders};
     use crate::workspace::test_core;
+    use crate::workspace::voice::{VoiceError, VoiceProviders};
 
     pub struct Setup {
         _dir: tempfile::TempDir,
@@ -1273,6 +1394,157 @@ mod tests {
             Err(ProviderError::Refused(
                 "Todoist didn't accept the change (400)".into()
             ))
+        );
+    }
+
+    /// A Knowledge-like reply-context provider's manifest: no network, a folder.
+    fn voice_manifest() -> Value {
+        json!({
+            "name": "Knowledge", "provides": ["reply-context"],
+            "requires": ["reply_context_provider"],
+            "uses": {"folders": {"write": true}}
+        })
+    }
+
+    fn voices(s: &Setup) -> &dyn VoiceProviders {
+        &*s.manager
+    }
+
+    #[tokio::test]
+    async fn manager_lists_and_calls_a_voice_provider() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "knowledge",
+            "1.0.0",
+            voice_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.replyContext.provide({
+                status: async () => ({ ok: true, people: 2, rules: 1, style: true, skipped: 0 }),
+                export: async () => { throw new Error('needs_setup: no folder') },
+                context: () => new Promise(() => {}),
+                save: async () => { throw new Error('refused: The page changed in your folder.') },
+                remove: async () => { throw new Error('something odd') },
+              })
+            }
+            "#,
+            true,
+        );
+        s.install(
+            "notes",
+            "1.0.0",
+            voice_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.replyContext.provide({
+                status: async () => ({ ok: true }),
+                facts: async ({ terms }) => ({ facts: [], asked: terms }),
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.loaded(),
+            ["knowledge", "notes"],
+            "{:?}",
+            s.manager.problems()
+        );
+        let v = voices(&s);
+        let available = serde_json::to_value(v.available()).unwrap();
+        assert_eq!(
+            available,
+            json!([
+                {"id": "plugin:knowledge", "name": "Knowledge", "on": true, "ready": true, "facts": false},
+                {"id": "plugin:notes", "name": "Knowledge", "on": true, "ready": true, "facts": true},
+            ])
+        );
+        let limit = Duration::from_millis(100);
+        assert_eq!(
+            v.call("knowledge", "status", json!({}), limit).await,
+            Ok(json!({"ok": true, "people": 2, "rules": 1, "style": true, "skipped": 0}))
+        );
+        assert_eq!(
+            v.call("notes", "facts", json!({"terms": ["EPM-1234"]}), limit)
+                .await,
+            Ok(json!({"facts": [], "asked": ["EPM-1234"]}))
+        );
+        assert_eq!(
+            v.call("knowledge", "export", json!({}), limit).await,
+            Err(VoiceError::NeedsSetup)
+        );
+        assert_eq!(
+            v.call("knowledge", "save", json!({}), limit).await,
+            Err(VoiceError::Refused(
+                "The page changed in your folder.".into()
+            ))
+        );
+        assert_eq!(
+            v.call("knowledge", "remove", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        // Never answers within the limit; an op it didn't give; a plugin that isn't loaded.
+        let started = Instant::now();
+        assert_eq!(
+            v.call("knowledge", "context", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            v.call("knowledge", "facts", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        assert_eq!(
+            v.call("nobody", "status", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        // The core sees them through the manager.
+        let snap = s.core.voice_snapshot(&Default::default());
+        assert_eq!(snap["available"][0]["id"], "plugin:knowledge");
+
+        // Turned off: listed, not on and not ready.
+        s.set_enabled("knowledge", false);
+        s.manager.reload().await;
+        assert_eq!(
+            serde_json::to_value(v.available()).unwrap()[0],
+            json!({"id": "plugin:knowledge", "name": "Knowledge", "on": false, "ready": false, "facts": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn replycontext_provide_is_refused_without_the_role() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "sneaky",
+            "1.0.0",
+            json!({}),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.replyContext.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+              ctx.command('sent', async () => { try { await ctx.replyContext.sent({}) } catch (e) { return e.message } })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        let refusal = "permission: sneaky doesn't provide reply-context (provides in its manifest)";
+        assert_eq!(
+            s.manager.call("sneaky", "refused", Value::Null).await,
+            Ok(json!(refusal))
+        );
+        assert_eq!(
+            s.manager.call("sneaky", "sent", Value::Null).await,
+            Ok(json!(refusal))
+        );
+        let v = voices(&s);
+        assert!(v.available().is_empty());
+        assert_eq!(
+            v.call("sneaky", "status", json!({}), Duration::from_millis(100))
+                .await,
+            Err(VoiceError::Unavailable)
         );
     }
 }

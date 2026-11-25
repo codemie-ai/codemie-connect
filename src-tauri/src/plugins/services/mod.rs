@@ -13,7 +13,8 @@
 //!
 //! The services: `store` (with `package`), `settings`, `fs` (with `system`), `http`, `notify`
 //! (with `log`), `markdown`; `claude` (with `profiles`), `deliver`, `today` (inbox, widgets,
-//! work rows), `echo_read`, `events` (shared values), `signin` and `tasks` (a provider's ops).
+//! work rows), `echo_read`, `events` (shared values), `signin`, `tasks` (a provider's ops) and
+//! `reply_context` (a reply-context provider's ops and the user's sent messages).
 pub mod cas;
 pub mod claude;
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub mod http;
 pub mod m365;
 pub mod markdown;
 pub mod notify;
+pub mod reply_context;
 pub mod settings;
 pub mod signin;
 pub mod skills;
@@ -187,6 +189,8 @@ pub struct Services {
     today: Mutex<today::Provided>,
     /// The task ops each provider plugin registered (`tasks.provide`), by plugin.
     pub(crate) task_plugins: Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+    /// The reply-context ops each provider plugin registered (`replyContext.provide`), by plugin.
+    pub(crate) voice_plugins: Mutex<std::collections::BTreeMap<String, Vec<String>>>,
     /// `ctx.profiles()`, refreshed by the plugin manager (detection is too slow for a turn).
     profiles: RwLock<Value>,
     /// Orders guarded writes (`{ifSha, createNew}`): a comparison and its write are one step.
@@ -211,6 +215,7 @@ impl Services {
             providers: Mutex::default(),
             today: Mutex::default(),
             task_plugins: Mutex::default(),
+            voice_plugins: Mutex::default(),
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
             writes: Mutex::new(()),
             files: Mutex::default(),
@@ -270,8 +275,8 @@ impl Services {
             .insert(granted.id.clone(), Arc::new(granted));
     }
 
-    /// Ends the plugin's services (it was unloaded): its delivery ways, providers and task ops go
-    /// too.
+    /// Ends the plugin's services (it was unloaded): its delivery ways, providers, task ops and
+    /// reply-context ops go too.
     pub fn forget(&self, id: &str) {
         self.plugins
             .write()
@@ -280,6 +285,7 @@ impl Services {
         lock(&self.providers).retain(|_, p| p.plugin != id);
         lock(&self.today).forget(id);
         lock(&self.task_plugins).remove(id);
+        lock(&self.voice_plugins).remove(id);
     }
 
     /// The grants of a loaded plugin.
@@ -359,6 +365,7 @@ impl HostServices for Services {
             }
             n if n.starts_with("deliver.") => deliver::call(self, &p, n, &args),
             n if n.starts_with("tasks.") => tasks::call(self, &p, n, &args),
+            "replyContext.provide" => reply_context::call(self, &p, name, &args),
             "echo.read" => echo_read::read(self, &p, &args),
             "echo.dictionary.add" => echo_read::dictionary_add(self, &p, at(&args, 0)),
             "shared.get" => events::shared_get(self, text(&args, 0, "a shared key")?),
@@ -388,6 +395,7 @@ impl HostServices for Services {
                 "store.walk" => store::walk(me, p, args).await,
                 "web.read" => web::read(&me, &p, &args).await,
                 n if n.starts_with("m365.") => m365::call(&me, &p, n, &args).await,
+                "replyContext.sent" => reply_context::sent(&me, &p, &args),
                 "http.askAddress" => web::ask_address(&me, &p).await,
                 n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,
