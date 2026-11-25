@@ -52,6 +52,10 @@ struct Prepared {
     examples: Vec<Example>,
     person_id: Option<String>,
     terms: Vec<String>,
+    /// `Core::voice_epoch` when the copy was read: a delete of the copy (or another provider)
+    /// since then makes a `context` answer stale for the copy, even when the same provider is
+    /// chosen again before it comes back.
+    epoch: usize,
 }
 
 /// The `context` ask's input (design §1): never message text.
@@ -65,9 +69,14 @@ fn context_args(t: &DraftTarget) -> Value {
 
 /// The user's own earlier messages to the target's person (design §4 "the examples", ruling 28):
 /// mail by the person's address, Teams by the 1:1 chat with the sender's id; newest first, never
-/// one already in the draft's `<message>` context, last 180 days, at most four (each is cut to
+/// one already in the draft's `<message>` context (or, for an automation, anywhere else the run
+/// shows: `shown`), last 180 days, at most four (each is cut to
 /// 400 characters by `assemble`). No person → no examples.
-fn examples_for(r: &crate::workspace::repository::Repository, t: &DraftTarget) -> Vec<Example> {
+fn examples_for(
+    r: &crate::workspace::repository::Repository,
+    t: &DraftTarget,
+    shown: &[String],
+) -> Vec<Example> {
     let (channel, address, from_id) = match t.channel {
         Channel::Mail => match &t.address {
             Some(a) => ("mail", Some(a.clone()), None),
@@ -86,7 +95,12 @@ fn examples_for(r: &crate::workspace::repository::Repository, t: &DraftTarget) -
         from_id,
         chat_id: None,
     };
-    let shown: HashSet<&str> = t.in_context.iter().map(String::as_str).collect();
+    let shown: HashSet<&str> = t
+        .in_context
+        .iter()
+        .chain(shown)
+        .map(String::as_str)
+        .collect();
     match own_sent(r, &filter, now()) {
         Ok(items) => items
             .into_iter()
@@ -142,7 +156,22 @@ impl Core {
         source: &Record,
         cancel: &CancellationToken,
     ) -> VoiceForDraft {
-        let p = match self.voice_prepare(w, me, source) {
+        self.voice_for_draft_beside(w, me, source, &[], cancel)
+            .await
+    }
+
+    /// [`Self::voice_for_draft`] for a draft whose input also shows the records `shown` (an
+    /// automation's other blocks, such as `recentMessages`): none of them is repeated as an
+    /// example (design §4 "never one already in the draft's context").
+    pub(crate) async fn voice_for_draft_beside(
+        &self,
+        w: &Workspace,
+        me: &Connection,
+        source: &Record,
+        shown: &[String],
+        cancel: &CancellationToken,
+    ) -> VoiceForDraft {
+        let p = match self.voice_prepare(w, me, source, shown) {
             Ok(Some(p)) => p,
             Ok(None) => return VoiceForDraft::default(),
             Err(e) => {
@@ -193,15 +222,19 @@ impl Core {
         // copy is never refilled by a draft).
         let (copy, from) = match &context {
             None => (p.copy, From::Copy),
-            Some(answer) => match self.voice_merge(&p.provider, p.copy.is_some(), answer) {
-                Ok(Some(merged)) => (Some(merged), From::Provider),
-                Ok(None) => (Some(copy_of_answer(answer)), From::Provider),
-                Err(e) if e.code == "voice_changed" => return VoiceForDraft::default(),
-                Err(e) => {
-                    log::warn!("voice: context answer not merged: {}", e.code);
-                    (Some(copy_of_answer(answer)), From::Provider)
+            Some(answer) => {
+                match self.voice_merge(&p.provider, p.epoch, p.copy.is_some(), answer) {
+                    Ok(Some(merged)) => (Some(merged), From::Provider),
+                    Ok(None) => (Some(copy_of_answer(answer)), From::Provider),
+                    Err(e) if e.code == "voice_changed" => return VoiceForDraft::default(),
+                    // Unmerged: the copy as it was, never the bare answer (it would drop the style
+                    // card and the other instructions for this draft).
+                    Err(e) => {
+                        log::warn!("voice: context answer not merged: {}", e.code);
+                        (p.copy, From::Copy)
+                    }
                 }
-            },
+            }
         };
         let empty = Copy {
             provider: p.provider.clone(),
@@ -250,8 +283,11 @@ impl Core {
         w: &Workspace,
         me: &Connection,
         source: &Record,
+        shown: &[String],
     ) -> Result<Option<Prepared>> {
         let r = self.repo()?;
+        // Read under the guard every copy delete holds while it bumps the epoch.
+        let epoch = self.voice_epoch.load(std::sync::atomic::Ordering::SeqCst);
         let settings = r.settings()?.voice;
         if settings.provider == "off" {
             return Ok(None);
@@ -269,7 +305,7 @@ impl Core {
         );
         let copy = copy::read_copy(&r)?;
         let target = assemble::target_of(&r, w, me, source)?;
-        let examples = examples_for(&r, &target);
+        let examples = examples_for(&r, &target, shown);
         drop(r);
         let person = copy
             .as_ref()
@@ -292,16 +328,26 @@ impl Core {
             target,
             examples,
             terms,
+            epoch,
         }))
     }
 
     /// Merges a `context` answer into the copy (design §2) when the same provider is still
-    /// chosen; answers the merged copy, or `None` when there is no copy to merge into (a
-    /// provider never refreshed yet: the answer stands alone for this draft). Refuses with
-    /// `voice_changed` when the voice was turned off or changed while it was asked.
-    fn voice_merge(&self, provider: &str, had_copy: bool, answer: &Value) -> Result<Option<Copy>> {
+    /// chosen and the copy wasn't deleted or replaced since it was read (`epoch`, the guard
+    /// `voice_save` uses); answers the merged copy, or `None` when there is no copy to merge
+    /// into (a provider never refreshed yet: the answer stands alone for this draft). Refuses
+    /// with `voice_changed` when the voice was turned off, changed, or its copy deleted while
+    /// it was asked, so a late answer writes nothing.
+    fn voice_merge(
+        &self,
+        provider: &str,
+        epoch: usize,
+        had_copy: bool,
+        answer: &Value,
+    ) -> Result<Option<Copy>> {
         let mut r = self.repo()?;
-        if r.settings()?.voice.provider != provider {
+        let moved = self.voice_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch;
+        if moved || r.settings()?.voice.provider != provider {
             return Err(crate::workspace::models::WorkspaceError::new(
                 "voice_changed",
                 "The voice changed while the draft asked for it.",
@@ -768,6 +814,90 @@ pub(crate) mod tests {
         let (v, ()) = tokio::join!(asking, forget);
         assert_eq!(v, VoiceForDraft::default());
         assert!(copy::read_copy(&core.repo().unwrap()).unwrap().is_none());
+    }
+
+    /// Delete Connect's copy and choosing Knowledge again inside the 3 s window: the provider
+    /// string matches again, but the copy was deleted since the ask (`voice_epoch` moved), so a
+    /// late `context` answer writes nothing (review minor 1).
+    #[tokio::test]
+    async fn a_late_answer_after_delete_and_rechoose_writes_nothing() {
+        use crate::workspace::ai::tests::mutation;
+        use crate::workspace::models::Operation;
+        let (_dir, core) = core();
+        let (w, c) = seed(&core);
+        let fake = ready_voice(&core, "");
+        put(
+            &core,
+            priya_mail("p1", "conv-1", now() - 60, false, "Hello", "Thanks Priya!"),
+        );
+        fake.delay("context", Duration::from_millis(400));
+        fake.answer("context", priya_context(""));
+        let source = core
+            .repo()
+            .unwrap()
+            .record("message", "p1", Some(ACCT), None)
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let asking = core.voice_for_draft(&w, &c, &source, &cancel);
+        let rechoose = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            core.request(mutation(&core, Operation::VoiceForget, json!({})))
+                .await
+                .unwrap();
+            core.request(mutation(
+                &core,
+                Operation::VoiceSet,
+                json!({"provider": KNOWLEDGE}),
+            ))
+            .await
+            .unwrap();
+        };
+        let (v, ()) = tokio::join!(asking, rechoose);
+        assert_eq!(v, VoiceForDraft::default(), "this draft gets no voice");
+        let r = core.repo().unwrap();
+        assert_eq!(r.settings().unwrap().voice.provider, KNOWLEDGE);
+        for kind in ["voice_style", "voice_rule", "voice_person", "voice_meta"] {
+            assert!(
+                r.records_of_kind(kind).unwrap().is_empty(),
+                "{kind} was written"
+            );
+        }
+    }
+
+    /// A merge that fails for any other reason drafts from the copy as it was (style card and
+    /// rules kept), never from the bare answer (review minor 2).
+    #[tokio::test]
+    async fn a_failed_merge_drafts_from_the_existing_copy() {
+        use std::sync::atomic::Ordering;
+        let (_dir, core) = core();
+        let (w, c) = seed(&core);
+        let fake = ready_voice(&core, "");
+        put(
+            &core,
+            priya_mail("p1", "conv-1", now() - 60, false, "Hello", "Thanks Priya!"),
+        );
+        fake.delay("context", Duration::from_millis(300));
+        fake.answer("context", priya_context(""));
+        let source = core
+            .repo()
+            .unwrap()
+            .record("message", "p1", Some(ACCT), None)
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let asking = core.voice_for_draft(&w, &c, &source, &cancel);
+        // The repository refuses every read while the data folder moves (`busy`).
+        let pause = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            core.paused.store(true, Ordering::SeqCst);
+        };
+        let (v, ()) = tokio::join!(asking, pause);
+        core.paused.store(false, Ordering::SeqCst);
+        let voice = v.voice.expect("a voice from the copy");
+        assert!(voice.contains("<style>Short and direct."), "{voice}");
+        assert!(voice.contains("Never promise a date."), "{voice}");
+        assert!(voice.contains("Short sentences; no small talk."), "{voice}");
+        assert!(!voice.contains("From the provider"), "{voice}");
+        assert_eq!(v.provenance.unwrap()["from"], "copy");
     }
 
     /// A stopped draft abandons the asks at once and drafts from the copy.

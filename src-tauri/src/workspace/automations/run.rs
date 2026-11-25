@@ -489,14 +489,6 @@ impl Core {
             }
             _ => FullTexts::new(),
         };
-        // A reply draft carries the user's voice and facts like a manual one (reply voice design
-        // §4, ruling 5); nothing else an automation writes does.
-        let voice = match (&account, message) {
-            (Some(c), Some(s)) if wants_draft => {
-                self.voice_for_draft(&w, c, s, &started.cancel).await
-            }
-            _ => Default::default(),
-        };
         let (zone, last_ok) = {
             let r = self.repo()?;
             (r.settings()?.time_zone, r.last_ok_started(&a.id, &log.id)?)
@@ -517,10 +509,25 @@ impl Core {
             since: Some(recent_since(last_ok, reading.now)),
             // A message synced after the last run started is read though it arrived earlier.
             seen_since: last_ok.map(|_| recent_since(last_ok, reading.now)),
-            voice: voice.voice.as_deref(),
-            facts: voice.facts.as_deref(),
         };
-        let built = context::build(&*self.repo()?, &run, &reading)?;
+        let mut built = context::build(&*self.repo()?, &run, &reading)?;
+        // A reply draft carries the user's voice and facts like a manual one (reply voice design
+        // §4, ruling 5); nothing else an automation writes does. Its examples never repeat a
+        // record the run already shows.
+        let voice = match (&account, message) {
+            (Some(c), Some(s)) if wants_draft => {
+                let shown: Vec<String> =
+                    built.sources.iter().map(|s| s.record_id.clone()).collect();
+                self.voice_for_draft_beside(&w, c, s, &shown, &started.cancel)
+                    .await
+            }
+            _ => Default::default(),
+        };
+        context::add_voice(
+            &mut built.input,
+            voice.voice.as_deref(),
+            voice.facts.as_deref(),
+        );
         log.sources = built.sources.iter().map(Source::to_json).collect();
         let mut system = prompts::AUTOMATION_SYSTEM.to_string();
         if a.deliver.create_tasks {
@@ -3283,6 +3290,51 @@ mod tests {
         let run = run_of(&core, &done.id);
         assert!(!run.data.to_string().contains("Never promise a date."));
         assert!(!run.data.to_string().contains("Go-live"));
+    }
+
+    /// The examples never repeat a sent message the run already shows (review minor 3): one of
+    /// the user's mails to Ann is in `recentMessages`, so only the older one is an example.
+    #[tokio::test]
+    async fn an_automation_draft_leaves_out_examples_the_run_already_reads() {
+        use crate::workspace::voice::draft::tests::ready_voice;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let _voice = ready_voice(&core, "");
+        let mut automation = reply_automation();
+        automation["read"] = json!({"triggerConversation": true, "recentMessages": true});
+        ann_writes_to(&core, &graph, automation).await;
+        for (id, ago, text) in [
+            ("e-new", 3_600, "Sent an hour ago."),
+            ("e-old", 5 * 86_400, "Sent last week."),
+        ] {
+            let mut m = mail(id, now() - ago, "Taylor Reed", "taylor@example.test", text);
+            m.source = "mail:sentitems".into();
+            m.data["isMine"] = true.into();
+            m.data["conversationId"] = format!("conv-{id}").into();
+            m.data["to"] =
+                json!([{"emailAddress": {"name": "Ann Lee", "address": "ann@example.test"}}]);
+            put(&core, m);
+        }
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let input = &fake.calls()[0].input;
+        let recent = input["recentMessages"].to_string();
+        assert!(recent.contains("Sent an hour ago."), "{recent}");
+        let block = input["voice"].as_str().expect("a voice field");
+        assert!(block.contains("Sent last week."), "{block}");
+        assert!(
+            !block.contains("Sent an hour ago."),
+            "already in recentMessages: {block}"
+        );
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .unwrap();
+        assert_eq!(draft.data["provenance"]["voice"]["examples"], 1);
     }
 
     /// Nothing but a reply draft carries the voice (ruling 5): a triage run asks the provider

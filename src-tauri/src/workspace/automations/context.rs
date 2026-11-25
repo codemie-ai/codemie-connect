@@ -57,11 +57,6 @@ pub struct Run<'a> {
     /// stored (`seenAt`) at or after this is read too, though it arrived before `since` (a late
     /// sync), as long as it arrived within the last three days. `None` on a first run.
     pub seen_since: Option<i64>,
-    /// The user's `<voice>` and `<facts>` blocks for the reply draft (reply voice design §4:
-    /// an automation that drafts gets the same fields as a manual draft); only read when
-    /// `draft` is set.
-    pub voice: Option<&'a str>,
-    pub facts: Option<&'a str>,
 }
 
 /// One block Claude read, and the record it stands for.
@@ -149,8 +144,22 @@ fn source(kind: &'static str, record: &Record, title: String, at: i64) -> Source
     }
 }
 
+/// The user's `<voice>` and `<facts>` blocks for a run's reply draft (reply voice design §4: an
+/// automation that drafts gets the same fields as a manual draft). They are added on top of the
+/// 16,000-character data budget, which [`build`] spends on what the run reads; each has its own
+/// budget (9,000 voice, 2,500 facts) and is already escaped and bounded by `voice::draft`.
+pub fn add_voice(input: &mut Value, voice: Option<&str>, facts: Option<&str>) {
+    if let Some(voice) = voice {
+        input["voice"] = voice.into();
+    }
+    if let Some(facts) = facts {
+        input["facts"] = facts.into();
+    }
+}
+
 /// The input for one run: only what the automation's Read set names (plus the conversation a
-/// requested reply draft answers), newest first within the 16,000-character budget. The
+/// requested reply draft answers), newest first within the 16,000-character budget. A reply
+/// draft's `voice` and `facts` are not part of it: [`add_voice`] adds them on top. The
 /// triggering conversation is what the run is about, so it is kept first.
 pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput> {
     let a = run.automation;
@@ -174,12 +183,6 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
     }
     if run.draft {
         input["draftReply"] = true.into();
-        if let Some(voice) = run.voice {
-            input["voice"] = voice.into();
-        }
-        if let Some(facts) = run.facts {
-            input["facts"] = facts.into();
-        }
     }
     if a.deliver.create_tasks {
         input["createTasks"] = true.into();
@@ -891,8 +894,6 @@ mod tests {
             me: &me,
             since: None,
             seen_since: None,
-            voice: None,
-            facts: None,
         };
         build(r, &run, &reading).unwrap()
     }
@@ -1157,8 +1158,6 @@ mod tests {
             me: &me,
             since: Some(since),
             seen_since: None,
-            voice: None,
-            facts: None,
         };
         let built = build(&r, &run, &reading).unwrap();
         let blocks: Vec<&str> = built.input["recentMessages"]
