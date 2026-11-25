@@ -225,11 +225,20 @@ pub fn run() {
                 app.manage(plugins::manager::PluginManager::start(app.handle(), core));
             }
             commands::status_smoke::arm(app.handle());
+            // Nothing reported within 600 s (watchdog): the tour exits 2, as every other tour
+            // refusal does, rather than hanging forever (design's exit codes).
+            #[cfg(feature = "tour")]
+            commands::tour::report::arm_watchdog(app.handle());
             // No icon in the menu bar while touring (design § 3): the tray is never built in the
             // first place, rather than built and then hidden, so it never shows even briefly
-            // (controller ruling, Task 2 fix round 1, M6).
+            // (controller ruling, Task 2 fix round 1, M6). The refresher still needs a sink, or
+            // it never records an applied view and T28 can never pass (design ruling 13).
             #[cfg(feature = "tour")]
-            if !tour {
+            if tour {
+                if let Some(core) = &core {
+                    commands::tour::install_quiet_menu_bar(core);
+                }
+            } else {
                 workspace::setup_tray(app)?;
             }
             #[cfg(not(feature = "tour"))]
@@ -361,6 +370,10 @@ pub fn run() {
             commands::tour::window::tour_capture,
             #[cfg(all(feature = "tour", target_os = "macos"))]
             commands::tour::window::tour_focus,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_menu_bar,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_report,
         ]))
         .build(context)
         .expect("error while building tauri application")

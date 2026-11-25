@@ -65,6 +65,28 @@ pub fn open_refused(tour: bool) -> Result<(), &'static str> {
     }
 }
 
+/// A tray sink that does nothing (design § 3, ruling: no OS tray icon in a tour, Task 2 fix
+/// round 1 M6). `setup_tray` is the only place that installs the menu-bar refresher's sink, and a
+/// tour never calls it; without a sink installed `Refresher::offer` returns before it ever
+/// records an applied view, so `core.menu_bar.last()` would stay `None` forever and `T28` could
+/// never pass (design ruling 13, "applied equals recount"). Installing this sink instead lets the
+/// refresher keep counting and applying, with nothing ever reaching the real menu bar.
+#[cfg(feature = "tour")]
+struct QuietTray;
+
+#[cfg(feature = "tour")]
+impl crate::workspace::menu_bar::TraySink for QuietTray {
+    fn apply(&self, _view: &crate::workspace::menu_bar::TrayView) {}
+}
+
+/// Installs [`QuietTray`] and asks for a first count, so the menu bar has an applied view by the
+/// time `tour_menu_bar` is asked for one, with no OS tray icon ever built.
+#[cfg(feature = "tour")]
+pub fn install_quiet_menu_bar(core: &std::sync::Arc<crate::workspace::Core>) {
+    core.menu_bar.install(Box::new(QuietTray));
+    core.menu_bar.wake();
+}
+
 #[cfg(feature = "tour")]
 pub use run::*;
 
@@ -75,6 +97,10 @@ pub mod quiet;
 /// Imports the tour's seed into a fresh `workspace.sqlite` before `Core::open_tour` opens it.
 #[cfg(feature = "tour")]
 pub mod seed;
+
+/// The tour's verdict, `results.json` and the Rust half of the HTML report (design § 8).
+#[cfg(feature = "tour")]
+pub mod report;
 
 /// The invisible window and the in-process capture of its web content (macOS only).
 #[cfg(all(feature = "tour", target_os = "macos"))]
