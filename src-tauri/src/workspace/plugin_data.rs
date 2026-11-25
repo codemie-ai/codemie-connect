@@ -258,6 +258,7 @@ impl Core {
                 Arc::new(|_| {}),
                 Some(&ref_id),
                 &decorate,
+                &|_| {},
             )
             .await;
         let mut record = self.ai_run_record(

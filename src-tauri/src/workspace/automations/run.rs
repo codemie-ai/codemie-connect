@@ -1168,7 +1168,7 @@ mod tests {
             ),
         );
         let mut automation = morning_brief(json!({"needsReply": true}));
-        automation["ai"] = json!({"profile": "codemie:prod", "model": "claude-haiku-4-5"});
+        automation["ai"] = json!({"profile": "codemie:prod", "model": "haiku"});
         automation["capUsd"] = json!(0.5);
         save(&core, automation).await;
         let jid = run_now(&core, "auto-brief").await;
@@ -1179,7 +1179,7 @@ mod tests {
 
         let spec = &fake.calls()[0];
         assert_eq!(spec.profile_id, "codemie:prod", "the pinned profile");
-        assert_eq!(spec.model.as_deref(), Some("claude-haiku-4-5"));
+        assert_eq!(spec.model.as_deref(), Some("haiku"));
         assert_eq!(spec.cap_usd, Some(0.5));
 
         let all = runs(&core);

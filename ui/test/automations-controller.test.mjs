@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAutomationsController, notificationTarget, runSignature, RUNS_PAGE } from '../workspace/automations-controller.js';
 import { newAutomationDraft, draftFromAutomation, TEMPLATES } from '../workspace/view-automations.js';
-import { buildSnapshot, aiStatus, withAutomations, automationContract } from './fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, withAutomations, automationContract, chooseAll } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.now();
 const snapshotOf = () => withAutomations(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
@@ -106,6 +106,7 @@ test('a new snapshot reloads the Run log only when its runs changed', async () =
 test('Run now asks which Claude first when nothing would choose one', async () => {
   const unchosen = { status: 'ready', ...aiStatus('both', { defaultProfile: null }) };
   unchosen.settings.routes = {};
+  unchosen.chosen = chooseAll(unchosen.settings);
   // Ann's automation has no profile of its own.
   const cancelled = harness({ ai: unchosen, ensure: async () => null });
   assert.equal(await cancelled.ctl.handle('automation-run', control({ id: 'auto-reply' })), false);
@@ -124,6 +125,25 @@ test('Run now asks which Claude first when nothing would choose one', async () =
   const choose = harness({ ai: unchosen, ensure: async () => 'claude' });
   await choose.ctl.handle('automation-choose', control({ id: 'auto-reply' }));
   assert.deepEqual(choose.calls.mutate, [['automation_run_now', { id: 'auto-reply' }]]);
+});
+
+test('Run now reads the automation row Rust chose, not only Automations and Default', async () => {
+  // No Default and no Automations profile, but Inbox triage has one: a triage automation runs
+  // without asking; another automation, which follows Automations, still asks.
+  const settings = { defaultProfile: null, routes: { triage: { profile: 'claude' } }, plugins: {} };
+  const ai = { status: 'ready', ...aiStatus('both', { defaultProfile: null }) };
+  ai.settings = { ...ai.settings, ...settings };
+  ai.chosen = chooseAll(ai.settings);
+  const snapshot = snapshotOf();
+  snapshot.records.find(r => r.id === 'auto-reply').data.template = 'inbox-triage';
+  let asked = 0;
+  const triage = harness({ snapshot, ai, ensure: async () => { asked++; return null; } });
+  await triage.ctl.handle('automation-run', control({ id: 'auto-reply' }));
+  assert.equal(asked, 0, 'Inbox triage already has a profile');
+  assert.deepEqual(triage.calls.mutate, [['automation_run_now', { id: 'auto-reply' }]]);
+  const other = harness({ ai, ensure: async () => { asked++; return null; } });
+  assert.equal(await other.ctl.handle('automation-run', control({ id: 'auto-reply' })), false);
+  assert.equal(asked, 1);
 });
 
 test('Duplicate saves a copy that stays off', async () => {

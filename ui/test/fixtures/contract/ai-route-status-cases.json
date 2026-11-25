@@ -1,0 +1,799 @@
+[
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": null,
+      "profile": null
+    },
+    "name": "unset",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "unset",
+    "using": null
+  },
+  {
+    "chosen": {
+      "fallback": null,
+      "model": null,
+      "profile": "claude"
+    },
+    "name": "working, profile default",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "working",
+    "using": "claude"
+  },
+  {
+    "chosen": {
+      "fallback": null,
+      "model": "sonnet",
+      "profile": "claude"
+    },
+    "name": "working, offered model",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "working",
+    "using": "claude"
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": "llama3.2",
+      "profile": "codemie:local-ollama"
+    },
+    "name": "working, untagged model",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "working",
+    "using": "codemie:local-ollama"
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
+    "name": "missing model, fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "fallback",
+    "using": "claude"
+  },
+  {
+    "chosen": {
+      "fallback": null,
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
+    "name": "missing model, no fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "broken",
+    "using": null
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
+    "name": "cannot list, fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": "Ollama isn't running. Open Ollama, then check again.",
+        "models": [
+          {
+            "id": "qwen3:8b",
+            "label": "qwen3:8b"
+          }
+        ],
+        "provider": "ollama",
+        "state": "not_running",
+        "version": null
+      }
+    ],
+    "state": "fallback",
+    "using": "claude"
+  },
+  {
+    "chosen": {
+      "fallback": null,
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
+    "name": "cannot list, no fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": "Ollama isn't running. Open Ollama, then check again.",
+        "models": [
+          {
+            "id": "qwen3:8b",
+            "label": "qwen3:8b"
+          }
+        ],
+        "provider": "ollama",
+        "state": "not_running",
+        "version": null
+      }
+    ],
+    "state": "broken",
+    "using": null
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": "sonnet",
+      "profile": "codemie:prod"
+    },
+    "name": "signed out, fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:prod",
+        "kind": {
+          "name": "prod",
+          "type": "code_mie"
+        },
+        "label": "codemie:prod",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "needs_login",
+        "version": null
+      }
+    ],
+    "state": "fallback",
+    "using": "claude"
+  },
+  {
+    "chosen": {
+      "fallback": "codemie:prod",
+      "model": null,
+      "profile": "claude"
+    },
+    "name": "signed out, fallback signed out",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "needs_login",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:prod",
+        "kind": {
+          "name": "prod",
+          "type": "code_mie"
+        },
+        "label": "codemie:prod",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "needs_login",
+        "version": null
+      }
+    ],
+    "state": "broken",
+    "using": null
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": null,
+      "profile": "codemie:gone"
+    },
+    "name": "unknown profile, fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [
+          {
+            "id": "llama3.2:latest",
+            "label": "llama3.2:latest"
+          }
+        ],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "fallback",
+    "using": "claude"
+  }
+]

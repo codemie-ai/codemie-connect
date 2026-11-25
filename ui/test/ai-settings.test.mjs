@@ -233,6 +233,17 @@ test('route_state_covers_working_fallback_broken_and_unset', () => {
   assert.deepEqual(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: null }, stopped), { state: 'broken', text: "Ollama isn't running. Open Ollama, then check again.", using: null });
 });
 
+test('route_state_says_what_a_run_does', () => {
+  // Each case's state and profile are what Rust's `resolve` does before the run
+  // (ai-route-status-cases.json), so a row never promises a fallback the run doesn't make.
+  const cases = JSON.parse(readFileSync(new URL('./fixtures/contract/ai-route-status-cases.json', import.meta.url), 'utf8'));
+  assert.ok(cases.some(c => c.name === 'missing model, fallback' && c.state === 'fallback'));
+  for (const c of cases) {
+    const { state, using } = routeState(c.chosen, c.profiles);
+    assert.deepEqual({ state, using }, { state: c.state, using: c.using }, c.name);
+  }
+});
+
 test('route_state_reads_profiles_after_the_codemie_sign_in_overlay', () => {
   const ai = loaded('all');
   // Summaries run on codemie:prod with no fallback (its default fallback is itself).

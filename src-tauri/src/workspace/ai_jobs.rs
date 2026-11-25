@@ -13,6 +13,7 @@ use crate::ai::profiles::AiProfile;
 use crate::ai::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -483,6 +484,30 @@ impl Core {
         self.emit("workspace:changed");
     }
 
+    /// Notes on a running job the fallback its retry runs on (its own default model), so the
+    /// "Drafting with…" row and an error card that ends the job name the profile that ran.
+    /// The first attempt's reported model goes with it. The ledger keeps `fallbackFrom`.
+    fn note_fallback(&self, job_id: &str, fallback: &AiProfile) {
+        if let Ok(mut r) = self.repo() {
+            let running = r
+                .jobs()
+                .ok()
+                .and_then(|jobs| jobs.into_iter().find(|j| j.id == job_id))
+                .filter(|j| j.state == "running");
+            if let Some(mut job) = running {
+                job.payload["profile"] = fallback.id.clone().into();
+                job.payload["model"] = Value::Null;
+                if let Some(p) = job.payload.as_object_mut() {
+                    p.remove("runModel");
+                }
+                if r.save_job(&job).is_err() {
+                    return;
+                }
+            }
+        }
+        self.emit("workspace:changed");
+    }
+
     /// The full text of the Outlook messages in `window`, read from Microsoft now and never
     /// stored. Newest first, four at a time, until the newest messages fill the run's
     /// character budget; reads still going after `deadline` are dropped. A message that was not
@@ -591,22 +616,41 @@ impl Core {
             return (None, Err(AiError::new(ErrorClass::Cancelled)), spec, None);
         }
         let ledger = LedgerEntry::open(self, spec.clone(), ref_id, resolved.fell_back_from.clone());
-        let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Each reported model carries its attempt, so a model the first attempt reported
+        // never lands on the job after the retry has named the fallback.
+        let attempt = std::sync::Arc::new(AtomicUsize::new(0));
+        let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<(usize, String)>();
+        let of_attempt = attempt.clone();
         let on_event: std::sync::Arc<dyn Fn(RunEvent) + Send + Sync> =
             std::sync::Arc::new(move |event| {
                 if let RunEvent::Started {
                     model: Some(model), ..
                 } = event
                 {
-                    let _ = models.send(model);
+                    let _ = models.send((of_attempt.load(Ordering::SeqCst), model));
                 }
             });
-        let running = self.run_resolved(resolved, spec, run.cancel.clone(), on_event, Some(ref_id));
+        let on_retry = |fallback: &AiProfile| {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            self.note_fallback(&run.job_id, fallback);
+        };
+        let running = self.run_resolved(
+            resolved,
+            spec,
+            run.cancel.clone(),
+            on_event,
+            Some(ref_id),
+            &on_retry,
+        );
         tokio::pin!(running);
         let (result, used, post_run_reason) = loop {
             tokio::select! {
                 biased;
-                Some(model) = reported.recv() => self.note_run_model(&run.job_id, &model),
+                Some((n, model)) = reported.recv() => {
+                    if n == attempt.load(Ordering::SeqCst) {
+                        self.note_run_model(&run.job_id, &model);
+                    }
+                }
                 done = &mut running => break done,
             }
         };
@@ -1652,6 +1696,73 @@ mod tests {
         let runs = ai_runs(&core);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].data["fallbackFrom"], "claude");
+    }
+
+    /// After a fallback that runs once the first attempt failed, the job names the profile
+    /// that is running, and that profile's error ends it: the "Drafting with …" row and the
+    /// error card blame the fallback, not the first profile. Writes
+    /// `job-ai-draft-fallback-{running,failed}.json`, which the window's tests read.
+    #[tokio::test]
+    async fn contract_fixtures_a_fallback_job_names_the_profile_that_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![
+            failure(ErrorClass::RateLimited, "Claude is busy."),
+            failure(ErrorClass::NeedsLogin, "CodeMie is not signed in."),
+        ]);
+        let fake = Arc::new(fake);
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        let id = queued["jobId"].as_str().unwrap().to_string();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let running = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        assert_eq!(job(&core, &json!(id)).payload["profile"], "claude");
+        gate.release.notify_one();
+        gate.started.notified().await;
+        let retrying = job_when(&core, &id, |j| j.payload["profile"] == "codemie:prod").await;
+        assert_eq!(retrying.state, "running");
+        assert_eq!(
+            retrying.payload["model"],
+            Value::Null,
+            "the fallback's own default"
+        );
+        assert!(retrying.payload.get("runModel").is_none_or(Value::is_null));
+        gate.release.notify_one();
+        running.await.unwrap();
+        let failed = job(&core, &json!(id));
+        assert_eq!(failed.error_class.as_deref(), Some("needs_login"));
+        assert_eq!(failed.payload["profile"], "codemie:prod");
+        assert_eq!(fake.calls().len(), 2);
+        // The ledger still records which profile it fell back from.
+        let mut runs = ai_runs(&core);
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        assert_eq!(runs[1].data["fallbackFrom"], "claude");
+
+        let pin_job = |j: Job, n: usize| {
+            let mut v = serde_json::to_value(j).unwrap();
+            v["id"] = format!("job-{n}").into();
+            v["key"] = format!("{}:op-{n}", v["kind"].as_str().unwrap()).into();
+            v["dueAt"] = 1_795_000_400.into();
+            v["payload"]["startedAt"] = 1_795_000_401.into();
+            if v["leaseUntil"].is_i64() {
+                v["leaseUntil"] = 1_795_000_700.into();
+            }
+            v
+        };
+        crate::plugins::testkit::contract_fixture(
+            "job-ai-draft-fallback-running.json",
+            &pin_job(retrying, 1),
+        );
+        crate::plugins::testkit::contract_fixture(
+            "job-ai-draft-fallback-failed.json",
+            &pin_job(failed, 2),
+        );
     }
 
     #[tokio::test]

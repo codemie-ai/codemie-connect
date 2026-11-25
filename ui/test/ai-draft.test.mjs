@@ -262,6 +262,21 @@ test('each_error_class_shows_its_sentence_and_action', () => {
   assert.equal(draftError({ ...failed, state: 'succeeded', errorClass: undefined, errorCode: undefined }, {}), null);
 });
 
+test('after_a_fallback_the_label_and_error_card_name_the_profile_that_ran', () => {
+  // Claude Code hit its limit, so the same draft went to its fallback, CodeMie · prod, whose
+  // sign-in had expired (job-ai-draft-fallback-*.json, written by Rust).
+  const s = snapshot();
+  const running = jobFor(s, 'c-reply-1', { leaseUntil: null }, { startedAt: nowSec - 20 }, 'job-ai-draft-fallback-running');
+  assert.equal(runningLabel(running, { nowMs: NOW }).text, 'Drafting with CodeMie… 20 s');
+  const failed = jobFor(s, 'c-reply-1', {}, {}, 'job-ai-draft-fallback-failed');
+  assert.equal(failed.errorClass, 'needs_login');
+  s.jobs.unshift(failed);
+  const row = view(s).match(/<div class="ws-draft-error[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  assert.match(unescape(row), /CodeMie · prod isn't signed in\./);
+  assert.doesNotMatch(unescape(row), /Claude Code isn't signed in/);
+  assert.match(row, /data-action="cm-profile-login"[^>]*data-id="prod"/);
+});
+
 test('claude_detection_runs_at_most_every_15_s', () => {
   const at = 1_000_000;
   const base = { status: 'ready', noneReady: true, nowMs: at, readAt: at - 20_000, detectAt: at - 20_000 };

@@ -4,7 +4,7 @@
 // route, the dialogs), so node:test drives it without a browser; only the editor's own form is
 // DOM.
 import {
-  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, providerNameOf, AUTOMATION_TABS, TEMPLATES,
+  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, providerNameOf, AUTOMATION_TABS, TEMPLATES, routeRowOf,
 } from './view-automations.js';
 import { records } from './selectors.js';
 import { controlSelector, soleMatch } from './ui.js';
@@ -95,10 +95,11 @@ export function createAutomationsController({
     return loadRuns({ snapshot });
   }
 
-  /** Asks once which Claude runs automations when nothing would choose one; false when cancelled. */
+  /** Asks once which AI runs automations when nothing would choose one (its own pin, else the
+   *  profile Rust chose for its row); false when cancelled. */
   async function claudeReadyFor(a) {
     const ai = state.ai || {};
-    if (ai.status !== 'ready' || a.ai?.profile || ai.settings?.routes?.automation?.profile || ai.settings?.defaultProfile) return true;
+    if (ai.status !== 'ready' || a.ai?.profile || ai.chosen?.[routeRowOf(a)]?.profile) return true;
     return !!(await ensureClaudeChoice());
   }
 

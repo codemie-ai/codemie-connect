@@ -138,6 +138,17 @@ pub fn resolve_plugin(
     resolve_chosen(chosen, profiles)
 }
 
+/// The error of a ready profile that doesn't offer the row's model (spec §4: the row then
+/// reads "Using fallback" or "<Profile> doesn't offer <model>."), so a run never goes to a
+/// model that isn't there. Only asked of a ready profile: one that can't list its models
+/// (Ollama not running) is not ready, and the saved model is kept for when it is.
+fn lacks_model(profile: &AiProfile, model: Option<&str>) -> Option<AiError> {
+    let model = model.filter(|m| !m.is_empty() && !offers_model(profile, m))?;
+    let mut e = AiError::new(ErrorClass::NotConfigured);
+    e.message = format!("{} doesn't offer {model}.", profile.label);
+    Some(e)
+}
+
 fn resolve_chosen(c: Chosen, profiles: &[AiProfile]) -> std::result::Result<Resolved, AiError> {
     let id = c
         .profile
@@ -145,7 +156,7 @@ fn resolve_chosen(c: Chosen, profiles: &[AiProfile]) -> std::result::Result<Reso
     let find = |id: &str| profiles.iter().find(|p| p.id == id);
     let fallback = c.fallback.as_deref().and_then(find).cloned();
     let error = match find(&id) {
-        Some(p) => match unready_error(p) {
+        Some(p) => match unready_error(p).or_else(|| lacks_model(p, c.model.as_deref())) {
             None => {
                 return Ok(Resolved {
                     profile: p.clone(),
@@ -487,7 +498,9 @@ impl Core {
     /// that says the profile can't run, a ready fallback was not used yet and the run is not
     /// in a folder (whose edits may already be made), the failed
     /// attempt is recorded here and the same run goes once more to the fallback, on its own
-    /// default model. Answers the last attempt's result and spec; the caller records that one.
+    /// default model; `on_retry` is told that profile just before that attempt starts (a job
+    /// notes it, so it names the profile that runs). Answers the last attempt's result and
+    /// spec; the caller records that one.
     pub(super) async fn run_resolved(
         &self,
         r: &Resolved,
@@ -495,12 +508,13 @@ impl Core {
         cancel: CancellationToken,
         on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
         ref_id: Option<&str>,
+        on_retry: &(dyn Fn(&AiProfile) + Sync),
     ) -> (
         std::result::Result<RunOutcome, AiError>,
         RunSpec,
         Option<ErrorClass>,
     ) {
-        self.run_resolved_with(r, spec, cancel, on_event, ref_id, &|_| {})
+        self.run_resolved_with(r, spec, cancel, on_event, ref_id, &|_| {}, on_retry)
             .await
     }
 
@@ -508,6 +522,7 @@ impl Core {
     /// name and tools). The third answer is the class of the first attempt's own failure, kept
     /// only when this run retried on the fallback after it (not when the fallback was already
     /// in use before the run started — that's [`Resolved::pre_run_reason`]).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_resolved_with(
         &self,
         r: &Resolved,
@@ -516,6 +531,7 @@ impl Core {
         on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
         ref_id: Option<&str>,
         decorate: &(dyn Fn(&mut Record) + Sync),
+        on_retry: &(dyn Fn(&AiProfile) + Sync),
     ) -> (
         std::result::Result<RunOutcome, AiError>,
         RunSpec,
@@ -560,6 +576,7 @@ impl Core {
             model: None,
             ..spec
         };
+        on_retry(fallback);
         let second = self
             .runner
             .run(retry.clone(), fallback, cancel, events(&on_event))
@@ -1424,6 +1441,38 @@ pub(super) mod tests {
         );
     }
 
+    #[test]
+    fn resolve_uses_the_fallback_when_a_ready_profile_lacks_the_model() {
+        // Ollama runs and has its default model, but `qwen3:8b` was removed: Settings says
+        // "Using fallback", so the run goes there instead of to a model that isn't there.
+        let local = ollama("codemie:local", &["llama3.2:latest"]);
+        let profiles = [local.clone(), profile("claude", ProfileState::Ready)];
+        let s = settings(json!({"defaultProfile": "claude", "routes": {"triage": {
+            "profile": "codemie:local", "model": "qwen3:8b", "fallback": "claude"}}}));
+        let k = key(Purpose::Triage);
+        let r = resolve(&s, &profiles, &k).unwrap();
+        assert_eq!(r.profile.id, "claude");
+        assert_eq!(r.model, None, "the fallback's own default model");
+        assert_eq!(r.fell_back_from.as_deref(), Some("codemie:local"));
+        assert_eq!(r.pre_run_reason, Some(ErrorClass::NotConfigured));
+        // No fallback: the row's own error names the model, and nothing runs.
+        let s = settings(json!({"defaultProfile": "codemie:local", "defaultModel": "qwen3:8b"}));
+        let e = resolve(&s, &profiles, &k).unwrap_err();
+        assert_eq!(e.class, ErrorClass::NotConfigured);
+        assert_eq!(e.message, "codemie:local doesn't offer qwen3:8b.");
+        // A name without a tag is the `:latest` one, and no model is the profile's default.
+        let s = settings(json!({"defaultProfile": "codemie:local", "defaultModel": "llama3.2"}));
+        assert_eq!(
+            resolve(&s, &profiles, &k).unwrap().profile.id,
+            "codemie:local"
+        );
+        let s = settings(json!({"defaultProfile": "codemie:local"}));
+        assert_eq!(
+            resolve(&s, &profiles, &k).unwrap().profile.id,
+            "codemie:local"
+        );
+    }
+
     #[tokio::test]
     async fn meeting_notes_need_a_choice_through_the_chain() {
         let dir = tempfile::tempdir().unwrap();
@@ -1843,6 +1892,99 @@ pub(super) mod tests {
             })
             .collect();
         contract_fixture("ai-route-cases.json", &Value::Array(cases));
+    }
+
+    /// `ai-route-status-cases.json`: a row's `chosen`, the profiles, and what [`resolve`]
+    /// does with them before the run (`working` on the chosen profile, `fallback`, `broken`
+    /// or `unset`, and the profile that runs). The window's `routeState` must say the same.
+    #[test]
+    fn contract_fixtures_route_status_cases() {
+        let mut stopped = ollama("codemie:local-ollama", &["qwen3:8b"]);
+        stopped.state = ProfileState::NotRunning;
+        stopped.message = Some("Ollama isn't running. Open Ollama, then check again.".into());
+        let running = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:local-ollama", &["llama3.2:latest"]),
+        ];
+        let closed = vec![profile("claude", ProfileState::Ready), stopped];
+        let signed_out = vec![
+            profile("claude", ProfileState::Ready),
+            profile("codemie:prod", ProfileState::NeedsLogin),
+        ];
+        let ollama_row = |model: &str, fallback: Option<&str>| {
+            chosen(Some("codemie:local-ollama"), Some(model), fallback)
+        };
+        let cases = [
+            ("unset", chosen(None, None, Some("claude")), &running),
+            (
+                "working, profile default",
+                chosen(Some("claude"), None, None),
+                &running,
+            ),
+            (
+                "working, offered model",
+                chosen(Some("claude"), Some("sonnet"), None),
+                &running,
+            ),
+            (
+                "working, untagged model",
+                ollama_row("llama3.2", Some("claude")),
+                &running,
+            ),
+            (
+                "missing model, fallback",
+                ollama_row("qwen3:8b", Some("claude")),
+                &running,
+            ),
+            (
+                "missing model, no fallback",
+                ollama_row("qwen3:8b", None),
+                &running,
+            ),
+            (
+                "cannot list, fallback",
+                ollama_row("qwen3:8b", Some("claude")),
+                &closed,
+            ),
+            (
+                "cannot list, no fallback",
+                ollama_row("qwen3:8b", None),
+                &closed,
+            ),
+            (
+                "signed out, fallback",
+                chosen(Some("codemie:prod"), Some("sonnet"), Some("claude")),
+                &signed_out,
+            ),
+            (
+                "signed out, fallback signed out",
+                chosen(Some("claude"), None, Some("codemie:prod")),
+                &{
+                    let mut p = signed_out.clone();
+                    p[0].state = ProfileState::NeedsLogin;
+                    p
+                },
+            ),
+            (
+                "unknown profile, fallback",
+                chosen(Some("codemie:gone"), None, Some("claude")),
+                &running,
+            ),
+        ];
+        let cases: Vec<Value> = cases
+            .into_iter()
+            .map(|(name, c, profiles)| {
+                let (state, using) = match resolve_chosen(c.clone(), profiles) {
+                    Ok(r) if r.fell_back_from.is_some() => ("fallback", json!(r.profile.id)),
+                    Ok(r) => ("working", json!(r.profile.id)),
+                    Err(e) if e.class == ErrorClass::NeedsChoice => ("unset", Value::Null),
+                    Err(_) => ("broken", Value::Null),
+                };
+                json!({"name": name, "chosen": c, "profiles": profiles,
+                    "state": state, "using": using})
+            })
+            .collect();
+        contract_fixture("ai-route-status-cases.json", &Value::Array(cases));
     }
 
     /// Writes (`UPDATE_CONTRACT_FIXTURES=1`) or checks one UI contract fixture.
