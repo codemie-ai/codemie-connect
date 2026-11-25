@@ -51,18 +51,56 @@ pub fn running() -> bool {
 /// beside the user's own windows and must put nothing on their screen.
 pub const OPENS_NOTHING: &str = "The tour opens nothing.";
 
-/// [`OPENS_NOTHING`] while this launch runs a tour; every desktop opener calls it first.
-pub fn opens_nothing() -> Result<(), &'static str> {
-    open_refused(running())
+/// [`OPENS_NOTHING`] while this launch runs a tour; every desktop opener calls it first, naming
+/// itself (`what`) for the tour's report.
+pub fn opens_nothing(what: &str) -> Result<(), &'static str> {
+    open_refused(running(), what)
 }
 
-/// The refusal for a launch that is (`tour`) or isn't touring.
-pub fn open_refused(tour: bool) -> Result<(), &'static str> {
+/// The refusal for a launch that is (`tour`) or isn't touring; a refusal is recorded under `what`.
+pub fn open_refused(tour: bool, what: &str) -> Result<(), &'static str> {
     if tour {
+        record_refusal(what, OPENS_NOTHING);
         Err(OPENS_NOTHING)
     } else {
         Ok(())
     }
+}
+
+/// Every refusal Rust made while a tour ran, `(what, why)`, until the tour takes them for its
+/// report (`tour_refused`, `tour_report`): design § 8 fails the tour on a refusal its stop didn't
+/// expect, and a refusal nobody records can't (final review I2). Per thread under `cargo test`,
+/// so parallel tests never see each other's.
+#[cfg(not(test))]
+static REFUSED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+thread_local! {
+    static REFUSED: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records one refusal (`what` was refused, `why`) for the tour's report.
+pub fn record_refusal(what: &str, why: &str) {
+    let refusal = (what.to_string(), why.to_string());
+    #[cfg(not(test))]
+    REFUSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(refusal);
+    #[cfg(test)]
+    REFUSED.with(|r| r.borrow_mut().push(refusal));
+}
+
+/// The refusals recorded since the last call, oldest first; each is handed out once.
+#[cfg(any(test, feature = "tour"))]
+pub fn take_refusals() -> Vec<(String, String)> {
+    #[cfg(not(test))]
+    return std::mem::take(
+        &mut *REFUSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    #[cfg(test)]
+    REFUSED.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
 /// A tray sink that does nothing (design § 3, ruling: no OS tray icon in a tour, Task 2 fix
@@ -162,6 +200,31 @@ mod run {
     /// The rollout steps a tour can name.
     const LAST_STEP: u8 = 9;
 
+    /// The window's own stops (`ui/workspace/tour/script.js`), compiled in so `CODEMIE_TOUR` is
+    /// judged against the stops the window will walk, never a copy that can drift from them.
+    const SCRIPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../ui/workspace/tour/script.js"
+    ));
+
+    /// Every stop of [`SCRIPT`] with its rollout steps, in the script's order: each stop's line
+    /// opens with `id: 'Tnn', step: [a, b]`.
+    pub fn script_stops() -> Vec<(String, Vec<u8>)> {
+        SCRIPT
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim_start().strip_prefix("id: '")?;
+                let (id, rest) = rest.split_once('\'')?;
+                let steps = rest.split_once("step: [")?.1.split_once(']')?.0;
+                let steps = steps
+                    .split(',')
+                    .map(|n| n.trim().parse::<u8>().ok())
+                    .collect::<Option<Vec<u8>>>()?;
+                Some((id.to_string(), steps))
+            })
+            .collect()
+    }
+
     fn parse_only(value: &str) -> Option<Only> {
         if value.trim() == "all" {
             return Some(Only::All);
@@ -181,6 +244,25 @@ mod run {
             .iter()
             .all(stop)
             .then(|| Only::Stops(items.iter().map(|i| i.to_string()).collect()))
+    }
+
+    /// Why `only` would run nothing for some item it names: a stop id [`script_stops`] doesn't
+    /// have, or a rollout step none of its stops belongs to. A tour that runs nothing must never
+    /// pass (final review I1), so such a value is refused like any other unknown one.
+    fn nothing_to_run(value: &str, only: &Only) -> Option<String> {
+        let stops = script_stops();
+        let missing = match only {
+            Only::All => None,
+            Only::Steps(steps) => steps
+                .iter()
+                .find(|step| !stops.iter().any(|(_, of)| of.contains(step)))
+                .map(|step| format!("step {step} has no tour stops yet")),
+            Only::Stops(ids) => ids
+                .iter()
+                .find(|id| !stops.iter().any(|(known, _)| known == *id))
+                .map(|id| format!("{id} is not a tour stop")),
+        }?;
+        Some(format!("CODEMIE_TOUR={value:?}: {missing}."))
     }
 
     /// Judges a launch's environment; each refusal is the sentence the tour exits 3 with.
@@ -230,6 +312,9 @@ mod run {
                  of stop ids (T05,T21)."
             )
         })?;
+        if let Some(refusal) = nothing_to_run(value, &only) {
+            return Err(refusal);
+        }
         Ok(TourRun {
             run_id: uuid::Uuid::new_v4().to_string(),
             sha,
@@ -427,6 +512,43 @@ mod tests {
         }
     }
 
+    /// Final review I1: a value that selects no stop would run nothing and pass. A stop id the
+    /// script doesn't have, or a step none of its stops belongs to (8 and 9 today), is refused at
+    /// parse time, naming it.
+    #[test]
+    fn parse_refuses_a_stop_or_step_with_nothing_to_run() {
+        for (value, named) in [
+            ("T62", "T62"),
+            ("T99", "T99"),
+            ("T00", "T00"),
+            ("T05,T62", "T62"),
+            ("8", "step 8"),
+            ("9", "step 9"),
+            ("0,9", "step 9"),
+        ] {
+            let env = TourEnv {
+                tour: Some(value.into()),
+                ..ok_env()
+            };
+            let err = parse(&env).unwrap_err();
+            assert!(err.contains(&format!("{value:?}")), "{value}: {err}");
+            assert!(err.contains(named), "{value}: {err}");
+        }
+    }
+
+    /// Rust reads the stops from `script.js` itself, so the two can't drift apart.
+    #[test]
+    fn script_stops_are_read_from_script_js() {
+        let stops = script_stops();
+        assert_eq!(stops.len(), 61);
+        assert_eq!(stops[0], ("T32".to_string(), vec![0]));
+        assert!(stops.contains(&("T12".to_string(), vec![1, 4, 5])));
+        assert!(stops.contains(&("T61".to_string(), vec![4])));
+        for step in 0..=7 {
+            assert!(stops.iter().any(|(_, s)| s.contains(&step)), "step {step}");
+        }
+    }
+
     #[test]
     fn parse_reads_all_steps_and_stops() {
         let only = |v: &str| {
@@ -527,15 +649,40 @@ mod open_tests {
 
     #[test]
     fn a_tour_opens_nothing() {
-        assert_eq!(open_refused(true), Err("The tour opens nothing."));
-        assert_eq!(open_refused(false), Ok(()));
+        assert_eq!(open_refused(true, "reveal"), Err("The tour opens nothing."));
+        assert_eq!(open_refused(false, "reveal"), Ok(()));
+        // Only the refusal is recorded, under the opener's name (final review I2).
+        assert_eq!(
+            take_refusals(),
+            [("reveal".to_string(), OPENS_NOTHING.to_string())]
+        );
     }
 
-    /// Each low-level function that opens something on the desktop calls `tour::opens_nothing()`
-    /// before it does: the window's commands (`data_location_reveal`, `data_location_pick`,
-    /// `meetings_root_pick`, `plugins_request` `open_link`/`pick_folder`/`reveal`,
-    /// `terminal_open_link`, `open_agent_in_terminal`, `open_app_download`, the folder pickers,
-    /// the log viewer, a relaunch, a Microsoft sign-in or a source link) all go through one.
+    /// Rust's refusals wait for the tour to take them, once each (final review I2).
+    #[test]
+    fn a_refusal_is_kept_until_taken() {
+        assert!(take_refusals().is_empty());
+        record_refusal("graph_connect", OPENS_NOTHING);
+        record_refusal("plugin_notify", "The tour shows no notifications.");
+        assert_eq!(
+            take_refusals(),
+            [
+                ("graph_connect".to_string(), OPENS_NOTHING.to_string()),
+                (
+                    "plugin_notify".to_string(),
+                    "The tour shows no notifications.".to_string()
+                ),
+            ]
+        );
+        assert!(take_refusals().is_empty());
+    }
+
+    /// Each low-level function that opens something on the desktop calls
+    /// `tour::opens_nothing(..)`, naming itself, before it does: the window's commands
+    /// (`data_location_reveal`, `data_location_pick`, `meetings_root_pick`, `plugins_request`
+    /// `open_link`/`pick_folder`/`reveal`, `terminal_open_link`, `open_agent_in_terminal`,
+    /// `open_app_download`, the folder pickers, the log viewer, a relaunch, a Microsoft sign-in or
+    /// a source link) all go through one.
     #[test]
     fn every_desktop_opener_refuses_in_a_tour() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -562,8 +709,8 @@ mod open_tests {
                 let body = &text[start..];
                 let end = body.find(&format!("\n{indent}}}\n")).unwrap_or(body.len());
                 assert!(
-                    body[..end].contains("tour::opens_nothing()"),
-                    "{file}: `{signature}` opens without asking `tour::opens_nothing()` first"
+                    body[..end].contains("tour::opens_nothing(\""),
+                    "{file}: `{signature}` opens without asking `tour::opens_nothing(..)` first"
                 );
             }
         }

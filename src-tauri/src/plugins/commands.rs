@@ -83,7 +83,8 @@ pub async fn plugins_request(
     not_restarting(&state)?;
     let running = counted?;
     if op == "pick_folder" {
-        crate::commands::tour::opens_nothing().map_err(|m| WorkspaceError::new("tour", m))?;
+        crate::commands::tour::opens_nothing("plugins_request:pick_folder")
+            .map_err(|m| WorkspaceError::new("tour", m))?;
         let folder = manager_of(&window)?.pick_market_folder().await;
         return Ok(json!({"path": folder.map(|f| f.display().to_string())}));
     }

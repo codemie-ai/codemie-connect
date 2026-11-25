@@ -109,7 +109,13 @@ function renderShot(id, shots) {
   return `<img class="shot" alt="${e(id)}" src="data:image/png;base64,${png}">`;
 }
 
-function renderStop(stop, shots) {
+/** A refusal's text: `<kind> <name> — <message>`, `(expected)` when its stop declared it. */
+function refusalText(r) {
+  if (typeof r === 'string') return r;
+  return `${r.kind ?? '?'} ${r.name ?? '?'}${r.message ? ` — ${r.message}` : ''}${r.expected ? ' (expected)' : ''}`;
+}
+
+function renderStop(stop, shots, refused = []) {
   const title = `${e(stop.id)} — ${e(stop.title || '')}`;
   const meta = [stop.route, stop.view, stop.theme, stop.width ? `${stop.width}px` : null]
     .filter(Boolean).map(e).join(' · ');
@@ -120,15 +126,18 @@ function renderStop(stop, shots) {
     : '';
   return `<article class="stop ${stop.pass ? 'pass' : 'fail'}">` +
     `<h3>${title}</h3><p class="meta">${meta}</p>` +
-    `<ul class="checks">${checks}</ul>${body}${next}` +
+    `<ul class="checks">${checks}</ul>` +
+    refused.map(r => `<p class="${r.expected ? 'faint' : 'fail'}">Refused: ${e(refusalText(r))}</p>`).join('') +
+    `${body}${next}` +
     (stop.error ? `<p class="fail">${e(stop.error)}</p>` : '') +
     `</article>`;
 }
 
-function renderSection(step, stops, shots) {
+function renderSection(step, stops, shots, refused) {
   const inStep = stops.filter(s => (s.step || []).includes(step));
   if (!inStep.length) return '';
-  return `<section><h2>Step ${step}</h2>${inStep.map(s => renderStop(s, shots)).join('')}</section>`;
+  const of = id => refused.filter(r => r?.stop === id);
+  return `<section><h2>Step ${step}</h2>${inStep.map(s => renderStop(s, shots, of(s.id))).join('')}</section>`;
 }
 
 function renderHeader(results) {
@@ -149,8 +158,9 @@ function renderHeader(results) {
 function renderOps(results) {
   const ops = (results.ops || []).map(e).join(', ') || '(none)';
   const refused = (results.refused || []);
+  const where = r => (typeof r === 'string' ? '' : `${r.stop ?? 'between stops'} · `);
   const refusedList = refused.length
-    ? `<ul>${refused.map(r => `<li>${e(typeof r === 'string' ? r : JSON.stringify(r))}</li>`).join('')}</ul>`
+    ? `<ul class="checks">${refused.map(r => `<li class="${r?.expected ? 'pass' : 'fail'}">${e(where(r) + refusalText(r))}</li>`).join('')}</ul>`
     : '<p>(none)</p>';
   const failed = (results.failed || []).map(f => `<li>${e(f)}</li>`).join('');
   return `<section><h2>Ops and refusals</h2>` +
@@ -215,7 +225,7 @@ table.facts th{color:var(--muted);font-weight:400}
  */
 export function renderReport(results, shots, features) {
   const stops = results.stops || [];
-  const sections = STEPS.map(step => renderSection(step, stops, shots)).join('');
+  const sections = STEPS.map(step => renderSection(step, stops, shots, results.refused || [])).join('');
   return `<!doctype html><html><head><meta charset="utf-8">` +
     `<title>CodeMie Connect · real-app tour · ${e(results.sha ?? '?')}</title>` +
     `<style>${CSS}</style></head><body>` +

@@ -98,3 +98,18 @@ test('the header shows the sha with +dirty', () => {
   const html = renderReport(results([s], { sha: 'abc1234+dirty' }), {}, []);
   assert.match(html, /CodeMie Connect · real-app tour · abc1234\+dirty/);
 });
+
+test('refusals show by stop in the Refused list and on their stop, expected ones marked', () => {
+  const s = stop('T27', { covers: ['f.built'] });
+  const refused = [
+    { stop: 'T27', kind: 'native', name: 'graph_connect', message: 'The tour opens nothing.', expected: true },
+    { stop: null, kind: 'native', name: 'relaunch', message: 'The tour opens nothing.' },
+  ];
+  const html = renderReport(results([s], { refused }), {}, [BUILT]);
+  const list = html.slice(html.indexOf('<h3>Refused</h3>'));
+  assert.match(list, /<li class="pass">T27 · native graph_connect — The tour opens nothing\. \(expected\)<\/li>/);
+  assert.match(list, /<li class="fail">between stops · native relaunch — The tour opens nothing\.<\/li>/);
+  assert.doesNotMatch(list, /\(none\)/);
+  const article = html.slice(html.indexOf('<article'), html.indexOf('</article>'));
+  assert.match(article, /Refused: native graph_connect — The tour opens nothing\. \(expected\)/);
+});

@@ -56,12 +56,21 @@ fn current_binary() -> Value {
     json!({"path": path, "mtime": mtime})
 }
 
+/// Rust's own refusals ([`super::take_refusals`]) as the report's entries: `{kind: "native",
+/// name, message}`. The window adds the stop each happened in (`tour_refused`).
+pub fn native_refusals(refusals: Vec<(String, String)>) -> Vec<Value> {
+    refusals
+        .into_iter()
+        .map(|(name, message)| json!({"kind": "native", "name": name, "message": message}))
+        .collect()
+}
+
 /// Rust's verdict on `window` (`runner.js`'s report), this run's identity and a live
 /// [`live_menu_bar`] snapshot: `{runId, sha, startedAt, finishedAt, binary, stops, ops, refused,
-/// menuBar, pass, failed}` (design § 8). Fails on: a report from another run; a stop with no
-/// checks; a stop whose capture is blank; a failed check or a thrown error; anything refused; or
-/// the applied menu bar not matching a fresh recount — checked here independently of whatever
-/// T28's own check in `window` already found.
+/// menuBar, pass, failed}` (design § 8). Fails on: a report from another run; no stop at all; a
+/// stop with no checks; a stop whose capture is blank; a failed check or a thrown error; a refusal
+/// its stop didn't expect; or the applied menu bar not matching a fresh recount — checked here independently of
+/// whatever T28's own check in `window` already found.
 pub fn verdict(window: Value, run: &TourRun, facts: Value) -> Value {
     let mut failed: Vec<String> = Vec::new();
 
@@ -78,6 +87,9 @@ pub fn verdict(window: Value, run: &TourRun, facts: Value) -> Value {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    if stops.is_empty() {
+        failed.push("stops: no stop ran, so nothing was tested".into());
+    }
     for stop in &stops {
         let id = stop.get("id").and_then(Value::as_str).unwrap_or("?");
         let checks = stop
@@ -112,8 +124,22 @@ pub fn verdict(window: Value, run: &TourRun, facts: Value) -> Value {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for r in &refused {
-        failed.push(format!("refused: {r}"));
+    // A refusal its own stop declared (`expectRefused` in script.js) is evidence, not a failure.
+    for r in refused
+        .iter()
+        .filter(|r| r.get("expected") != Some(&Value::Bool(true)))
+    {
+        let text = |key: &str| r.get(key).and_then(Value::as_str);
+        let mut line = format!(
+            "refused: {} {} {}",
+            text("stop").unwrap_or("between stops"),
+            text("kind").unwrap_or("?"),
+            text("name").unwrap_or("?")
+        );
+        if let Some(message) = text("message") {
+            line.push_str(&format!(" ({message})"));
+        }
+        failed.push(line);
     }
 
     if facts.get("applied").is_none_or(Value::is_null)
@@ -213,6 +239,33 @@ pub async fn tour_menu_bar(app: AppHandle, call: tauri::ipc::Request<'_>) -> Cmd
         .map_err(|e| InstallerError::Other(e.to_string()))
 }
 
+/// Adds Rust's refusals no stop took (between stops, or after the last one) to the window's
+/// `refused`, with no stop, so they still fail the tour.
+fn add_left_refusals(report: &mut Value, left: Vec<Value>) {
+    let Some(report) = report.as_object_mut().filter(|_| !left.is_empty()) else {
+        return;
+    };
+    let refused = report.entry("refused").or_insert_with(|| json!([]));
+    if !refused.is_array() {
+        *refused = json!([]);
+    }
+    if let Some(refused) = refused.as_array_mut() {
+        refused.extend(left.into_iter().map(|mut r| {
+            r["stop"] = Value::Null;
+            r
+        }));
+    }
+}
+
+/// The refusals Rust made since the last ask ([`native_refusals`]): the window asks after each
+/// stop, so each refusal is reported against the stop it happened in (final review I2).
+/// `require_main_frame` first.
+#[tauri::command]
+pub fn tour_refused(call: tauri::ipc::Request<'_>) -> CmdResult<Vec<Value>> {
+    require_main_frame(&call)?;
+    Ok(native_refusals(super::take_refusals()))
+}
+
 /// Ends the tour: [`verdict`] over `report` (the window's own) and this run's live menu bar, then
 /// [`finish`]. Fails ("No tour is running.") off a tour build, or once the watchdog or a second
 /// call already reported.
@@ -220,7 +273,7 @@ pub async fn tour_menu_bar(app: AppHandle, call: tauri::ipc::Request<'_>) -> Cmd
 pub async fn tour_report(
     app: AppHandle,
     call: tauri::ipc::Request<'_>,
-    report: Value,
+    mut report: Value,
 ) -> CmdResult<Value> {
     require_main_frame(&call)?;
     let run = active().ok_or_else(|| InstallerError::Other("No tour is running.".into()))?;
@@ -231,6 +284,7 @@ pub async fn tour_report(
     let facts = tauri::async_runtime::spawn_blocking(move || live_menu_bar(&blocking))
         .await
         .map_err(|e| InstallerError::Other(e.to_string()))?;
+    add_left_refusals(&mut report, native_refusals(super::take_refusals()));
     let result = verdict(report, run, facts);
     let code = if result["pass"] == true { 0 } else { 1 };
     match finish(&app, run, result.clone(), code) {
@@ -335,6 +389,84 @@ mod tests {
                 .any(|f| f.contains("T01") && f.contains("no checks")),
             "{v}"
         );
+    }
+
+    /// Final review I1: a tour that ran no stop tested nothing, so it can't pass.
+    #[test]
+    fn a_tour_that_ran_no_stop_fails() {
+        for stops in [json!([]), Value::Null] {
+            let mut w = passing_window();
+            w["stops"] = stops;
+            let v = verdict(w, &run(), passing_facts());
+            assert_eq!(v["pass"], false, "{v}");
+            assert!(
+                failed_strings(&v).contains(&"stops: no stop ran, so nothing was tested".into()),
+                "{v}"
+            );
+        }
+    }
+
+    /// Design § 8 and final review I2: a refusal fails the tour, named with its stop, unless that
+    /// stop expected it; an expected one still shows in `refused`.
+    #[test]
+    fn a_refusal_fails_unless_its_stop_expected_it() {
+        let mut w = passing_window();
+        w["refused"] = json!([
+            {"stop": "T27", "kind": "native", "name": "graph_connect",
+             "message": "The tour opens nothing."},
+            {"stop": null, "kind": "op", "name": "action_confirm"},
+        ]);
+        let v = verdict(w, &run(), passing_facts());
+        assert_eq!(v["pass"], false);
+        assert_eq!(
+            failed_strings(&v),
+            [
+                "refused: T27 native graph_connect (The tour opens nothing.)",
+                "refused: between stops op action_confirm",
+            ]
+        );
+
+        let mut w = passing_window();
+        let expected = json!({"stop": "T27", "kind": "native", "name": "graph_connect",
+                              "message": "The tour opens nothing.", "expected": true});
+        w["refused"] = json!([expected.clone()]);
+        let v = verdict(w, &run(), passing_facts());
+        assert_eq!(v["pass"], true, "{v}");
+        assert_eq!(v["refused"], json!([expected]));
+    }
+
+    /// Rust's own refusals reach the report as `native` entries.
+    #[test]
+    fn native_refusals_are_named_with_their_message() {
+        let got = native_refusals(vec![(
+            "graph_connect".into(),
+            "The tour opens nothing.".into(),
+        )]);
+        assert_eq!(
+            got,
+            [
+                json!({"kind": "native", "name": "graph_connect", "message": "The tour opens nothing."})
+            ]
+        );
+    }
+
+    /// A refusal no stop took still reaches the verdict, between stops.
+    #[test]
+    fn refusals_no_stop_took_still_fail() {
+        let mut w = passing_window();
+        w.as_object_mut().unwrap().remove("refused");
+        add_left_refusals(
+            &mut w,
+            native_refusals(vec![("relaunch".into(), "The tour opens nothing.".into())]),
+        );
+        let v = verdict(w, &run(), passing_facts());
+        assert_eq!(
+            failed_strings(&v),
+            ["refused: between stops native relaunch (The tour opens nothing.)"]
+        );
+        let mut untouched = passing_window();
+        add_left_refusals(&mut untouched, Vec::new());
+        assert_eq!(untouched, passing_window());
     }
 
     #[test]

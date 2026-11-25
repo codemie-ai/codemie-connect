@@ -3,7 +3,9 @@
 // one. Per stop: the view and theme (`settings_update`), the window size (`tour_window`), the
 // route, a settle (no `.ws-loading` or `.ws-spinner`, two frames, at most 8 s), the action, the
 // checks plus `noOverflow`, the focus probe (`tour_focus`) and the capture (`tour_capture`).
-// A stop that throws fails with the error as its detail, and the tour goes on.
+// A stop that throws fails with the error as its detail, and the tour goes on. After each stop
+// the runner asks Rust what it refused (`tour_refused`): every refusal, the gate's and Rust's, is
+// that stop's, and fails it unless the stop's `expectRefused` names it.
 //
 // Everything is passed in (`invoke`, `goHash`, `store`, `mutate`, `doc`, `raf`, `wait`), so
 // node:test drives it over fakes. It sends and opens nothing: every action is checked against
@@ -371,6 +373,31 @@ async function setPage(ctx, id, on) {
 
 // ---------------------------------------------------------------- the run
 
+/** One refusal as the report names it: `<kind> <name> (<message>)`. */
+const describeRefusal = r => `${r.kind} ${r.name}${r.message ? ` (${r.message})` : ''}`;
+
+/**
+ * Marks the refusals since `from` as stop `s`'s (and `expected` when `s.expectRefused` names
+ * them), and adds its `refused` check: it fails on a refusal the stop didn't expect, or an
+ * expected one that never came (design § 8, final review I2). No check when there is neither.
+ */
+function judgeRefused(s, refused, from, result) {
+  const expect = new Set(s.expectRefused || []);
+  const mine = [];
+  for (let i = from; i < refused.length; i++) {
+    const r = { stop: s.id, ...refused[i] };
+    if (expect.has(r.name)) r.expected = true;
+    refused[i] = r;
+    mine.push(r);
+  }
+  if (!mine.length && !expect.size) return;
+  const wrong = [
+    ...mine.filter(r => !r.expected).map(describeRefusal),
+    ...[...expect].filter(n => !mine.some(r => r.name === n)).map(n => `${n} was expected but not refused`),
+  ];
+  result.checks.push({ name: 'refused', pass: !wrong.length, detail: wrong.join(' | ') });
+}
+
 /**
  * Runs the stops `only` names and returns the window's report: `{runId, stops, ops, refused}`.
  * `ops` and `refused` may be shared with `gate`, so they hold the window's own calls too.
@@ -409,7 +436,9 @@ export async function runTour({
       checks: [], capture: null, viewport: null, error: null, pass: false,
     };
     const started = Date.now();
-    const blocked = [];
+    // Every refusal from here to the stop's end is this stop's: the runner's own, the window
+    // gate's (pushed into the shared `refused`) and Rust's (asked for below).
+    const refusedBefore = refused.length;
     for (const name of s.allow || []) allow.add(name);
     const ctx = {
       doc, invoke: call, wait, settle, until, goHash,
@@ -422,7 +451,7 @@ export async function runTour({
         const el = typeof target === 'string' ? ctx.find(target) : target;
         for (const name of [el.getAttribute?.('data-action'), el.getAttribute?.('data-key')].filter(Boolean)) {
           if (denied('action', name) && !lifted(allow, name)) {
-            blocked.push({ kind: 'action', name });
+            refused.push({ kind: 'action', name });
             throw refusal('action', name);
           }
         }
@@ -432,7 +461,7 @@ export async function runTour({
       mutate: async (op, data) => {
         const bad = opNames(op, data).find(n => denied('op', n) && !lifted(allow, n));
         if (bad) {
-          blocked.push({ kind: 'op', name: bad });
+          refused.push({ kind: 'op', name: bad });
           throw refusal('op', bad);
         }
         const out = await mutate(op, data);
@@ -529,7 +558,12 @@ export async function runTour({
       result.error = String(e?.message || e);
     }
     for (const name of s.allow || []) allow.delete(name);
-    for (const r of blocked) refused.push({ stop: s.id, ...r });
+    try {
+      for (const r of (await call('tour_refused')) || []) refused.push({ kind: 'native', ...r });
+    } catch (e) {
+      result.error = result.error || `Rust's refusals could not be read: ${String(e?.message || e)}`;
+    }
+    judgeRefused(s, refused, refusedBefore, result);
     result.ms = Date.now() - started;
     result.pass = !result.error && result.checks.length > 0 && result.checks.every(c => c.pass);
     results.push(result);

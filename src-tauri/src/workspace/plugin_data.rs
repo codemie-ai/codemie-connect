@@ -72,8 +72,12 @@ pub(crate) fn plugin_source_id(r: &Record) -> String {
 impl Core {
     /// A plugin's notification, shown only while the user lets Connect notify.
     pub(crate) fn plugin_notify(&self, title: &str, body: &str) {
-        // A tour shows nothing on the user's screen.
+        // A tour shows nothing on the user's screen; the drop is recorded for its report.
         if super::tour_sends_nothing() {
+            crate::commands::tour::record_refusal(
+                "plugin_notify",
+                "The tour shows no notifications.",
+            );
             return;
         }
         let allowed = self

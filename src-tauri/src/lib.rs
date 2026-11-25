@@ -374,6 +374,8 @@ pub fn run() {
             commands::tour::report::tour_menu_bar,
             #[cfg(feature = "tour")]
             commands::tour::report::tour_report,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_refused,
         ]))
         .build(context)
         .expect("error while building tauri application")

@@ -62,7 +62,8 @@ fn ensure_log_readable(path: &str) -> CmdResult<()> {
 
 #[cfg(not(windows))]
 pub(crate) fn spawn_open(path: &str) -> CmdResult<()> {
-    crate::commands::tour::opens_nothing().map_err(|m| InstallerError::Other(m.into()))?;
+    crate::commands::tour::opens_nothing("log viewer")
+        .map_err(|m| InstallerError::Other(m.into()))?;
     std::process::Command::new("open")
         .arg(path)
         .spawn()
@@ -71,7 +72,8 @@ pub(crate) fn spawn_open(path: &str) -> CmdResult<()> {
 }
 #[cfg(windows)]
 pub(crate) fn spawn_open(path: &str) -> CmdResult<()> {
-    crate::commands::tour::opens_nothing().map_err(|m| InstallerError::Other(m.into()))?;
+    crate::commands::tour::opens_nothing("log viewer")
+        .map_err(|m| InstallerError::Other(m.into()))?;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 

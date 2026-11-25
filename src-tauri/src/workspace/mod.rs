@@ -846,29 +846,32 @@ impl Core {
         // `OpenSource` and `MeetingsReveal` each open another app on the user's desktop (the
         // Microsoft sign-in page, or Finder); the tour's deny-list regex does not name them, so
         // they are refused here too (controller ruling, Task 2 fix round 1).
+        // Each refusal is recorded under the op's name (or the setting's) for the tour's report.
         if tour_sends_nothing() {
-            if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm) {
-                return Err(WorkspaceError::new("tour", "The tour sends nothing."));
-            }
-            if matches!(
+            let op = serde_json::to_value(&req.op)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default();
+            let refusal = if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm) {
+                Some((op, "The tour sends nothing."))
+            } else if matches!(
                 req.op,
                 Operation::GraphConnect | Operation::OpenSource | Operation::MeetingsReveal
             ) {
-                return Err(WorkspaceError::new("tour", "The tour opens nothing."));
-            }
-            // A login item would start the tour binary at the user's next login; the OS prompt
-            // for notifications would show on their screen (Task 6 fix round 2).
-            if req.op == Operation::SettingsUpdate && req.data.get("launchAtLogin").is_some() {
-                return Err(WorkspaceError::new(
-                    "tour",
-                    "The tour changes no login items.",
-                ));
-            }
-            if req.op == Operation::NotificationPermission {
-                return Err(WorkspaceError::new(
-                    "tour",
-                    "The tour shows no notifications.",
-                ));
+                Some((op, "The tour opens nothing."))
+            } else if req.op == Operation::SettingsUpdate && req.data.get("launchAtLogin").is_some()
+            {
+                // A login item would start the tour binary at the user's next login; the OS
+                // prompt for notifications would show on their screen (Task 6 fix round 2).
+                Some(("launchAtLogin".into(), "The tour changes no login items."))
+            } else if req.op == Operation::NotificationPermission {
+                Some((op, "The tour shows no notifications."))
+            } else {
+                None
+            };
+            if let Some((what, why)) = refusal {
+                crate::commands::tour::record_refusal(&what, why);
+                return Err(WorkspaceError::new("tour", why));
             }
         }
         if req.op == Operation::Snapshot {
@@ -3343,6 +3346,14 @@ mod tests {
         }
         // No mutation ran: the refusal is checked before the mutation lock.
         assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        // Each refusal is recorded for the tour's report (final review I2).
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [
+                ("action_prepare".into(), "The tour sends nothing.".into()),
+                ("action_confirm".into(), "The tour sends nothing.".into()),
+            ]
+        );
     }
 
     /// `GraphConnect`, `OpenSource` and `MeetingsReveal` each open another app on the user's
@@ -3372,6 +3383,21 @@ mod tests {
         assert_eq!(err.code, "tour");
         assert_eq!(err.message, "The tour shows no notifications.");
         assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        let login = (
+            "launchAtLogin".to_string(),
+            "The tour changes no login items.".to_string(),
+        );
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [
+                login.clone(),
+                login,
+                (
+                    "notification_permission".into(),
+                    "The tour shows no notifications.".into()
+                ),
+            ]
+        );
         // Other settings still save in a tour.
         let req = mutation(&core, Operation::SettingsUpdate, json!({ "theme": "dark" }));
         assert!(core.request(req).await.is_ok());
@@ -3403,6 +3429,22 @@ mod tests {
         }
     }
 
+    /// A plugin's notification is dropped in a tour, and recorded as refused (final review I2).
+    #[test]
+    fn a_tour_records_a_plugin_notification_as_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let _touring = Touring::on();
+        core.plugin_notify("Hello", "from a plugin");
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [(
+                "plugin_notify".to_string(),
+                "The tour shows no notifications.".to_string()
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn tour_refuses_ops_that_open_the_desktop() {
         let dir = tempfile::tempdir().unwrap();
@@ -3421,6 +3463,11 @@ mod tests {
             assert_eq!(err.message, "The tour opens nothing.", "{label}");
         }
         assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        let names: Vec<String> = crate::commands::tour::take_refusals()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["graph_connect", "open_source", "meetings_reveal"]);
     }
 
     /// A pure-function test of `start()`'s decision — no `Core::start`, no sleeping, no

@@ -54,7 +54,7 @@ The tour makes the real Tauri app check itself. One command builds the debug app
 
 ### 1. The switch
 
-- **`CODEMIE_TOUR`**: the stops to run. `all`, or a comma list of rollout steps (`0,3,7`) or stop ids (`T05,T21`). An unknown value exits 3 and names it.
+- **`CODEMIE_TOUR`**: the stops to run. `all`, or a comma list of rollout steps (`0,3,7`) or stop ids (`T05,T21`). An unknown value exits 3 and names it, and so does a value that selects no stop: a stop id `script.js` doesn't have, or a step none of its stops belongs to (8 and 9 until they add stops). Rust reads the stop ids from `script.js` itself.
 - **The `tour` Cargo feature** (`tour = ["test-support"]` in `src-tauri/Cargo.toml`) holds all tour code. Only `make tour` turns it on. The gates:
   - `#[cfg(all(feature = "tour", not(debug_assertions)))] compile_error!("the tour runs in debug builds only")` in `lib.rs`. A release build with the feature does not compile.
   - Without the feature, `commands::tour::requested()` is a stub. A debug build with `CODEMIE_TOUR` set exits 3: "Build the tour with `make tour`." A release build ignores the variable.
@@ -180,7 +180,7 @@ A stop that throws is failed, with the error as its detail, and the tour goes on
 - a `data-action` matching `/open|reveal|pick|link|terminal|download/` (Finder, Terminal, a browser, a picker, a download), except in-window folds named one by one (`task-row-open`);
 - `invoke` of anything but `workspace_request`, `plugins_request` with `markets` or `installed`, `smoke_mode`, `get_app_version` and the `tour_*` commands.
 
-The window's own `invoke` goes through the same gate (`gate` in `runner.js`), for every call it makes to native: a send word, or `/open|reveal|pick|link|download|relaunch|restart/` in the command (or `plugins_request:<op>`), is refused before it is sent and recorded. A stop may lift one named control or request with `allow` (T60 opens the Delete ask; T61 removes the Todoist plugin); `allow` never lifts a send, and the control's name never lifts its op (`task_delete` stays refused). Rust also refuses a `launchAtLogin` change and the notification permission prompt in tour mode, and shows no OS notification. Rust refuses every desktop opener in tour mode with "The tour opens nothing." (`commands::tour::opens_nothing`, called by the folder pickers, Finder reveals, `open` launches, a relaunch and every external link), so the window's gate is the first guard and Rust the second.
+The window's own `invoke` goes through the same gate (`gate` in `runner.js`), for every call it makes to native: a send word, or `/open|reveal|pick|link|download|relaunch|restart/` in the command (or `plugins_request:<op>`), is refused before it is sent and recorded. A stop may lift one named control or request with `allow` (T60 opens the Delete ask; T61 removes the Todoist plugin); `allow` never lifts a send, and the control's name never lifts its op (`task_delete` stays refused). Rust also refuses a `launchAtLogin` change and the notification permission prompt in tour mode, and shows no OS notification. Rust refuses every desktop opener in tour mode with "The tour opens nothing." (`commands::tour::opens_nothing`, called by the folder pickers, Finder reveals, `open` launches, a relaunch and every external link), so the window's gate is the first guard and Rust the second. Rust records each refusal it makes (`commands::tour::record_refusal`); the runner asks for them after every stop (`tour_refused`), so every refusal, the gate's and Rust's, is reported against the stop it happened in. A stop that legitimately hits one names it in `expectRefused`; any other refusal fails the stop, and an expected one that never comes fails it too.
 
 Each captured stop also checks `noClip` (the browser run's: nothing the user sees overflows its box, or is cut off without an ellipsis). A stop with `frame` also judges the capture's area under that element on its own (`tour_capture {region}` answers `regionBlank`). A stop with `next` takes a second picture (`<id>-next`) after a second action.
 
@@ -282,7 +282,7 @@ Steps 8 (reply in your voice) and 9 (Ask inline) are listed `planned`. Each late
 ### 8. Evidence and report
 
 **What Rust writes.** `tour_report {report}` adds Rust's view (run id, SHA, start and end time, the binary's path and mtime, the menu-bar facts) and decides the verdict:
-- the tour fails on any failed check, a blank capture, a stop with no checks, a report whose run id isn't this run's, or a `tour` refusal;
+- the tour fails on any failed check, a blank capture, a stop with no checks, no stop at all, a report whose run id isn't this run's, or a `tour` refusal its stop doesn't expect (`expectRefused`);
 - it writes `<test dir>/tour/results.json`, prints `TOUR {path, pass, failed}` and exits.
 
 **The HTML.** `scripts/tour/report.mjs <test dir> <out dir>` writes `output/tour/<yyyymmdd-hhmmss>-<sha>/index.html` (`output/` is git-ignored). The file is self-contained: screenshots are inlined as `data:image/png;base64`, CSS is inline and there are no scripts.

@@ -17,6 +17,8 @@
 // - `ids`: the matches' `data-id`s start with these, in order;
 // - `css`: `[property, value]` of the first match's computed style.
 // `scroll` (optional) names the part to scroll into view before the capture.
+// `expectRefused` (optional) names the refusals the stop legitimately hits (the window gate's or
+// Rust's); any other refusal during the stop fails it, and so does an expected one that never came.
 // A menu-bar check is `{name, fact, equals?, min?}` over `tour_menu_bar`'s answer.
 // `noOverflow` is added to every captured stop by the runner.
 

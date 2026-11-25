@@ -50,13 +50,14 @@ function fakeDoc(nodes = {}, { scrollWidth = 1440, clientWidth = 1440, innerHeig
 }
 
 /** An invoke that records every call and answers the tour commands. */
-function fakeInvoke({ capture = () => ({ blank: false, sha256: String(Math.random()) }), focus = () => ({ appActive: false, windowKey: false }), menuBar } = {}) {
+function fakeInvoke({ capture = () => ({ blank: false, sha256: String(Math.random()) }), focus = () => ({ appActive: false, windowKey: false }), menuBar, native = () => [] } = {}) {
   const calls = [];
   const invoke = async (cmd, args) => {
     calls.push([cmd, args]);
     if (cmd === 'tour_window') return { width: args.width, height: args.height };
     if (cmd === 'tour_capture') return { path: `/x/${args.id}.png`, width: 2880, height: 1800, ...capture(args.id, args) };
     if (cmd === 'tour_focus') return focus();
+    if (cmd === 'tour_refused') return native();
     if (cmd === 'tour_menu_bar') return menuBar ? menuBar() : { tray: false, applied: { title: '3', amber: true }, computed: { count: 3, label: '3', amber: true }, rowTexts: ['3 messages need a reply'] };
     throw new Error(`unexpected ${cmd}`);
   };
@@ -64,14 +65,14 @@ function fakeInvoke({ capture = () => ({ blank: false, sha256: String(Math.rando
   return invoke;
 }
 
-function harness({ stops, doc = fakeDoc(), invoke = fakeInvoke(), only = 'all', ops = [] } = {}) {
+function harness({ stops, doc = fakeDoc(), invoke = fakeInvoke(), only = 'all', ops = [], refused = [] } = {}) {
   const mutations = [];
   const routes = [];
   let settings = { view: 'default', theme: 'light' };
   return {
     invoke, doc, mutations, routes, ops,
     run: () => runTour({
-      invoke, doc, only, runId: 'run-1', stops, ops,
+      invoke, doc, only, runId: 'run-1', stops, ops, refused,
       raf: fn => fn(), wait: async () => {},
       goHash: async hash => { routes.push(hash); },
       store: { get: () => ({ snapshot: { settings } }) },
@@ -208,6 +209,50 @@ test('a stop whose action would mutate a denied op fails and mutates nothing', a
   } finally {
     ACTIONS.setProvider = original;
   }
+});
+
+// Final review I2: every refusal, the window gate's and Rust's, is recorded against its stop and
+// fails it, unless the stop expects it (`expectRefused`).
+
+test('a refusal the window gate makes during a stop is that stop\'s, and fails it', async () => {
+  const refused = [];
+  // The app's own click reaches the gate, which refuses it (as `gate` pushes into `refused`).
+  const reveal = node({ attrs: { 'data-action': 'storage-show' }, onClick: () => refused.push({ kind: 'window', name: 'data_location_reveal' }) });
+  const doc = fakeDoc({ '.ws-inbox-row': [node({ text: 'row' })], '.reveal': [reveal] });
+  const h = harness({ doc, refused, stops: [stop('T05', { action: { name: 'click', arg: '.reveal' } }), stop('T06')] });
+  const out = await h.run();
+  assert.deepEqual(out.refused, [{ stop: 'T05', kind: 'window', name: 'data_location_reveal' }]);
+  assert.equal(out.stops[0].pass, false);
+  assert.match(checkOf(out.stops[0], 'refused').detail, /window data_location_reveal/);
+  assert.equal(out.stops[1].pass, true, 'the next stop is not blamed');
+});
+
+test('a refusal Rust made during a stop is asked for after it, and fails it', async () => {
+  let n = 0;
+  const invoke = fakeInvoke({ native: () => (n++ === 0 ? [{ kind: 'native', name: 'graph_connect', message: 'The tour opens nothing.' }] : []) });
+  const h = harness({ doc: withRows(), invoke, stops: [stop('T27'), stop('T29')] });
+  const out = await h.run();
+  assert.deepEqual(out.refused, [{ stop: 'T27', kind: 'native', name: 'graph_connect', message: 'The tour opens nothing.' }]);
+  assert.equal(out.stops[0].pass, false);
+  assert.match(checkOf(out.stops[0], 'refused').detail, /native graph_connect \(The tour opens nothing\.\)/);
+  assert.equal(out.stops[1].pass, true);
+  assert.equal(checkOf(out.stops[1], 'refused'), undefined, 'a stop with nothing refused or expected has no refused check');
+});
+
+test('a refusal the stop expects passes it, and is still reported', async () => {
+  const invoke = fakeInvoke({ native: () => [{ kind: 'native', name: 'graph_connect', message: 'The tour opens nothing.' }] });
+  const h = harness({ doc: withRows(), invoke, stops: [stop('T27', { expectRefused: ['graph_connect'] })] });
+  const out = await h.run();
+  assert.equal(out.stops[0].pass, true, JSON.stringify(out.stops[0].checks));
+  assert.deepEqual(out.refused, [{ stop: 'T27', kind: 'native', name: 'graph_connect', message: 'The tour opens nothing.', expected: true }]);
+  assert.equal(checkOf(out.stops[0], 'refused').pass, true);
+});
+
+test('an expected refusal that never happened fails its stop', async () => {
+  const h = harness({ doc: withRows(), stops: [stop('T27', { expectRefused: ['graph_connect'] })] });
+  const out = await h.run();
+  assert.equal(out.stops[0].pass, false);
+  assert.match(checkOf(out.stops[0], 'refused').detail, /graph_connect was expected but not refused/);
 });
 
 test('a thrown check fails only its stop', async () => {
