@@ -53,6 +53,19 @@ const openImport = async (page, settled, folder = SKILLS) => {
 };
 /** Scrolls `selector` to the top of the page's scroller, for a screenshot of what lies below. */
 const scrollTo = (page, selector) => page.locator(selector).evaluate(el => el.scrollIntoView({ block: 'start' }));
+/** A provider that can't look facts up keeps the saved choice, disabled, with `hint`; a click on
+ *  it sends no voice_set (review fix: spec §6, drafts from the copy get no facts). */
+const factsHeld = async (page, hint) => {
+  const box = page.locator('[data-voice-facts]');
+  if (!(await box.isChecked())) throw new Error('the facts checkbox lost its saved value');
+  if (!(await box.isDisabled())) throw new Error('the facts checkbox is enabled although drafts get no facts');
+  const got = squash(await text(page, '#ws-voice-facts-hint'));
+  if (got !== hint) throw new Error(`facts hint: ${got}`);
+  await box.click({ force: true }).catch(() => {});
+  await page.waitForTimeout(200);
+  const sets = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'voice_set').length);
+  if (sets !== 0) throw new Error(`a click on the held facts checkbox sent ${sets} voice_set`);
+};
 const toastText = page => page.locator('.ws-toast').allInnerTexts().then(list => list.map(squash));
 
 export async function voiceChecks({ open, check, assert, shot, settled, calls, OUT: _OUT }) {
@@ -116,10 +129,12 @@ export async function voiceChecks({ open, check, assert, shot, settled, calls, O
       unavailable: async page => {
         const line = squash(await text(page, '#ws-voice-state-plugin_knowledge'));
         assert(line === `Knowledge isn't answering. Drafts use Connect's copy from ${COPY_AT}.`, `unavailable line: ${line}`);
+        await factsHeld(page, "Knowledge isn't available, so drafts get no facts.");
       },
       pluginOff: async page => {
         assert(squash(await text(page, '#ws-voice-state-plugin_knowledge')) === 'Turned off in Settings › Plugins', 'plugin off line');
         assert(squash(await text(page, '[data-action="voice-turn-on"]')) === 'Turn on', 'Turn on button');
+        await factsHeld(page, 'Knowledge is turned off, so drafts get no facts.');
       },
       loading: async page => {
         assert(squash(await text(page, '#ws-voice-state-plugin_knowledge')) === 'Starting Knowledge…', 'loading line');

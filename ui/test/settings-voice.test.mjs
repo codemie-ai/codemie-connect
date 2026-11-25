@@ -97,6 +97,20 @@ test('every state from voice-states.json draws its copy', () => {
   assert.match(voiceCard(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), { now: NOW }), /value="off"[^>]*checked/);
 });
 
+test('a provider turned off or not available keeps the saved facts choice, disabled, and says drafts get no facts', () => {
+  const off = draw('pluginOff');
+  assert.match(off, /<input type="checkbox" data-voice-facts data-action="voice-facts" checked disabled aria-describedby="ws-voice-facts-hint">/);
+  assert.equal(text(part(off, 'id="ws-voice-facts-hint"')), 'Knowledge is turned off, so drafts get no facts.');
+  const away = draw('unavailable');
+  assert.match(away, /<input type="checkbox" data-voice-facts data-action="voice-facts" checked disabled aria-describedby="ws-voice-facts-hint">/);
+  assert.equal(text(part(away, 'id="ws-voice-facts-hint"')), "Knowledge isn't available, so drafts get no facts.");
+  // A saved "off" stays unticked while held.
+  const savedOff = draw('pluginOff', {}, s => { s.replyVoice.facts.on = false; return s; });
+  assert.match(savedOff, /<input type="checkbox" data-voice-facts data-action="voice-facts" disabled aria-describedby="ws-voice-facts-hint">/);
+  // Ready keeps it enabled with the normal hint.
+  assert.match(draw('ready'), /<input type="checkbox" data-voice-facts data-action="voice-facts" checked aria-describedby="ws-voice-facts-hint">/);
+});
+
 test('the style head is read-only and Edit opens only the card text', () => {
   const html = draw('ready');
   const head = part(html, 'data-voice-style-head');

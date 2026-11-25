@@ -166,14 +166,22 @@ function providerSection(v) {
 }
 
 /** "Add facts from <name>" (only with a plugin chosen): disabled with "<name> doesn't look up
- *  facts." when the loaded provider offers no `facts` op. */
+ *  facts." when the loaded provider offers no `facts` op, and held at its saved value with a
+ *  "drafts get no facts" hint while the provider is turned off or isn't available. */
 function factsRow(v) {
   const { info, name, rv } = v;
   const notOffered = !!info && info.on !== false && info.ready !== false && info.facts === false;
+  // Turned off, or not answering: drafts use the copy and get no facts (§6), so the saved choice
+  // is shown held, not changeable.
+  const turnedOff = !!info && info.on === false;
+  const away = !turnedOff && rv.state === 'unavailable';
   const hint = notOffered ? `${name} doesn't look up facts.`
-    : `Before each draft, Connect sends ${name} the names, codes and amounts it finds in the message, never the message, and adds the notes it finds.`;
+    : turnedOff ? `${name} is turned off, so drafts get no facts.`
+      : away ? `${name} isn't available, so drafts get no facts.`
+        : `Before each draft, Connect sends ${name} the names, codes and amounts it finds in the message, never the message, and adds the notes it finds.`;
   const checked = !notOffered && rv.facts?.on !== false;
-  return `<div class="ws-voice-facts"><label class="ws-check"><input type="checkbox" data-voice-facts data-action="voice-facts"${checked ? ' checked' : ''}${notOffered ? ' disabled' : ''} aria-describedby="ws-voice-facts-hint"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>${e(`Add facts from ${name}`)}</span><small id="ws-voice-facts-hint">${e(hint)}</small></span></label></div>`;
+  const disabled = notOffered || turnedOff || away;
+  return `<div class="ws-voice-facts"><label class="ws-check"><input type="checkbox" data-voice-facts data-action="voice-facts"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''} aria-describedby="ws-voice-facts-hint"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>${e(`Add facts from ${name}`)}</span><small id="ws-voice-facts-hint">${e(hint)}</small></span></label></div>`;
 }
 
 const offNote = 'Choose where your voice comes from first.';
