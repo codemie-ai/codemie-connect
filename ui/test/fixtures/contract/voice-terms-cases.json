@@ -1,0 +1,120 @@
+[
+  {
+    "expected": [
+      "EPM-1234",
+      "SOW-77"
+    ],
+    "name": "ticket id and code kept",
+    "skip": [],
+    "subject": "Budget",
+    "text": "Can we move EPM-1234 and SOW-77 forward?"
+  },
+  {
+    "expected": [
+      "QBR"
+    ],
+    "name": "acronym kept",
+    "skip": [],
+    "subject": "Budget",
+    "text": "Let's prep for the QBR next week."
+  },
+  {
+    "expected": [
+      "Atlas Rollout"
+    ],
+    "name": "a name run kept mid-sentence",
+    "skip": [],
+    "subject": "Budget",
+    "text": "The team agreed that Atlas Rollout is on track."
+  },
+  {
+    "expected": [],
+    "name": "a greeting at a sentence start is dropped",
+    "skip": [],
+    "subject": "",
+    "text": "Hello there, let's talk tomorrow."
+  },
+  {
+    "expected": [],
+    "name": "weekdays and months are dropped",
+    "skip": [],
+    "subject": "",
+    "text": "Monday works, or December if that is easier."
+  },
+  {
+    "expected": [
+      "$12,000",
+      "15k EUR"
+    ],
+    "name": "amounts kept: a currency sign and a k suffix with a code",
+    "skip": [],
+    "subject": "",
+    "text": "The budget is $12,000 this quarter, or about 15k EUR."
+  },
+  {
+    "expected": [],
+    "name": "an address, a phone number and a URL are never terms",
+    "skip": [
+      "Priya Nair"
+    ],
+    "subject": "",
+    "text": "Reach Priya at priya.n@example.test or +1 555 0100, details at https://example.test/x."
+  },
+  {
+    "expected": [
+      "Atlas Rollout"
+    ],
+    "name": "the sender's and the user's names are dropped",
+    "skip": [
+      "Priya Nair",
+      "Taylor Reed"
+    ],
+    "subject": "",
+    "text": "Priya Nair asked Taylor Reed to confirm the Atlas Rollout date."
+  },
+  {
+    "expected": [],
+    "name": "a short reply with only a greeting and a name yields no terms",
+    "skip": [
+      "Priya Nair"
+    ],
+    "subject": "",
+    "text": "Thanks Priya, see you"
+  },
+  {
+    "expected": [
+      "ABC-111",
+      "QBR",
+      "CODE-222",
+      "CODE-333",
+      "CODE-444",
+      "CODE-555",
+      "CODE-666",
+      "CODE-777",
+      "CODE-888",
+      "CODE-999"
+    ],
+    "name": "duplicates fold case-insensitively, order of appearance, capped at 10",
+    "skip": [],
+    "subject": "",
+    "text": "atlas rollout ABC-111 ABC-111 abc-111 QBR QBR CODE-222 CODE-333 CODE-444 CODE-555 CODE-666 CODE-777 CODE-888 CODE-999"
+  },
+  {
+    "expected": [
+      "Проект Атлас"
+    ],
+    "name": "cyrillic names kept",
+    "skip": [],
+    "subject": "",
+    "text": "Команда обсудила, что Проект Атлас идёт по плану."
+  },
+  {
+    "expected": [
+      "Atlas Rollout"
+    ],
+    "name": "a sentence-start run elsewhere in the text is kept",
+    "skip": [],
+    "subject": "",
+    "text": "Atlas Rollout starts Monday. We discussed Atlas Rollout again today."
+  }
+]

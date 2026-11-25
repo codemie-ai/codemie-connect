@@ -1,0 +1,254 @@
+[
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "projects/atlas-rollout.md",
+          "text": "On track.",
+          "title": "Atlas rollout"
+        }
+      ]
+    },
+    "expected": {
+      "cut": false,
+      "facts": [
+        {
+          "id": "projects/atlas-rollout.md",
+          "text": "On track.",
+          "title": "Atlas rollout"
+        }
+      ]
+    },
+    "name": "within the limits, nothing cut",
+    "wantCut": false,
+    "wantIds": [
+      "projects/atlas-rollout.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "p0.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p1.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p2.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p3.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p4.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p5.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p6.md",
+          "text": "x",
+          "title": "P"
+        }
+      ]
+    },
+    "expected": {
+      "cut": true,
+      "facts": [
+        {
+          "id": "p0.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p1.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p2.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p3.md",
+          "text": "x",
+          "title": "P"
+        },
+        {
+          "id": "p4.md",
+          "text": "x",
+          "title": "P"
+        }
+      ]
+    },
+    "name": "more than MAX_FACTS offered, kept to 5",
+    "wantCut": true,
+    "wantIds": [
+      "p0.md",
+      "p1.md",
+      "p2.md",
+      "p3.md",
+      "p4.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "../x",
+          "text": "x",
+          "title": "Escape"
+        },
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "expected": {
+      "cut": true,
+      "facts": [
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "name": "a parent-escape id is dropped",
+    "wantCut": true,
+    "wantIds": [
+      "ok.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "/etc/x",
+          "text": "x",
+          "title": "Absolute"
+        },
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "expected": {
+      "cut": true,
+      "facts": [
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "name": "an absolute id is dropped",
+    "wantCut": true,
+    "wantIds": [
+      "ok.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "a\\b",
+          "text": "x",
+          "title": "Backslash"
+        },
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "expected": {
+      "cut": true,
+      "facts": [
+        {
+          "id": "ok.md",
+          "text": "x",
+          "title": "Ok"
+        }
+      ]
+    },
+    "name": "a backslash id is dropped",
+    "wantCut": true,
+    "wantIds": [
+      "ok.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": [
+        {
+          "id": "p.md",
+          "text": "one",
+          "title": "First"
+        },
+        {
+          "id": "p.md",
+          "text": "two",
+          "title": "Second"
+        }
+      ]
+    },
+    "expected": {
+      "cut": true,
+      "facts": [
+        {
+          "id": "p.md",
+          "text": "one",
+          "title": "First"
+        }
+      ]
+    },
+    "name": "a duplicate id is dropped",
+    "wantCut": true,
+    "wantIds": [
+      "p.md"
+    ]
+  },
+  {
+    "answer": {
+      "facts": []
+    },
+    "expected": {
+      "cut": false,
+      "facts": []
+    },
+    "name": "no facts gives no facts",
+    "wantCut": false,
+    "wantIds": []
+  },
+  {
+    "answer": {},
+    "expected": {
+      "cut": false,
+      "facts": []
+    },
+    "name": "a malformed answer gives no facts",
+    "wantCut": false,
+    "wantIds": []
+  }
+]
