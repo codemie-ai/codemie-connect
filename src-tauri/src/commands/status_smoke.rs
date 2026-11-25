@@ -4,8 +4,10 @@
 //! - `status`: Connect boots as the user's own launch does (their data folder, unless
 //!   `CODEMIE_WORKSPACE_TEST_DIR` names another), waits for the workspace, the first sync and the
 //!   plugin manager, and reports what it found: the version, the Claude profiles and routes, the
-//!   data folder, the plugins and whether they loaded, the workspace's counts, what needs
-//!   attention and whether the CodeMie setup sheet would open (`ui/workspace/status-smoke.js`).
+//!   data folder, the plugins and whether they loaded, the workspace's counts, the voice copy's
+//!   counts and state (reply-voice design ruling 22: never its style, rule or people text), what
+//!   needs attention and whether the CodeMie setup sheet would open
+//!   (`ui/workspace/status-smoke.js`).
 //! - `live`: the same report, then the checks the owner approved, through the workspace ops the
 //!   UI uses: one AI draft (discarded), one thread summary (removed) and one Morning brief run.
 //!   Nothing is sent, posted or written to the calendar.
@@ -344,6 +346,7 @@ fn facts(app: &AppHandle) -> Value {
         None => json!({"settled": core.is_none(), "running": false}),
     };
     let menu_bar = core.as_ref().map(|c| menu_bar_facts(app, c));
+    let voice = core.as_ref().map(|c| voice_facts(c));
     json!({
         "workspaceOpen": core.is_some(),
         "storage": storage,
@@ -351,6 +354,27 @@ fn facts(app: &AppHandle) -> Value {
         "rows": rows,
         "plugins": plugins,
         "menuBar": menu_bar,
+        "voice": voice,
+    })
+}
+
+/// The report's `voice` part (reply-voice design ruling 22, task 8): the snapshot's
+/// `replyVoice`, cut to counts and bools only — never the style, rule or people text it carries
+/// for Settings › Your voice and the composer.
+pub(crate) fn voice_facts(core: &crate::workspace::Core) -> Value {
+    let Ok(settings) = core.repo().and_then(|r| r.settings()) else {
+        return Value::Null;
+    };
+    let v = core.voice_snapshot(&settings);
+    json!({
+        "provider": v["provider"],
+        "state": v["state"],
+        "copy": v["copy"],
+        "people": v["people"].as_array().map_or(0, Vec::len),
+        "rules": v["rules"].as_array().map_or(0, Vec::len),
+        "style": v["style"].is_object(),
+        "facts": v["facts"]["on"],
+        "refreshedAt": v["refreshedAt"],
     })
 }
 
@@ -802,6 +826,7 @@ fn build_report(i: Inputs) -> Value {
         "rows": i.facts["rows"],
         "plugins": i.facts["plugins"],
         "menuBar": i.facts["menuBar"],
+        "voice": i.facts["voice"],
         "ai": ai_summary(&i.ai),
         "window": window,
         "pass": failed.is_empty(),
@@ -1043,6 +1068,116 @@ mod tests {
             "rows": {"records.message": 120, "jobs": 9},
             "plugins": {"settled": true, "installed": [], "loaded": [], "problems": {}},
         })
+    }
+
+    /// Task 8 (ruling 22): a ready copy's `voice` part is counts and bools only — a profile's
+    /// name/about, a rule's text and the style's text all carry the sentinel, yet neither it nor
+    /// an `@` reaches `voice_facts` or the whole report.
+    #[test]
+    fn status_smoke_reports_voice_counts_only() {
+        use crate::testing::{claude_profile, core as test_core, FakeRunner};
+        use crate::workspace::voice::{copy, fake::FakeVoice, VoiceInfo, VoiceState};
+        const SENTINEL: &str = "VOICE_SENTINEL_9f3a";
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            vec![claude_profile()],
+        );
+
+        let person = |n: usize| copy::Person {
+            id: format!("p{n}"),
+            name: format!("Person {n} {SENTINEL}"),
+            names: Vec::new(),
+            addresses: vec![format!("p{n}@example.test")],
+            ids: Vec::new(),
+            text: format!("Role notes. {SENTINEL}"),
+            about: format!("Prefers mornings. {SENTINEL}"),
+            updated_at: "2026-11-24T09:00:00Z".into(),
+            source: "People/p.md".into(),
+        };
+        let rule = |n: usize| copy::Rule {
+            id: format!("r{n}"),
+            applies: copy::Applies {
+                kind: copy::AppliesKind::Everyone,
+                value: None,
+                channel: None,
+            },
+            text: format!("Rule {n}. {SENTINEL}"),
+            source: "Voice/rules.md".into(),
+            editable: true,
+        };
+        let c = copy::Copy {
+            provider: "plugin:knowledge".into(),
+            refreshed_at: 1_764_000_000,
+            state: VoiceState::Ready,
+            style: Some(copy::Style {
+                text: format!("Short and direct. {SENTINEL}"),
+                updated_at: "2026-11-24T09:00:00Z".into(),
+                source: "Voice/style.md".into(),
+                based_on: None,
+                head: None,
+            }),
+            rules: (0..6).map(rule).collect(),
+            people: (0..3).map(person).collect(),
+        };
+        copy::replace(
+            &mut core.repo().unwrap(),
+            "plugin:knowledge",
+            &c,
+            1_764_000_000,
+        )
+        .unwrap();
+
+        let mut r = core.repo().unwrap();
+        let mut settings = r.settings().unwrap();
+        settings.voice.provider = "plugin:knowledge".into();
+        r.settings_update(&settings).unwrap();
+        drop(r);
+
+        let fake = Arc::new(FakeVoice::new());
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: true,
+        }]);
+        core.set_voice_providers(fake);
+
+        let voice = voice_facts(&core);
+        assert_eq!(
+            voice,
+            json!({
+                "provider": "plugin:knowledge",
+                "state": "ready",
+                "copy": true,
+                "people": 3,
+                "rules": 6,
+                "style": true,
+                "facts": true,
+                "refreshedAt": 1_764_000_000,
+            }),
+            "{voice:#}"
+        );
+        let voice_dump = voice.to_string();
+        assert!(!voice_dump.contains(SENTINEL), "{voice_dump}");
+        assert!(!voice_dump.contains('@'), "{voice_dump}");
+
+        let mut f = facts();
+        f["voice"] = voice;
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        });
+        let dump = report.to_string();
+        assert!(!dump.contains(SENTINEL), "{dump}");
+        assert!(!dump.contains('@'), "{dump}");
     }
 
     #[test]
