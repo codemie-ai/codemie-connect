@@ -35,6 +35,21 @@ pub struct Seed {
     pub records: Vec<Record>,
     pub seen: Value,
     pub provider: ProviderSeed,
+    /// Plugins installed and on before the app starts (the tour's plugin-frame stop): their
+    /// files, written under `<test dir>/plugins/installed/<id>/<version>/`.
+    #[serde(default)]
+    pub plugins: Vec<PluginSeed>,
+}
+
+/// One seeded plugin: its id and version, its files by name (flat, text) and the `uses` keys
+/// its permission sheet is agreed to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSeed {
+    pub id: String,
+    pub version: String,
+    pub files: std::collections::BTreeMap<String, String>,
+    pub agreed: Vec<String>,
 }
 
 /// The seeded task provider (design § 4's "Task provider" row): what `available` answers, and
@@ -312,6 +327,90 @@ fn check_paths(seed: &Seed, test_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A seeded plugin's id is a valid plugin id, its version one plain folder name, and each of its
+/// files one plain name in that folder: nothing it names lands outside
+/// `<test dir>/plugins/installed/<id>/<version>/`.
+fn check_plugins(plugins: &[PluginSeed]) -> Result<()> {
+    let plain = |name: &str| {
+        !name.is_empty()
+            && !name.contains(['/', '\\'])
+            && matches!(
+                Path::new(name).components().collect::<Vec<_>>()[..],
+                [Component::Normal(_)]
+            )
+    };
+    for (i, p) in plugins.iter().enumerate() {
+        let version_ok = plain(&p.version)
+            && p.version
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'));
+        if !crate::plugins::valid_id(&p.id) || !version_ok {
+            return Err(refused(
+                "A seeded plugin needs a valid id and version.",
+                format!("plugins[{i}]"),
+            ));
+        }
+        if p.files.keys().any(|name| !plain(name)) {
+            return Err(refused(
+                "A seeded plugin's files must sit in its own folder.",
+                format!("plugins[{i}].files"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Writes each seeded plugin's files and records it in the plugin registry, installed and on,
+/// with its permission sheet agreed to, as an install from a local folder would.
+fn install_plugins(test_dir: &Path, plugins: &[PluginSeed]) -> Result<()> {
+    use crate::plugins::registry::{
+        now as installed_now, Installed, PluginPaths, Registry, Source,
+    };
+    let paths = PluginPaths::new(test_dir, test_dir);
+    let io = |e: std::io::Error| {
+        WorkspaceError::new(
+            "validation",
+            format!("A seeded plugin can't be written: {e}"),
+        )
+    };
+    for p in plugins {
+        let dir = paths.installed().join(&p.id).join(&p.version);
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        for (name, text) in &p.files {
+            std::fs::write(dir.join(name), text).map_err(io)?;
+        }
+        let hash = crate::plugins::tree::tree_hash(&dir).map_err(|e| {
+            WorkspaceError::new(
+                "validation",
+                format!("A seeded plugin can't be read back: {e:?}"),
+            )
+        })?;
+        let mut agreed = p.agreed.clone();
+        agreed.sort();
+        Registry::update(&paths, |r| {
+            r.installed.insert(
+                p.id.clone(),
+                Installed {
+                    version: p.version.clone(),
+                    market: "tour".into(),
+                    source: Source::Local {
+                        path: test_dir.to_path_buf(),
+                    }
+                    .text(),
+                    commit: None,
+                    hash,
+                    enabled: true,
+                    agreed,
+                    agreed_text: Default::default(),
+                    installed_at: installed_now(),
+                },
+            );
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 /// Imports `<test_dir>/tour-seed.json` into `<test_dir>/workspace.sqlite` (`CorePaths::database`
 /// for that root, with no custom data folder) before `Core::open_tour` opens it: `settings`,
 /// each connection and workspace, then every record, then the `menu_bar_seen` record built from
@@ -335,6 +434,7 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
         )
     })?;
     check_paths(&seed, test_dir)?;
+    check_plugins(&seed.plugins)?;
 
     let paths = CorePaths {
         data: test_dir.to_path_buf(),
@@ -361,6 +461,8 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
         updated_at: now(),
         data: seed.seen,
     })?;
+
+    install_plugins(test_dir, &seed.plugins)?;
 
     let counts = SeedCounts {
         records: seed.records.len(),
@@ -440,6 +542,84 @@ mod tests {
                 }],
                 remote: vec![json!({"id": "9001", "title": "Check something", "done": false})],
             },
+            plugins: vec![],
+        }
+    }
+
+    fn hello(files: &[(&str, &str)]) -> PluginSeed {
+        PluginSeed {
+            id: "hello".into(),
+            version: "1.0.0".into(),
+            files: files
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            agreed: vec!["network".into()],
+        }
+    }
+
+    #[test]
+    fn import_installs_a_seeded_plugin_turned_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        seed.plugins = vec![hello(&[
+            (
+                "echo-plugin.json",
+                r#"{"id":"hello","version":"1.0.0","main":"main.js"}"#,
+            ),
+            ("main.js", "export function apply(ctx) {}"),
+        ])];
+        write_seed(dir.path(), &seed);
+        import(dir.path()).unwrap();
+
+        let paths = crate::plugins::registry::PluginPaths::new(dir.path(), dir.path());
+        let installed = paths.installed().join("hello").join("1.0.0");
+        assert_eq!(
+            std::fs::read_to_string(installed.join("main.js")).unwrap(),
+            "export function apply(ctx) {}"
+        );
+        let reg = crate::plugins::registry::Registry::load(&paths).unwrap();
+        let p = &reg.installed["hello"];
+        assert!(p.enabled);
+        assert_eq!(p.version, "1.0.0");
+        assert_eq!(p.agreed, vec!["network".to_string()]);
+        assert_eq!(p.hash, crate::plugins::tree::tree_hash(&installed).unwrap());
+    }
+
+    #[test]
+    fn import_refuses_a_plugin_file_outside_its_folder() {
+        for name in ["../x.js", "sub/x.js", "/tmp/x.js", "", ".."] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut seed = seed_with(vec![]);
+            seed.plugins = vec![hello(&[(name, "x")])];
+            write_seed(dir.path(), &seed);
+            let e = expect_refusal(dir.path());
+            assert_eq!(e.code, "validation", "{name}");
+            assert_eq!(e.field.as_deref(), Some("plugins[0].files"), "{name}");
+            assert!(
+                !dir.path().join("workspace.sqlite").exists(),
+                "{name}: nothing written"
+            );
+        }
+    }
+
+    #[test]
+    fn import_refuses_a_bad_plugin_id_or_version() {
+        for (id, version) in [
+            ("../hello", "1.0.0"),
+            ("Hello", "1.0.0"),
+            ("hello", "../1"),
+            ("hello", ""),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut seed = seed_with(vec![]);
+            let mut p = hello(&[("main.js", "x")]);
+            p.id = id.into();
+            p.version = version.into();
+            seed.plugins = vec![p];
+            write_seed(dir.path(), &seed);
+            let e = expect_refusal(dir.path());
+            assert_eq!(e.field.as_deref(), Some("plugins[0]"), "{id} {version}");
         }
     }
 

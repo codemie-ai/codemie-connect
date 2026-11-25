@@ -23,6 +23,15 @@ function contract(name) {
   return JSON.parse(readFileSync(url, 'utf8'));
 }
 
+/** The synthetic `hello` plugin of the browser run (`ui/test/fixtures/plugins/hello`), as a seeded
+ *  install: its files, and its permission sheet's `uses` keys agreed to. */
+function helloPlugin() {
+  const dir = new URL('../../ui/test/fixtures/plugins/hello/', import.meta.url);
+  const files = Object.fromEntries(readdirSync(dir).sort().map(name => [name, readFileSync(new URL(name, dir), 'utf8')]));
+  const manifest = JSON.parse(files['echo-plugin.json']);
+  return { id: manifest.id, version: manifest.version, files, agreed: Object.keys(manifest.uses || {}).sort() };
+}
+
 /**
  * The ids the tour script (Task 5, `ui/workspace/tour/script.js`) routes to and checks for.
  * `triageRun` and `fallbackRun` name the same record: Inbox triage's own run both makes the two
@@ -67,6 +76,10 @@ export function buildSeed(testDir, nowMs) {
   // concept), and the one real parked sentence (task-sync-cases.json), both spec § 4 "Tasks".
   const pendingTask = s.records.find(r => r.id === 'task-legal-req');
   if (pendingTask) pendingTask.data.pending = true;
+  // Tasks: one Todoist task due in 20 days, so By date's "Later than that" fold has a row too
+  // (the tour's Tasks stop checks all three folds).
+  const laterTask = s.records.find(r => r.id === 'commit-2');
+  if (laterTask) laterTask.data.due = new Date(nowMs + 20 * 86_400_000).toISOString().slice(0, 10);
   const parked = contract('task-sync-cases').parked;
   const parkedIds = new Set(parked.map(r => r.id));
   s.records = s.records.filter(r => !parkedIds.has(r.id));
@@ -100,6 +113,18 @@ export function buildSeed(testDir, nowMs) {
   if (triageRun) {
     triageRun.data.fallbackFrom = 'codemie:local-ollama';
     triageRun.data.fallbackReason = 'failed';
+  }
+
+  // Inbox: native files a message under Critical only through a critical rule (keyword and
+  // sender, workspace/inbox.rs), where the browser run's fixture sets the lane directly; this is
+  // the rule that makes the seeded production alert the one unacknowledged critical message.
+  const critical = s.records.find(r => r.id === SEED_IDS.critical);
+  if (critical) {
+    s.records.push({
+      id: 'rule-production-alert', kind: 'rule', connectionId: null, workspaceId: 'personal', source: 'local',
+      revision: 'l-rule-production-alert', updatedAt: now - 86_400,
+      data: { text: 'Critical: Production alert', keyword: 'Production alert', sender: critical.data.fromAddress, lane: 'critical', enabled: true },
+    });
   }
 
   // Microsoft: Send buttons show (spec § 4 "Microsoft").
@@ -157,6 +182,9 @@ export function buildSeed(testDir, nowMs) {
           done: r.data.status === 'done', kind: 'task', owner: null, labels: [],
         })),
     },
+    // The browser run's synthetic `hello` plugin, installed and on, so a stop shows a plugin's
+    // page in its sandboxed frame and the capture proves frames are composited (Ruling 5).
+    plugins: [helloPlugin()],
   };
 
   return { seed, folders };

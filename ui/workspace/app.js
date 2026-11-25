@@ -71,10 +71,13 @@ root.dataset.view = firstView;
 document.documentElement.dataset.view = firstView;
 const rawInvoke = window.__TAURI__?.core?.invoke;
 const invoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
+// A tour build (CODEMIE_TOUR) puts the tour's gate in front of the workspace calls: every op is
+// recorded, and one the tour's deny-list names is refused before it is sent (tour/runner.js).
+let tourGated = null;
 // Any workspace call that finds the data folder unusable switches to the recovery page.
 const watched = invoke && (async (cmd, args) => {
   try {
-    return await invoke(cmd, args);
+    return await (tourGated || invoke)(cmd, args);
   } catch (err) {
     if (err?.code === 'storage_unavailable') showRecovery(err);
     throw err;
@@ -175,6 +178,8 @@ function claudeProfileReady() {
 }
 let legacyModule;
 let ready = false;
+/** A tour build walking its stops (CODEMIE_TOUR). */
+let touring = false;
 let deferredNotification;
 let calendarScrollKey = '';
 let noteTimer;
@@ -880,7 +885,8 @@ const pluginsUi = createPluginsController({
     state.installedPlugins = list;
     state.pluginsKnown = true;
     pluginHost?.sync(list);
-    if (active?.startsWith('plugin:') && !stillIs) {
+    // A tour's task provider is the test double, with no plugin behind it: nothing was removed.
+    if (active?.startsWith('plugin:') && !stillIs && !touring) {
       mutate('task_provider_set', { provider: 'local' })
         .then(() => toast(`${removedName || 'That plugin'} was removed, so tasks are back in Connect.`, 'info'))
         .catch(fail);
@@ -3499,6 +3505,13 @@ async function boot() {
   }
   root.innerHTML = `<div class="ws-loading" role="status"><span class="ws-spinner"></span>Opening your workspace…</div>`;
   const flags = await invoke('smoke_mode');
+  // CODEMIE_TOUR (a tour build only): the app boots on the tour's seeded folder, without the
+  // CodeMie CLI, the setup sheet or the update check, then walks the tour's stops and reports.
+  touring = !!flags.tour;
+  const tour = touring ? await import('./tour/runner.js') : null;
+  const tourOps = [];
+  const tourRefused = [];
+  if (tour) tourGated = tour.gate(invoke, { ops: tourOps, refused: tourRefused });
   if (flags.plugin === 'isolation') {
     const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
     return runIsolationSmoke(invoke, { runId: flags.plugin_run_id });
@@ -3621,7 +3634,7 @@ async function boot() {
   // smoke runs on its own data root and tests plugins only: it runs no CodeMie CLI command.
   // The status smoke says whether the first-launch sheet would open: the prefs before boot decide.
   const setupBefore = statusSmoke ? codemie.prefs() : null;
-  const codemieBooted = marketSmoke ? null : codemie.boot().catch(fail);
+  const codemieBooted = marketSmoke || tour ? null : codemie.boot().catch(fail);
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
@@ -3676,7 +3689,7 @@ async function boot() {
     store.refresh().catch(() => {});
     syncTasks();
     // Back from Terminal or another app: an agent or app may have changed.
-    if (!marketSmoke) codemie.onFocus();
+    if (!marketSmoke && !tour) codemie.onFocus();
     // Back from Terminal or Settings: Claude may be signed in or set up now.
     if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;
   });
@@ -3694,8 +3707,14 @@ async function boot() {
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie, meetingsUi };
-  // A tour build (CODEMIE_TOUR) hands the tour its invoke: the runner drives the app through it.
-  if (flags.tour) window.__tour = { invoke };
+  if (tour) {
+    const report = await tour.runTour({
+      invoke, goHash, store, mutate, doc: document, raf: fn => requestAnimationFrame(fn),
+      only: flags.tour, runId: flags.tour_run_id, ops: tourOps, refused: tourRefused,
+    });
+    // Rust adds its view, writes the verdict and quits.
+    return invoke('tour_report', { report });
+  }
   if (smoke) {
     const report = await smoke.runMarketSmoke({
       invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,
@@ -3722,7 +3741,7 @@ async function boot() {
     // Rust adds its view, writes the verdict and quits.
     return invoke('smoke_status_report', { report });
   }
-  if (shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
+  if (!tour && shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
 }
 
 boot().catch(err => {

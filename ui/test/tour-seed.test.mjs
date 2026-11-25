@@ -111,3 +111,30 @@ test('the CLI refuses a non-empty folder', () => {
   const result = spawnSync(process.execPath, [SCRIPT, dir]);
   assert.equal(result.status, 1);
 });
+
+test('the seed installs the synthetic hello plugin, its sheet agreed to, and a task due in 20 days', () => {
+  const { seed } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
+  assert.equal(seed.plugins.length, 1);
+  const [hello] = seed.plugins;
+  assert.equal(hello.id, 'hello');
+  assert.equal(hello.version, '1.0.0');
+  assert.deepEqual(Object.keys(hello.files).sort(), ['client.js', 'echo-plugin.json', 'main.js']);
+  assert.deepEqual(hello.agreed, ['network', 'signin']);
+  const later = seed.records.find(r => r.id === 'commit-2');
+  assert.equal(later.data.provider, 'plugin:todoist');
+  assert.equal(later.data.due, new Date(NOW + 20 * 86_400_000).toISOString().slice(0, 10));
+});
+
+test('a critical rule makes the seeded critical message Critical in native terms too', () => {
+  const { seed } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
+  const critical = seed.records.find(r => r.id === SEED_IDS.critical);
+  const rules = seed.records.filter(r => r.kind === 'rule');
+  assert.equal(rules.length, 1);
+  const [rule] = rules;
+  assert.equal(rule.workspaceId, 'personal');
+  assert.equal(rule.connectionId, null);
+  assert.equal(rule.data.lane, 'critical');
+  assert.equal(rule.data.enabled, true);
+  assert.equal(rule.data.sender, critical.data.fromAddress);
+  assert.ok(critical.data.title.toLowerCase().includes(rule.data.keyword.toLowerCase()));
+});
