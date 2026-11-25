@@ -54,7 +54,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -65,7 +65,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -168,7 +168,12 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -225,7 +230,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -236,7 +241,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -339,7 +344,11 @@
       "name": "Marek Novak",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Marek Novak",
+    "wantRules": [
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -396,7 +405,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -407,7 +416,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -510,7 +519,12 @@
       "name": "  priya  NAIR ",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -567,7 +581,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -578,7 +592,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -681,7 +695,12 @@
       "name": "Nair Priya",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -738,7 +757,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -749,7 +768,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -852,7 +871,12 @@
       "name": "Prìya Nair (Contoso)",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -909,7 +933,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -920,7 +944,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1023,7 +1047,12 @@
       "name": "Alex",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1080,7 +1109,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1091,7 +1120,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1194,7 +1223,12 @@
       "name": "Someone Else",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1251,7 +1285,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1262,7 +1296,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1365,7 +1399,12 @@
       "name": "Priya N.",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1422,7 +1461,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1433,7 +1472,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1536,7 +1575,13 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Terse, lower case.",
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1593,7 +1638,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1604,7 +1649,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1707,7 +1752,12 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Formal, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1764,7 +1814,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1775,7 +1825,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -1878,7 +1928,11 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -1935,7 +1989,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -1946,7 +2000,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2039,7 +2093,7 @@
     "from": "copy",
     "name": "mail-scoped domain rule skipped on teams",
     "target": {
-      "address": null,
+      "address": "ops@bank.example.test",
       "channel": "teams",
       "chatId": null,
       "chatTitle": null,
@@ -2049,7 +2103,11 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": "Marek Novak",
+    "wantRules": [
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2106,7 +2164,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2117,7 +2175,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2220,7 +2278,12 @@
       "name": null,
       "subject": "Budget request for Q1",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Ask for the project code.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2277,7 +2340,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2288,7 +2351,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2391,7 +2454,11 @@
       "name": null,
       "subject": "A budgetary note",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2448,7 +2515,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2459,7 +2526,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2562,7 +2629,12 @@
       "name": "Someone Else",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2619,7 +2691,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2630,7 +2702,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2714,7 +2786,7 @@
         "cut": false,
         "examples": 0,
         "from": "copy",
-        "person": "Jordan Lee",
+        "person": null,
         "provider": "Knowledge",
         "rules": 2,
         "style": false
@@ -2733,7 +2805,12 @@
       "name": "Jordan Lee",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2790,7 +2867,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2801,7 +2878,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -2885,7 +2962,7 @@
         "cut": false,
         "examples": 0,
         "from": "copy",
-        "person": "Jordan Lee",
+        "person": null,
         "provider": "Knowledge",
         "rules": 1,
         "style": false
@@ -2904,7 +2981,11 @@
       "name": "Jordan Lee",
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
   },
   {
     "copy": {
@@ -2961,7 +3042,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex One's profile.",
           "updatedAt": "t"
         },
         {
@@ -2972,7 +3053,7 @@
           "name": "Alex",
           "names": [],
           "source": "People",
-          "text": "",
+          "text": "Alex Two's profile.",
           "updatedAt": "t"
         }
       ],
@@ -3075,6 +3156,77 @@
       "name": null,
       "subject": "",
       "text": ""
-    }
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Terse, lower case.",
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Unscoped, for everyone."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone-teams",
+          "source": "Voice/rules.md",
+          "text": "Scoped to Teams, for everyone."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"everyone · teams\">Scoped to Teams, for everyone.</rule>\n<rule applies=\"everyone\">Unscoped, for everyone.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "a channel-scoped rule comes before an unscoped rule of the same kind",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Scoped to Teams, for everyone.",
+      "Unscoped, for everyone."
+    ]
   }
 ]

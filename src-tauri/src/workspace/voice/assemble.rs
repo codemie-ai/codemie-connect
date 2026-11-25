@@ -15,7 +15,10 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use unicode_normalization::UnicodeNormalization;
 
-/// At most this many characters of voice in the whole `<voice>` block (spec §4's budget table).
+/// At most this many characters of voice *text* (spec §4's budget table: the other four shares
+/// below sum to exactly this). The rendered `<voice>` block's own markup — tags, each rule's
+/// `applies` attribute, the person's name — is not counted against it, so the block itself can
+/// run a little over this figure; nothing here clamps the whole block to it.
 pub const MAX_VOICE: usize = 9_000;
 /// The style card's share (head first).
 pub const MAX_STYLE: usize = 1_500;
@@ -72,7 +75,9 @@ pub struct Example {
 }
 
 /// Where the voice came from: the provider answered in time, or the copy stood in (spec §4
-/// "From no answer, needs_setup or unavailable: the copy is used", ruling 20's `from`).
+/// "From no answer, needs_setup or unavailable: the copy is used", ruling 20's `from`). The
+/// name is the brief's own; it shadows the prelude's `std::convert::From` trait within this
+/// module, which is harmless here since nothing in this file implements that trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum From {
@@ -110,7 +115,12 @@ pub fn target_of(
         _ => return Err(invalid("Choose an Outlook message or a Teams chat.")),
     };
     let is_mine = source.data["isMine"] == true;
-    let subject = source.data["title"].as_str().unwrap_or("").to_string();
+    // Mail has a subject; a Teams chat does not (its "title" is the chat's title, carried as
+    // `chat_title` below, not a per-message subject) — spec §4 gives Teams no subject.
+    let subject = match channel {
+        Channel::Mail => source.data["title"].as_str().unwrap_or("").to_string(),
+        Channel::Teams => String::new(),
+    };
     let text = source.data["text"].as_str().unwrap_or("").to_string();
     let language = language_of(&text).map(str::to_string);
 
@@ -351,7 +361,10 @@ fn rule_applies(rule: &Rule, target: &DraftTarget, person: Option<&Person>) -> b
             {
                 return true;
             }
-            person.is_some_and(|p| p.addresses.iter().any(|a| a.to_lowercase() == value))
+            // "to also reaches a Teams draft through the matched person's addresses" (spec
+            // §4): mail already matched directly above, via `target.address` itself.
+            target.channel == Channel::Teams
+                && person.is_some_and(|p| p.addresses.iter().any(|a| a.to_lowercase() == value))
         }
         AppliesKind::Chat => {
             let Some(value) = rule.applies.value.as_deref() else {
@@ -446,8 +459,11 @@ fn escape_angles(s: &str) -> String {
 fn clean_text(raw: &str) -> String {
     prompts::sanitize_text(&escape_angles(raw), usize::MAX)
 }
+/// Like [`clean_text`], plus `"` escaped as `&quot;`: every use of `clean_line` fills a
+/// double-quoted attribute value (a person's name, an `applies` attribute, the provider name),
+/// where an unescaped quote would otherwise close it early.
 fn clean_line(raw: &str, cap: usize) -> String {
-    prompts::sanitize_line(&escape_angles(raw), cap)
+    prompts::sanitize_line(&escape_angles(raw), cap).replace('"', "&quot;")
 }
 
 /// Cuts `s` to at most `max` characters, at a line end within the budget when there is one,
@@ -653,7 +669,10 @@ pub fn assemble(
     let provenance = json!({
         "provider": provider_name,
         "style": style_present,
-        "person": person.map(|p| p.name.clone()),
+        // Only the name of a person whose profile actually rendered — a matched person with
+        // no profile and no about (the `<person>` block itself is left out) reads as no
+        // person here too, so the two agree.
+        "person": if person_present { person.map(|p| p.name.clone()) } else { None },
         "rules": included_rules.len(),
         "examples": included_examples.len(),
         "cut": cut_any,
@@ -973,24 +992,93 @@ mod tests {
             .join("../ui/test/fixtures/contract/voice-assemble-cases.json")
     }
 
-    /// Each case: a hand-built `Copy`/`DraftTarget`/`Example`s/`From`, with `expected` computed
-    /// by calling [`assemble`] right here, so the checked-in fixture can never go stale with a
-    /// hand-typed answer. Covers spec §4 and ruling 4's matching and budget cases (person,
-    /// instructions, follow-ups).
+    /// Each case: a hand-built `Copy`/`DraftTarget`/`Example`s/`From`, plus a hand-typed,
+    /// literal `want_person`/`want_rules` — who the brief's matching table says should match,
+    /// and which rule texts should render, in order. `push` asserts those literal expectations
+    /// right here, against the real `assemble` call, *before* anything is written to the
+    /// fixture: a wrong match or a wrongly-ordered or wrongly-included rule fails this test
+    /// directly, rather than only being detectable by reading the committed JSON (the original
+    /// version of this test compared `assemble`'s own output against itself, which could never
+    /// catch that). `want_rules`'s absence is checked too: every one of `c.rules`'s texts that
+    /// is *not* named must be missing from the block, so a rule that wrongly matches is caught
+    /// as surely as one that wrongly doesn't. `expected` (the full `Assembled`) is still kept,
+    /// for the contract-fixture round trip and the budget/escaping details `want_rules` doesn't
+    /// cover.
+    #[allow(clippy::too_many_arguments)] // a test-only fixture builder; each argument is a
+                                         // distinct, named part of one case, not a tuple to
+                                         // break apart
+    fn push_case(
+        cases: &mut Vec<Value>,
+        name: &str,
+        c: &copy::Copy,
+        t: &DraftTarget,
+        examples: &[Example],
+        from: From,
+        want_person: Option<&str>,
+        want_rules: &[&str],
+    ) {
+        let expected = assemble(c, "Knowledge", t, examples, from);
+        let block = expected.as_ref().map(|a| a.block.as_str()).unwrap_or("");
+        let got_person = expected
+            .as_ref()
+            .and_then(|a| a.provenance["person"].as_str());
+        assert_eq!(got_person, want_person, "case {name:?}: matched person");
+        let mut last_pos = 0usize;
+        for text in want_rules {
+            let pos = block.find(text).unwrap_or_else(|| {
+                panic!("case {name:?}: expected rule text {text:?} missing from block:\n{block}")
+            });
+            assert!(
+                pos >= last_pos,
+                "case {name:?}: rule text {text:?} is out of order in:\n{block}"
+            );
+            last_pos = pos;
+        }
+        for r in &c.rules {
+            let included = want_rules.contains(&r.text.as_str());
+            assert_eq!(
+                block.contains(r.text.as_str()),
+                included,
+                "case {name:?}: rule {:?} ({:?}) should{} be in the block",
+                r.id,
+                r.text,
+                if included { "" } else { " not" }
+            );
+        }
+        cases.push(json!({
+            "name": name,
+            "copy": c,
+            "target": t,
+            "examples": examples,
+            "from": from,
+            "wantPerson": want_person,
+            "wantRules": want_rules,
+            "expected": expected,
+        }));
+    }
+
+    /// Covers spec §4 and ruling 4's matching and budget cases (person, instructions,
+    /// follow-ups), against the brief's own matching table, case by case.
     fn build_cases() -> Vec<Value> {
         let mut cases = Vec::new();
-        let mut push =
-            |name: &str, c: &copy::Copy, t: &DraftTarget, examples: &[Example], from: From| {
-                let expected = assemble(c, "Knowledge", t, examples, from);
-                cases.push(json!({
-                    "name": name,
-                    "copy": c,
-                    "target": t,
-                    "examples": examples,
-                    "from": from,
-                    "expected": expected,
-                }));
-            };
+        let mut push = |name: &str,
+                        c: &copy::Copy,
+                        t: &DraftTarget,
+                        examples: &[Example],
+                        from: From,
+                        want_person: Option<&str>,
+                        want_rules: &[&str]| {
+            push_case(
+                &mut cases,
+                name,
+                c,
+                t,
+                examples,
+                from,
+                want_person,
+                want_rules,
+            );
+        };
 
         // A shared cast: Priya (mail + Teams id + aliases), Jordan (mail only), Marek (Teams
         // only, no address), two people both named "Alex" (ambiguous).
@@ -1008,8 +1096,12 @@ mod tests {
         let mut marek = person("marek-novak", "Marek Novak");
         marek.ids = vec!["teams-marek".into()];
         marek.text = "Finance contact.".into();
-        let alex1 = person("alex-1", "Alex");
-        let alex2 = person("alex-2", "Alex");
+        // Both carry a profile, so a wrongly-resolved ambiguous match would show up as a
+        // rendered `<person>` (and no `no-profile` rule), not just hide behind an empty one.
+        let mut alex1 = person("alex-1", "Alex");
+        alex1.text = "Alex One's profile.".into();
+        let mut alex2 = person("alex-2", "Alex");
+        alex2.text = "Alex Two's profile.".into();
 
         let mut copy_full = empty_copy();
         copy_full.people = vec![
@@ -1056,7 +1148,15 @@ mod tests {
             ),
         ];
 
-        // Person: mail by address (case-insensitive).
+        const TO_PRIYA: &str = "Short, bullet points.";
+        const CHAT_PLATFORM: &str = "Terse, lower case.";
+        const DOMAIN_BANK: &str = "Formal, full sentences.";
+        const TOPIC_BUDGET: &str = "Ask for the project code.";
+        const NO_PROFILE_TEAMS: &str = "Polite, full sentences.";
+        const EVERYONE: &str = "Never promise a date.";
+
+        // Person: mail by address (case-insensitive). The `to` rule matches the address
+        // directly; `everyone` always applies.
         let mut t = target(Channel::Mail);
         t.address = Some("PRIYA.N@EXAMPLE.TEST".into());
         push(
@@ -1065,9 +1165,12 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            Some("Priya N."),
+            &[TO_PRIYA, EVERYONE],
         );
 
-        // Person: Teams by fromId in ids (Marek, no address).
+        // Person: Teams by fromId in ids (Marek, no address). Marek has a profile, so
+        // `no-profile` doesn't fire.
         let mut t = target(Channel::Teams);
         t.from_id = Some("teams-marek".into());
         t.name = Some("Marek Novak".into());
@@ -1077,6 +1180,8 @@ mod tests {
             &t,
             &[],
             From::Provider,
+            Some("Marek Novak"),
+            &[EVERYONE],
         );
 
         // Person: Teams by name via names, with odd casing/whitespace.
@@ -1088,12 +1193,22 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            Some("Priya N."),
+            &[TO_PRIYA, EVERYONE],
         );
 
         // Person: word order.
         let mut t = target(Channel::Teams);
         t.name = Some("Nair Priya".into());
-        push("teams name, word order", &copy_full, &t, &[], From::Copy);
+        push(
+            "teams name, word order",
+            &copy_full,
+            &t,
+            &[],
+            From::Copy,
+            Some("Priya N."),
+            &[TO_PRIYA, EVERYONE],
+        );
 
         // Person: diacritic + a trailing suffix.
         let mut t = target(Channel::Teams);
@@ -1104,9 +1219,11 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            Some("Priya N."),
+            &[TO_PRIYA, EVERYONE],
         );
 
-        // Person: two people named "Alex" → no profile.
+        // Person: two people named "Alex" → no profile; `no-profile` fires instead.
         let mut t = target(Channel::Teams);
         t.name = Some("Alex".into());
         push(
@@ -1115,6 +1232,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[NO_PROFILE_TEAMS, EVERYONE],
         );
 
         // Person: an unknown Teams name → no profile.
@@ -1126,9 +1245,12 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[NO_PROFILE_TEAMS, EVERYONE],
         );
 
-        // Rules: `to` reaching a Teams draft through Priya's matched address.
+        // Rules: `to` reaching a Teams draft through Priya's matched address (she carries no
+        // address of her own on this target; only her profile's `addresses` has it).
         let mut t = target(Channel::Teams);
         t.from_id = Some("teams-priya".into());
         t.name = Some("Priya N.".into());
@@ -1138,12 +1260,23 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            Some("Priya N."),
+            &[TO_PRIYA, EVERYONE],
         );
 
-        // Rules: chat title folded (double space, case).
+        // Rules: chat title folded (double space, case); no sender is given, so no person
+        // matches and `no-profile` also fires.
         let mut t = target(Channel::Teams);
         t.chat_title = Some("Platform Review".into());
-        push("chat rule folded", &copy_full, &t, &[], From::Copy);
+        push(
+            "chat rule folded",
+            &copy_full,
+            &t,
+            &[],
+            From::Copy,
+            None,
+            &[CHAT_PLATFORM, NO_PROFILE_TEAMS, EVERYONE],
+        );
 
         // Rules: domain matches a sub-domain but not a look-alike suffix.
         let mut t = target(Channel::Mail);
@@ -1154,6 +1287,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[DOMAIN_BANK, EVERYONE],
         );
         let mut t = target(Channel::Mail);
         t.address = Some("ops@bank.example.test.evil".into());
@@ -1163,17 +1298,25 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[EVERYONE],
         );
 
-        // Rules: a domain rule scoped to mail is skipped on Teams.
+        // Rules: a domain rule scoped to mail is skipped on Teams. The target's address is the
+        // rule's own value exactly, so if the channel check were missing, `domain-bank` would
+        // still match on address alone (as "domain rule matches a sub-domain" above proves) —
+        // the channel scope is the only reason it is absent here.
         let mut t = target(Channel::Teams);
         t.from_id = Some("teams-marek".into());
+        t.address = Some("ops@bank.example.test".into());
         push(
             "mail-scoped domain rule skipped on teams",
             &copy_full,
             &t,
             &[],
             From::Copy,
+            Some("Marek Novak"),
+            &[EVERYONE],
         );
 
         // Rules: topic needs every whole word; a substring never matches.
@@ -1185,6 +1328,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[TOPIC_BUDGET, EVERYONE],
         );
         let mut t = target(Channel::Mail);
         t.subject = "A budgetary note".into();
@@ -1194,6 +1339,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[EVERYONE],
         );
 
         // Rules: no-profile applies with no person, and with a person whose text is empty.
@@ -1205,6 +1352,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[NO_PROFILE_TEAMS, EVERYONE],
         );
         let mut t = target(Channel::Teams);
         t.address = Some("jordan@example.test".into());
@@ -1215,9 +1364,14 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            // Jordan matches (by address), but has no writing and no about, so nothing of
+            // hers renders and `person` reads `None` too (Minor #2's fix).
+            None,
+            &[NO_PROFILE_TEAMS, EVERYONE],
         );
 
-        // Follow-up to the user's own mail → the first recipient (Jordan).
+        // Follow-up to the user's own mail → the first recipient (Jordan); her empty profile
+        // again renders nothing and `person` is `None`.
         let mut t = target(Channel::Mail);
         t.address = Some("jordan@example.test".into());
         t.name = Some("Jordan Lee".into());
@@ -1227,6 +1381,8 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[EVERYONE],
         );
 
         // A group-chat follow-up: no person, and the caller passes no examples.
@@ -1238,6 +1394,35 @@ mod tests {
             &t,
             &[],
             From::Copy,
+            None,
+            &[CHAT_PLATFORM, NO_PROFILE_TEAMS, EVERYONE],
+        );
+
+        // A channel-scoped rule comes before an unscoped rule of the same kind (ruling 4, the
+        // brief's own fixture requirement): two `everyone` rules, listed unscoped first, with
+        // only `channel_rank` able to put the scoped one ahead.
+        let mut scoped_copy = empty_copy();
+        scoped_copy.rules = vec![
+            rule(
+                "everyone",
+                applies(K::Everyone, None, None),
+                "Unscoped, for everyone.",
+            ),
+            rule(
+                "everyone-teams",
+                applies(K::Everyone, None, Some(RuleChannel::Teams)),
+                "Scoped to Teams, for everyone.",
+            ),
+        ];
+        let t = target(Channel::Teams);
+        push(
+            "a channel-scoped rule comes before an unscoped rule of the same kind",
+            &scoped_copy,
+            &t,
+            &[],
+            From::Copy,
+            None,
+            &["Scoped to Teams, for everyone.", "Unscoped, for everyone."],
         );
 
         cases
@@ -1267,6 +1452,44 @@ mod tests {
             let got = assemble(&c, "Knowledge", &t, &examples, from);
             let got_json = serde_json::to_value(&got).unwrap();
             assert_eq!(got_json, case["expected"], "case {name:?}");
+
+            // The same literal, hand-typed expectations `push_case` checked when the fixture
+            // was built, re-checked here against a fresh `assemble` call and the file as
+            // committed — never against another call to `assemble` (that's the bug this test
+            // was rewritten to stop hiding).
+            let want_person = case["wantPerson"].as_str();
+            let got_person = got.as_ref().and_then(|a| a.provenance["person"].as_str());
+            assert_eq!(got_person, want_person, "case {name:?}: matched person");
+            let want_rules: Vec<&str> = case["wantRules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let block = got.as_ref().map(|a| a.block.as_str()).unwrap_or("");
+            let mut last_pos = 0usize;
+            for text in &want_rules {
+                let pos = block.find(text).unwrap_or_else(|| {
+                    panic!(
+                        "case {name:?}: expected rule text {text:?} missing from block:\n{block}"
+                    )
+                });
+                assert!(
+                    pos >= last_pos,
+                    "case {name:?}: rule text {text:?} is out of order in:\n{block}"
+                );
+                last_pos = pos;
+            }
+            for r in &c.rules {
+                let included = want_rules.contains(&r.text.as_str());
+                assert_eq!(
+                    block.contains(r.text.as_str()),
+                    included,
+                    "case {name:?}: rule {:?} should{} be in the block",
+                    r.id,
+                    if included { "" } else { " not" }
+                );
+            }
         }
     }
 
