@@ -179,26 +179,27 @@ fn write_report(run: &TourRun, result: &Value) -> Result<std::path::PathBuf, Str
 /// [`write_report`], then exits after 300 ms (so the answer reaches the caller first) with `code`
 /// on success, or 1 with a clear stderr message when `results.json` couldn't be written at all —
 /// never a silent `eprintln!` that leaves the run looking like whatever `code` would have been.
-fn finish(app: &AppHandle, run: &'static TourRun, result: Value, code: i32) -> std::path::PathBuf {
-    let app = app.clone();
-    match write_report(run, &result) {
-        Ok(path) => {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(300));
-                app.exit(code);
-            });
-            path
-        }
+/// Returns [`write_report`]'s own result, so a caller never sees a path that was never written.
+fn finish(
+    app: &AppHandle,
+    run: &'static TourRun,
+    result: Value,
+    code: i32,
+) -> Result<std::path::PathBuf, String> {
+    let written = write_report(run, &result);
+    let exit_code = match &written {
+        Ok(_) => code,
         Err(e) => {
             eprintln!("{e}");
-            let path = run.test_dir.join("tour").join("results.json");
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(300));
-                app.exit(1);
-            });
-            path
+            1
         }
-    }
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        app.exit(exit_code);
+    });
+    written
 }
 
 /// The window's own menu-bar facts (design § 5): [`live_menu_bar`] plus the applied menu's row
@@ -232,8 +233,10 @@ pub async fn tour_report(
         .map_err(|e| InstallerError::Other(e.to_string()))?;
     let result = verdict(report, run, facts);
     let code = if result["pass"] == true { 0 } else { 1 };
-    let path = finish(&app, run, result.clone(), code);
-    Ok(json!({"path": path, "pass": result["pass"], "failed": result["failed"]}))
+    match finish(&app, run, result.clone(), code) {
+        Ok(path) => Ok(json!({"path": path, "pass": result["pass"], "failed": result["failed"]})),
+        Err(e) => Err(InstallerError::Other(e)),
+    }
 }
 
 /// Arms the 600 s watchdog (design's exit codes: 2 "nothing reported within 600 s"). Only while a
@@ -248,7 +251,7 @@ pub fn arm_watchdog(app: &AppHandle) {
             return;
         }
         let result = json!({"pass": false, "failed": ["nothing reported within 600 s"]});
-        finish(&app, run, result, 2);
+        let _ = finish(&app, run, result, 2);
     });
 }
 
