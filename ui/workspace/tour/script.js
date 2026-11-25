@@ -384,7 +384,12 @@ const MORE = [
     action: [click('[data-action="plugin-remove"][data-plugin-id="todoist"]'), until('.ws-modal[open] button[type="submit"]'), { name: 'wait', arg: 900 },
       click('.ws-modal[open] button[type="submit"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'back in Connect' } }],
     checks: [
-      { name: '"Todoist was removed, so tasks are back in Connect."', selector: '.ws-toast', text: 'Todoist was removed, so tasks are back in Connect.' },
+      // Exactly one toast says it, and it says exactly this (never the removal's own "Todoist is
+      // removed. Its data is kept." success toast beside it): joining the text of every `.ws-toast`
+      // (as a plain `text` check does) would still pass with three of this one shown at once.
+      { name: '"Todoist was removed, so tasks are back in Connect." — exactly one toast', selector: '.ws-toast.ws-toast-info', count: 1, exact: 'Todoist was removed, so tasks are back in Connect.' },
+      // Design §11 ruling 16: removing a provider switches to Local once.
+      { name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 },
     ],
     covers: ['tp4.removed-local'],
   },

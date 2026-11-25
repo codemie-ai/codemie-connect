@@ -64,19 +64,22 @@ function fakeInvoke({ capture = () => ({ blank: false, sha256: String(Math.rando
   return invoke;
 }
 
-function harness({ stops, doc = fakeDoc(), invoke = fakeInvoke(), only = 'all' } = {}) {
+function harness({ stops, doc = fakeDoc(), invoke = fakeInvoke(), only = 'all', ops = [] } = {}) {
   const mutations = [];
   const routes = [];
   let settings = { view: 'default', theme: 'light' };
   return {
-    invoke, doc, mutations, routes,
+    invoke, doc, mutations, routes, ops,
     run: () => runTour({
-      invoke, doc, only, runId: 'run-1', stops,
+      invoke, doc, only, runId: 'run-1', stops, ops,
       raf: fn => fn(), wait: async () => {},
       goHash: async hash => { routes.push(hash); },
       store: { get: () => ({ snapshot: { settings } }) },
+      // Every mutate is a `workspace_request`, which the real `gate` records in `ops` (app.js's
+      // own reactive calls go through the same `invoke`, not only a stop's scripted action).
       mutate: async (op, data) => {
         mutations.push([op, data]);
+        ops.push(op);
         if (op === 'settings_update') settings = { ...settings, ...data };
         return {};
       },
@@ -252,6 +255,29 @@ test('checks: text, order, exact, count, absent, before, notText and ids', async
     absent: true, 'absent wrong': false, before: true, 'before wrong': false, missing: false,
     notText: true, ids: true, 'ids wrong': false, noOverflow: true, noClip: true, focus: true, capture: true,
   });
+});
+
+test('an `op`/`count` check counts sends made during that stop only (task-provider design §11 ruling 16: "switches once")', async () => {
+  // T60-alike (an earlier stop) sends `task_provider_set` once of its own; it must not count
+  // against the next stop's check — this is what caught T61 joining every toast's text instead of
+  // requiring exactly one `task_provider_set`.
+  const earlier = stop('T60', { action: { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'plugin:todoist' } } } });
+  const once = stop('T61a', {
+    action: { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'local' } } },
+    checks: [{ name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 }],
+  });
+  const thrice = stop('T61b', {
+    action: [
+      { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'local' } } },
+      { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'local' } } },
+      { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'local' } } },
+    ],
+    checks: [{ name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 }],
+  });
+  const h = harness({ doc: withRows(), stops: [earlier, once, thrice] });
+  const out = await h.run();
+  assert.deepEqual(out.stops.map(s => checkOf(s, 'exactly one task_provider_set')?.pass), [undefined, true, false]);
+  assert.match(checkOf(out.stops[2], 'exactly one task_provider_set').detail, /task_provider_set sent 3 times, expected 1/);
 });
 
 test('every captured stop checks for horizontal overflow', async () => {

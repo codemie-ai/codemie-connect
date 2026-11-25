@@ -179,6 +179,15 @@ function judgeFact(facts, c) {
   return { pass: true, detail: '' };
 }
 
+/** How many times `c.op` was sent to native during this stop (`sent`, the ops recorded since it
+ *  started): `c.count` (exact). Catches a listener or event (re)triggering the same mutate more
+ *  than once, e.g. task-provider design §11 ruling 16's "switches once". */
+function judgeOps(sent, c) {
+  const got = sent.filter(op => op === c.op).length;
+  if (c.count !== undefined && got !== c.count) return { pass: false, detail: `${c.op} sent ${got} time${got === 1 ? '' : 's'}, expected ${c.count}` };
+  return { pass: true, detail: '' };
+}
+
 /** Closes the menus a stop before left open: the app keeps an open ⋯ across its redraws. */
 function closeMenus(doc) {
   for (const menu of all(doc, 'details[data-menu][open], details.ws-menu[open]')) menu.open = false;
@@ -455,12 +464,16 @@ export async function runTour({
         await goHash(s.route);
         await settle();
       }
+      const opsBefore = ops.length;
       const acted = s.action ? await step(s.action, 'action') : null;
       if ([].concat(s.action || []).some(a => a.name === 'menuBar')) result.menuBar = acted;
+      const sentThisStop = ops.slice(opsBefore);
       for (const c of s.checks) {
         let verdict;
         try {
-          verdict = c.fact !== undefined ? judgeFact(result.menuBar, c) : judge(doc, c);
+          verdict = c.fact !== undefined ? judgeFact(result.menuBar, c)
+            : c.op !== undefined ? judgeOps(sentThisStop, c)
+              : judge(doc, c);
         } catch (e) {
           verdict = { pass: false, detail: String(e?.message || e) };
         }
