@@ -181,9 +181,7 @@ pub(crate) struct Asked {
     /// `Core::voice_epoch` when the provider was asked: a delete of the copy since then makes the
     /// answer stale for the copy.
     epoch: usize,
-    /// An import's counts: the instructions the provider was asked to add, and those left out
-    /// (already in the copy, or past the 200-instruction limit).
-    added: usize,
+    /// An import's items left out (already in the copy, or past the 200-instruction limit).
     skipped: usize,
 }
 
@@ -270,11 +268,13 @@ fn record(r: &mut Repository, asked: &Asked, epoch: usize, now: i64) -> Result<V
     // provider chosen again within the ask, review N1).
     let chosen = r.settings()?.voice.provider == asked.provider && asked.epoch == epoch;
     if asked.kind == "rules" {
-        if chosen && asked.added > 0 {
+        // What the provider saved (its answer's rules), not what it was asked.
+        let saved = copy::saved_rules(&asked.answer).len();
+        if chosen && saved > 0 {
             copy::put_saved(r, &asked.provider, "rules", &asked.answer, now)?;
             refresh::queue(r, &asked.provider, now)?;
         }
-        return Ok(json!({"added": asked.added, "skipped": asked.skipped}));
+        return Ok(json!({"added": saved, "skipped": asked.skipped}));
     }
     if let Some(rule) = &asked.removed {
         if chosen {
@@ -321,7 +321,6 @@ impl Core {
                     answer,
                     removed: None,
                     epoch,
-                    added: 0,
                     skipped: 0,
                 })
             }
@@ -341,7 +340,6 @@ impl Core {
                     answer: Value::Null,
                     removed: Some(rule),
                     epoch,
-                    added: 0,
                     skipped: 0,
                 })
             }
@@ -551,11 +549,19 @@ impl Core {
             .filter(|s| !s.is_empty() && s.chars().count() <= ID_MAX)
             .ok_or_else(|| invalid("skill", "Choose a skill."))?
             .to_string();
-        let doc = Self::voice_skills(path)
-            .await?
-            .into_iter()
-            .find(|d| d.name.is_some() && d.problem.is_none() && d.label == skill)
-            .ok_or_else(|| invalid("skill", "That skill is no longer in the folder."))?;
+        let dir = req.data["dir"]
+            .as_str()
+            .filter(|d| d.len() <= PATH_MAX)
+            .ok_or_else(|| invalid("dir", "That skill is no longer in the folder."))?
+            .to_string();
+        // Only that skill's folder is read again (the preview's `dir`), never the whole folder.
+        let one = dir.clone();
+        let doc = tokio::task::spawn_blocking(move || skills::read_one(&path, &one))
+            .await
+            .map_err(|_| invalid("path", skills::CANT_READ))??;
+        if doc.name.is_none() || doc.problem.is_some() || doc.label != skill {
+            return Err(invalid("skill", "That skill is no longer in the folder."));
+        }
         let text = skills::distil_input(&doc);
         let not_ready = || WorkspaceError::new("not_ready", NOT_READY);
         let resolved = self
@@ -608,7 +614,10 @@ impl Core {
         })?;
         let answer = outcome.structured.map_or(outcome.text, |v| v.to_string());
         match skills::parse_distilled(&skill, &answer) {
-            Ok(items) => {
+            Ok(mut items) => {
+                for item in &mut items {
+                    item.dir = dir.clone();
+                }
                 log::info!(
                     "voice: import shortened one skill into {} instructions",
                     items.len()
@@ -661,7 +670,6 @@ impl Core {
             answer,
             removed: None,
             epoch,
-            added: fresh.len(),
             skipped,
         })
     }
@@ -1692,7 +1700,7 @@ pub(crate) mod tests {
         let answer = e
             .op(
                 Operation::VoiceImportDistil,
-                json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+                json!({"path": path_of(&skills_dir()), "skill": "long-standard", "dir": "long-standard"}),
             )
             .await
             .unwrap();
@@ -1731,7 +1739,7 @@ pub(crate) mod tests {
         route_mail_replies(&e);
         e.op(
             Operation::VoiceImportDistil,
-            json!({"path": path_of(&skills_dir()), "skill": "deploy-helper"}),
+            json!({"path": path_of(&skills_dir()), "skill": "deploy-helper", "dir": "deploy-helper"}),
         )
         .await
         .unwrap();
@@ -1762,7 +1770,7 @@ pub(crate) mod tests {
             let err = e
                 .op(
                     Operation::VoiceImportDistil,
-                    json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+                    json!({"path": path_of(&skills_dir()), "skill": "long-standard", "dir": "long-standard"}),
                 )
                 .await
                 .unwrap_err();
@@ -1772,11 +1780,26 @@ pub(crate) mod tests {
         let err = e
             .op(
                 Operation::VoiceImportDistil,
-                json!({"path": path_of(&skills_dir()), "skill": "nope"}),
+                json!({"path": path_of(&skills_dir()), "skill": "nope", "dir": "nope"}),
             )
             .await
             .unwrap_err();
-        assert_eq!(err.field.as_deref(), Some("skill"));
+        assert_eq!(err.field.as_deref(), Some("dir"));
+        // The skill's folder is required, and must be inside the picked one.
+        for data in [
+            json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+            json!({"path": path_of(&skills_dir()), "skill": "long-standard", "dir": "../voice-skills/long-standard"}),
+            json!({"path": path_of(&skills_dir()), "skill": "long-standard", "dir": "reply-style"}),
+        ] {
+            let err = e
+                .op(Operation::VoiceImportDistil, data.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err.field.as_deref(), Some("dir") | Some("skill")),
+                "{data}"
+            );
+        }
         // A route that isn't ready: no profile chosen, then one that isn't installed.
         let e = env();
         e.choose_with_copy().await;
@@ -1785,7 +1808,7 @@ pub(crate) mod tests {
         let distil = || {
             e.op(
                 Operation::VoiceImportDistil,
-                json!({"path": path_of(&skills_dir()), "skill": "long-standard"}),
+                json!({"path": path_of(&skills_dir()), "skill": "long-standard", "dir": "long-standard"}),
             )
         };
         assert_eq!(distil().await.unwrap_err().message, ready_msg);
@@ -1847,6 +1870,19 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(answer, json!({"added": 0, "skipped": 4}));
         assert_eq!(e.calls_of("save").len(), 1);
+        // `added` is what the provider saved, not what it was asked.
+        e.fake.answer(
+            "save",
+            json!({"items": [{"id": "imp-4", "applies": {"kind": "everyone"}, "text": "One.", "source": "Voice/rules.md"}]}),
+        );
+        let answer = e
+            .op(
+                Operation::VoiceImport,
+                json!({"items": [item(json!({"kind": "everyone"}), "One."), item(json!({"kind": "everyone"}), "Two.")]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"added": 1, "skipped": 0}));
         // The input is checked first.
         for bad in [
             json!({"items": []}),
@@ -1860,7 +1896,7 @@ pub(crate) mod tests {
                 "{bad}"
             );
         }
-        assert_eq!(e.calls_of("save").len(), 1);
+        assert_eq!(e.calls_of("save").len(), 2);
     }
 
     #[tokio::test]
@@ -1933,14 +1969,14 @@ pub(crate) mod tests {
         );
         e.op(
             Operation::VoiceImportDistil,
-            json!({"path": path, "skill": "sentinel-style"}),
+            json!({"path": path, "skill": "sentinel-style", "dir": "sentinel-style"}),
         )
         .await
         .unwrap();
         let _ = e
             .op(
                 Operation::VoiceImportDistil,
-                json!({"path": path, "skill": "sentinel-style"}),
+                json!({"path": path, "skill": "sentinel-style", "dir": "sentinel-style"}),
             )
             .await;
         e.fake.answer(

@@ -1,7 +1,8 @@
 {
   "ai": [
     "deploy-helper",
-    "long-standard"
+    "long-standard",
+    "reply-style"
   ],
   "folder": "voice-skills",
   "found": 6,
@@ -11,6 +12,7 @@
         "kind": "topic",
         "value": "budget request"
       },
+      "dir": "budget-answers",
       "kept": 1,
       "key": "budget-answers#1",
       "skill": "budget-answers",
@@ -21,6 +23,7 @@
       "applies": {
         "kind": "everyone"
       },
+      "dir": "long-standard",
       "kept": 6,
       "key": "long-standard#1",
       "skill": "long-standard",
@@ -31,6 +34,7 @@
       "applies": {
         "kind": "everyone"
       },
+      "dir": "long-standard",
       "kept": 6,
       "key": "long-standard#2",
       "skill": "long-standard",
@@ -41,6 +45,7 @@
       "applies": {
         "kind": "everyone"
       },
+      "dir": "long-standard",
       "kept": 6,
       "key": "long-standard#3",
       "skill": "long-standard",
@@ -51,6 +56,7 @@
       "applies": {
         "kind": "everyone"
       },
+      "dir": "long-standard",
       "kept": 6,
       "key": "long-standard#4",
       "skill": "long-standard",
@@ -62,47 +68,53 @@
         "channel": "mail",
         "kind": "everyone"
       },
-      "kept": 7,
+      "dir": "reply-style",
+      "kept": 11,
       "key": "reply-style#1",
       "skill": "reply-style",
-      "text": "Open with the person's first name, never \"Dear\".\nKeep it to three short paragraphs at most.\nSign off with \"Thanks,\" and my first name.",
-      "total": 7
+      "text": "Open with the person's first name, never \"Dear\".\nReply in the sender's language.\nОтвечай на языке отправителя.\nВідповідай мовою відправника.\nKeep it to three short paragraphs at most.\nSign off with `Thanks,` and my first name.",
+      "total": 12
     },
     {
       "applies": {
         "channel": "teams",
         "kind": "everyone"
       },
-      "kept": 7,
+      "dir": "reply-style",
+      "kept": 11,
       "key": "reply-style#2",
       "skill": "reply-style",
-      "text": "One or two lines, no greeting.\nLowercase is fine for quick answers.",
-      "total": 7
+      "text": "One or two lines, no greeting.\nAvoid run-on sentences.\nLowercase is fine for quick answers.",
+      "total": 12
     },
     {
       "applies": {
         "kind": "no-profile"
       },
-      "kept": 7,
+      "dir": "reply-style",
+      "kept": 11,
       "key": "reply-style#3",
       "skill": "reply-style",
       "text": "Introduce yourself in one sentence and say why you are writing.\nUse full sentences and a polite sign-off.",
-      "total": 7
+      "total": 12
     }
   ],
   "skipped": [
     {
       "code": "unreadable",
+      "dir": "broken",
       "reason": "Its SKILL.md has no name in its frontmatter.",
       "skill": "broken"
     },
     {
       "code": "procedure",
+      "dir": "deploy-helper",
       "reason": "A procedure that runs tools. It waits for the skill runner, a later step.",
       "skill": "deploy-helper"
     },
     {
       "code": "not_reply",
+      "dir": "meeting-notes",
       "reason": "Not about how you write messages.",
       "skill": "meeting-notes"
     }

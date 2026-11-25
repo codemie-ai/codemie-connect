@@ -388,6 +388,17 @@ pub fn merge_context(r: &mut Repository, provider: &str, answer: &Value, at: i64
     r.put_global_records(&upserts)
 }
 
+/// The usable rules of a `save {kind: "rules"}` answer (`{items: [<rule>]}`, design §1): what
+/// the provider says it saved.
+pub fn saved_rules(answer: &Value) -> Vec<Rule> {
+    answer["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(parse_rule)
+        .collect()
+}
+
 /// Writes what a provider's `save` answered (design §7's `voice_save`: "writes the answer into
 /// the copy") — a `style` or one `rule`, cut to the copy's limits like an `export` — and answers
 /// the item as the copy keeps it, or `null` when the answer holds no usable item (the queued
@@ -402,12 +413,9 @@ pub fn put_saved(
 ) -> Result<Value> {
     if kind == "rules" {
         // The import's one write (design §1: `kind: "rules"` answers `{items: [<rule>]}`).
-        let records: Vec<Record> = answer["items"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(parse_rule)
-            .map(|rule| item_record(KIND_RULE, &rule.id, &rule, provider, at))
+        let records: Vec<Record> = saved_rules(answer)
+            .iter()
+            .map(|rule| item_record(KIND_RULE, &rule.id, rule, provider, at))
             .collect();
         let items: Vec<Value> = records.iter().map(|r| r.data.clone()).collect();
         if !records.is_empty() {
