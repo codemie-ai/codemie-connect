@@ -52,13 +52,21 @@ export function buildSeed(testDir, nowMs) {
   withMeetings(s, nowMs);
   withAutomations(s, nowMs, { habits: true });
   // Tasks: Todoist active, a waiting "Check with Marek" task, a looks-handled reply task.
+  // `allTodoist` (run inside both of the above) tags every commitment Todoist's; move a subset
+  // back to Local (`provider: null`) so the Board, List and By-date "Local" views still have
+  // cards too — the same ids `tasks-provider-checks.mjs`'s own `mixedProviders()` keeps Local,
+  // spanning more than one Board column/status (review, todo, done, dismissed).
   marekCheckIn(s);
   demoHandled(s);
+  const LOCAL_IDS = ['task-tenant', 'task-names', 'task-pilot', 'task-room', 'task-dashboard', 'task-share', 'task-bug'];
+  for (const r of s.records) {
+    if (r.kind === 'commitment' && LOCAL_IDS.includes(r.id)) r.data.provider = null;
+  }
 
-  // Tasks: one more pending row, and the one real parked sentence (task-sync-cases.json), both
-  // spec § 4 "Tasks".
-  const names = s.records.find(r => r.id === 'task-names');
-  if (names) names.data.pending = true;
+  // Tasks: one more pending row (on a task that stays Todoist's — "pending" is a provider-sync
+  // concept), and the one real parked sentence (task-sync-cases.json), both spec § 4 "Tasks".
+  const pendingTask = s.records.find(r => r.id === 'task-legal-req');
+  if (pendingTask) pendingTask.data.pending = true;
   const parked = contract('task-sync-cases').parked;
   const parkedIds = new Set(parked.map(r => r.id));
   s.records = s.records.filter(r => !parkedIds.has(r.id));

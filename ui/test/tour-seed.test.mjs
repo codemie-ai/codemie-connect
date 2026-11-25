@@ -87,6 +87,17 @@ test('the seed matches spec § 4', () => {
   assert.ok(seed.records.some(r => r.kind === 'automation_run' && r.data.fallbackFrom));
 });
 
+test('commitments are both Local and Todoist, Local spanning more than one Board column', () => {
+  const { seed } = buildSeed(TEST_DIR, NOW);
+  const commitments = seed.records.filter(r => r.kind === 'commitment');
+  const local = commitments.filter(r => !r.data.provider);
+  const todoist = commitments.filter(r => r.data.provider === 'plugin:todoist');
+  assert.ok(local.length > 0, 'no Local commitments: the Board, List and By-date "Local" views would be empty');
+  assert.ok(todoist.length > 0, 'no Todoist commitments: the provider screens would be empty');
+  const localStatuses = new Set(local.map(r => r.data.status));
+  assert.ok(localStatuses.size > 1, `Local tasks sit in only one column/status: ${[...localStatuses]}`);
+});
+
 test("SEED_IDS all exist in the seed's records", () => {
   const { seed } = buildSeed(TEST_DIR, NOW);
   for (const [name, id] of Object.entries(SEED_IDS)) {
