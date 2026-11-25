@@ -14,8 +14,9 @@
 import { STOPS, HEIGHT } from './script.js';
 
 /** What sends, writes elsewhere or installs (design § 5's deny-list, with `refresh`: a
- *  marketplace's Fetch button is `market-refresh`). */
-const SENDS = /send|confirm|prepare|fetch|install(?!ed)|update|remove|delete|sign|login|test|refresh/i;
+ *  marketplace's Fetch button is `market-refresh`; and `distil`: the import's Shorten with AI is
+ *  an AI run). */
+const SENDS = /send|confirm|prepare|fetch|install(?!ed)|update|remove|delete|sign|login|test|refresh|distil/i;
 /** What opens something on the user's desktop: Finder, Terminal, a browser, a picker, a download. */
 const OPENS = /open|reveal|pick|link|terminal|download/i;
 /** The same for the window's own commands; its terminal dock's list and resize stay in the window. */

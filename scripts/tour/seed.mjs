@@ -7,7 +7,7 @@
 //
 // Usage: node scripts/tour/seed.mjs <testDir>
 //   Refuses (exit 1) if <testDir> exists and already holds anything; creates it otherwise.
-import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -26,6 +26,12 @@ function contract(name) {
 /** The invented skills folder the Rust import tests scan (`src-tauri/tests/fixtures/voice-skills`):
  *  the CLI copies it into the test folder, since no seeded path may point outside it. */
 const SKILLS_FIXTURE = fileURLToPath(new URL('../../src-tauri/tests/fixtures/voice-skills/', import.meta.url));
+
+/** Copies the skills folder `from` to `to`, skipping every symlink, so nothing outside the
+ *  folder comes into the test folder. */
+export function copySkills(from, to) {
+  cpSync(from, to, { recursive: true, filter: src => !lstatSync(src).isSymbolicLink() });
+}
 
 /** The texts Connect's copy holds for each person of voice-states.json's ready copy (the
  *  snapshot carries only their lengths): what Profile shows. Invented. */
@@ -220,7 +226,7 @@ export function buildSeed(testDir, nowMs) {
       questions: [],
       provenance: {
         ...chatTpl.data.provenance, at: now - 1800, messageIds: [group.id], automationId: 'auto-triage',
-        voice: { provider: 'Knowledge', style: true, person: null, rules: 1, examples: 0, cut: false, from: 'copy', at: now, facts: [], factsMissed: true },
+        voice: { provider: 'Knowledge', style: true, person: null, rules: 1, examples: 0, cut: false, from: 'copy', at: now - 3600, facts: [], factsMissed: true },
       },
     },
   });
@@ -301,7 +307,7 @@ function main() {
       writeFileSync(path.join(folder.path, name), text, 'utf8');
     }
   }
-  cpSync(SKILLS_FIXTURE, seed.voice.skillsFolder, { recursive: true });
+  copySkills(SKILLS_FIXTURE, seed.voice.skillsFolder);
   writeFileSync(path.join(testDir, 'tour-seed.json'), JSON.stringify(seed), 'utf8');
   const fileCount = folders.reduce((n, f) => n + Object.keys(f.files).length, 0);
   console.log(`Wrote ${seed.records.length} records, ${seed.connections.length} connection(s), ${folders.length} meeting folder(s) (${fileCount} files) to ${testDir}`);

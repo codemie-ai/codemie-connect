@@ -113,3 +113,12 @@ test('refusals show by stop in the Refused list and on their stop, expected ones
   const article = html.slice(html.indexOf('<article'), html.indexOf('</article>'));
   assert.match(article, /Refused: native graph_connect — The tour opens nothing\. \(expected\)/);
 });
+
+test('every step present in STOPS gets a report section with its stops', async () => {
+  const { STOPS } = await import('../workspace/tour/script.js');
+  const steps = [...new Set(STOPS.flatMap(s => s.step))].sort((a, b) => a - b);
+  assert.ok(steps.includes(8), 'step 8 has stops');
+  const html = renderReport(results(STOPS.map(s => stop(s.id, { step: s.step }))), {}, []);
+  for (const step of steps) assert.match(html, new RegExp(`<h2>Step ${step}</h2>`), `step ${step}`);
+  for (const id of ['T62', 'T70']) assert.ok(html.includes(id), id);
+});

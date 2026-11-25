@@ -687,3 +687,10 @@ test('checks: focused', async () => {
   assert.equal(checkOf(r, 'yes').pass, true);
   assert.equal(checkOf(r, 'no').pass, false);
 });
+
+test('the deny-list refuses Shorten with AI (an AI run) up front, and still lets the import scan through', () => {
+  assert.equal(denied('action', 'voice-import-distil'), true);
+  assert.equal(denied('op', 'voice_import_distil'), true);
+  assert.equal(denied('op', 'voice_import_scan'), false);
+  assert.equal(denied('action', 'voice-import-cancel'), false);
+});

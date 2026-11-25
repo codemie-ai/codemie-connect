@@ -4,12 +4,12 @@
 // fresh workspace.sqlite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { buildSeed, SEED_IDS } from '../../scripts/tour/seed.mjs';
+import { buildSeed, copySkills, SEED_IDS } from '../../scripts/tour/seed.mjs';
 
 const NOW = Date.now();
 // A plausible absolute test folder: `buildSeed` is pure (touches no file), so this never needs
@@ -183,6 +183,7 @@ test('Elena\'s mail holds a draft in your voice, and Inbox triage left one from 
   assert.ok(seed.records.some(r => r.kind === 'automation' && r.id === 'auto-triage'));
   assert.equal(chat.data.provenance.voice.from, 'copy');
   assert.equal(chat.data.provenance.voice.factsMissed, true);
+  assert.ok(chat.data.provenance.voice.at <= chat.data.provenance.at, 'the copy is from before the draft');
   assert.deepEqual(chat.data.provenance.voice.facts, []);
   // The Jordan 1:1 and the Priya mail keep their boxes: T05 checks the "✦ draft with AI" hint,
   // T55's Nudge fills Priya's reply.
@@ -196,4 +197,21 @@ test('the CLI copies the invented skills folder into the test folder', () => {
   for (const skill of ['broken', 'budget-answers', 'deploy-helper', 'long-standard', 'meeting-notes', 'reply-style']) {
     assert.ok(existsSync(join(dir, 'voice-skills', skill, 'SKILL.md')), `${skill} copied`);
   }
+});
+
+test('copying the skills folder skips symlinks, so nothing outside it comes along', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tour-skills-'));
+  const outside = join(root, 'outside');
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'SKILL.md'), 'outside');
+  const from = join(root, 'skills');
+  mkdirSync(join(from, 'reply-style'), { recursive: true });
+  writeFileSync(join(from, 'reply-style', 'SKILL.md'), 'inside');
+  symlinkSync(outside, join(from, 'linked'));
+  symlinkSync(join(outside, 'SKILL.md'), join(from, 'reply-style', 'extra.md'));
+  const to = join(root, 'copy');
+  copySkills(from, to);
+  assert.ok(existsSync(join(to, 'reply-style', 'SKILL.md')));
+  assert.ok(!existsSync(join(to, 'linked')), 'a linked folder is skipped');
+  assert.ok(!existsSync(join(to, 'reply-style', 'extra.md')), 'a linked file is skipped');
 });

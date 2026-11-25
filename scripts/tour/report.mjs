@@ -19,8 +19,9 @@ import { FEATURES } from '../../ui/workspace/tour/coverage.js';
 
 const e = escapeHtml;
 
-/** Rollout steps the coverage table and the report's sections cover (design § 6, § 7). */
-const STEPS = [0, 1, 2, 3, 4, 5, 6, 7];
+/** Rollout steps the report's sections cover (design § 6, § 7): every step a stop of
+ *  `script.js` belongs to, so a step that adds stops gets its section. */
+const STEPS = [...new Set(STOPS.flatMap(s => s.step))].sort((a, b) => a - b);
 
 const COLOUR_LABEL = { green: 'Covered', red: 'Not covered', amber: 'Browser run', grey: 'Planned' };
 
