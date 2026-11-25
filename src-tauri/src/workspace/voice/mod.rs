@@ -17,30 +17,35 @@ pub mod copy;
 #[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a voice provider yet
 pub mod fake;
 
-/// Settings › Your voice (design §7): which provider is active, app-wide like `tasks`. Old
-/// settings without `voice` read as Off (`Settings`'s container-level `#[serde(default)]`).
+/// Settings › Your voice (design §7): which provider is active, app-wide like `tasks`, and
+/// whether facts are looked up for each draft. Old settings without `voice` read as Off with
+/// facts on (`Settings`'s container-level `#[serde(default)]`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceSettings {
     /// `"off"` or `"plugin:<id>"`.
     pub provider: String,
+    pub facts: bool,
 }
 impl Default for VoiceSettings {
     fn default() -> Self {
         Self {
             provider: "off".into(),
+            facts: true,
         }
     }
 }
 
 /// One provider a plugin registers (design §1's `available`): its id (`"plugin:<id>"`), display
-/// name, whether the plugin is turned on, and whether it last answered `status` without error.
+/// name, whether the plugin is turned on, whether it last answered `status` without error, and
+/// whether it registered the `facts` op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceInfo {
     pub id: String,
     pub name: String,
     pub on: bool,
     pub ready: bool,
+    pub facts: bool,
 }
 
 /// `replyVoice.state` (design §7): what Settings › Your voice and the composer show.
@@ -117,9 +122,10 @@ impl VoiceError {
 
 impl super::Core {
     /// Builds the snapshot's `replyVoice` (design §7): the active provider, every installed one
-    /// that provides `reply-context`, its state, and the copy's style, rules and people index —
-    /// never a person's profile text (`people[]` carries `chars`, read in full with `voice_read`,
-    /// a later task).
+    /// that provides `reply-context`, its state, whether facts are on and offered, and the
+    /// copy's style (with its head), rules and people index — never a person's profile or about
+    /// text (`people[]` carries `chars` and `aboutChars`, read in full with `voice_read`, a
+    /// later task).
     ///
     /// State rules: `off` when the provider is `"off"`; `loading` when the plugin manager is
     /// still reloading and the provider plugin isn't ready yet; `unavailable` when the provider
@@ -134,12 +140,16 @@ impl super::Core {
             .unwrap_or_default();
         let available: Vec<Value> = listed
             .iter()
-            .map(|p| json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready}))
+            .map(|p| json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready, "facts": p.facts}))
             .collect();
         let name = listed
             .iter()
             .find(|p| p.id == provider)
             .map(|p| p.name.clone());
+        let facts_offered = listed
+            .iter()
+            .find(|p| p.id == provider)
+            .is_some_and(|p| p.facts);
         let r = self.repo().ok();
         let c = r.as_deref().and_then(|r| copy::read_copy(r).ok()).flatten();
         let loading = self.voice_providers.get().is_some_and(|p| p.loading());
@@ -160,6 +170,7 @@ impl super::Core {
             "name": name,
             "state": state.as_str(),
             "available": available,
+            "facts": {"on": settings.voice.facts, "offered": facts_offered},
             "refreshedAt": c.as_ref().map(|c| c.refreshed_at),
             "copy": c.is_some(),
             "style": c.as_ref().and_then(|c| c.style.clone()),
@@ -187,9 +198,17 @@ mod tests {
     }
 
     #[test]
-    fn old_settings_read_as_off() {
+    fn old_settings_read_as_off_with_facts_on() {
         let s: Settings = serde_json::from_str(r#"{"syncDays":7}"#).unwrap();
         assert_eq!(s.voice.provider, "off");
+        assert!(s.voice.facts, "no \"voice\" at all reads facts as on");
+
+        let s: Settings = serde_json::from_str(r#"{"voice":{"provider":"plugin:x"}}"#).unwrap();
+        assert_eq!(s.voice.provider, "plugin:x");
+        assert!(
+            s.voice.facts,
+            "an old voice shape with no \"facts\" reads it as on"
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let core =
@@ -199,11 +218,11 @@ mod tests {
         assert_eq!(snapshot["copy"], false);
     }
 
-    /// A profile holding a sentinel never reaches the snapshot: `people[]` carries `chars`, not
-    /// `text` (design §7, global constraint "no voice text in a log, a smoke report ... or a
-    /// real-data fixture").
+    /// A profile holding a sentinel in its `text` or `about` never reaches the snapshot:
+    /// `people[]` carries `chars` and `aboutChars`, not the text (design §7, global constraint
+    /// "no voice text in a log, a smoke report ... or a real-data fixture").
     #[test]
-    fn snapshot_never_carries_profile_text() {
+    fn snapshot_never_carries_profile_or_about_text() {
         const SENTINEL: &str = "VOICE_SENTINEL_9f3a";
         let dir = tempfile::tempdir().unwrap();
         let core =
@@ -213,11 +232,14 @@ mod tests {
             name: "Priya N.".into(),
             names: vec!["Priya".into()],
             addresses: vec!["priya.n@example.test".into()],
+            ids: vec!["t-1".into()],
             text: format!("Product lead. {SENTINEL}"),
+            about: format!("Prefers mornings. {SENTINEL}"),
             updated_at: "2026-11-24T09:00:00Z".into(),
             source: "People/priya-n.md".into(),
         };
         let chars = person.text.chars().count();
+        let about_chars = person.about.chars().count();
         let c = copy::Copy {
             provider: "plugin:knowledge".into(),
             refreshed_at: 0,
@@ -236,14 +258,61 @@ mod tests {
             name: "Knowledge".into(),
             on: true,
             ready: true,
+            facts: true,
         }]);
         core.set_voice_providers(fake);
 
         let snapshot = core.voice_snapshot(&settings);
         assert_eq!(snapshot["people"][0]["chars"], chars);
+        assert_eq!(snapshot["people"][0]["aboutChars"], about_chars);
+        assert_eq!(snapshot["people"][0]["ids"], 1);
         assert!(snapshot["people"][0].get("text").is_none());
+        assert!(snapshot["people"][0].get("about").is_none());
         let text = serde_json::to_string(&snapshot).unwrap();
         assert!(!text.contains(SENTINEL), "the sentinel leaked: {text}");
+    }
+
+    /// Settings › Your voice's facts checkbox (`facts.on`) and whether the chosen provider
+    /// offers facts at all (`facts.offered`, its `available[].facts`), design §7.
+    #[test]
+    fn snapshot_says_whether_facts_are_on_and_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let core =
+            crate::workspace::test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let fake = Arc::new(fake::FakeVoice::new());
+        core.set_voice_providers(fake.clone());
+
+        let mut settings = Settings::default();
+        settings.voice.provider = "plugin:knowledge".into();
+        settings.voice.facts = false;
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: true,
+        }]);
+        let snapshot = core.voice_snapshot(&settings);
+        assert_eq!(snapshot["facts"]["on"], false, "the checkbox is off");
+        assert_eq!(
+            snapshot["facts"]["offered"], true,
+            "the provider offers facts"
+        );
+
+        settings.voice.facts = true;
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: false,
+        }]);
+        let snapshot = core.voice_snapshot(&settings);
+        assert_eq!(snapshot["facts"]["on"], true, "the checkbox is on");
+        assert_eq!(
+            snapshot["facts"]["offered"], false,
+            "the provider's available[].facts is false"
+        );
     }
 
     fn sample_copy() -> copy::Copy {
@@ -252,11 +321,18 @@ mod tests {
             refreshed_at: 1_764_000_000,
             state: VoiceState::Ready,
             style: Some(copy::Style {
-                text: "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting."
+                text: "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия."
                     .into(),
                 updated_at: "2026-11-24T09:00:00Z".into(),
                 source: "Voice/style.md".into(),
-                based_on: Some(40),
+                based_on: Some(copy::BasedOn {
+                    mail: 12,
+                    teams: 140,
+                }),
+                head: Some(copy::StyleHead {
+                    text: "Prefers short replies and plain words.".into(),
+                    source: "people/me.md".into(),
+                }),
             }),
             rules: vec![
                 copy::Rule {
@@ -264,8 +340,20 @@ mod tests {
                     applies: copy::Applies {
                         kind: copy::AppliesKind::To,
                         value: Some("priya.n@example.test".into()),
+                        channel: None,
                     },
                     text: "Short, bullet points.".into(),
+                    source: "Voice/rules.md".into(),
+                    editable: true,
+                },
+                copy::Rule {
+                    id: "chat-platform-review".into(),
+                    applies: copy::Applies {
+                        kind: copy::AppliesKind::Chat,
+                        value: Some("Platform review".into()),
+                        channel: None,
+                    },
+                    text: "Terse, lower case.".into(),
                     source: "Voice/rules.md".into(),
                     editable: true,
                 },
@@ -274,6 +362,7 @@ mod tests {
                     applies: copy::Applies {
                         kind: copy::AppliesKind::Domain,
                         value: Some("bank.example.test".into()),
+                        channel: Some(copy::RuleChannel::Mail),
                     },
                     text: "Formal, full sentences.".into(),
                     source: "Voice/rules.md".into(),
@@ -284,8 +373,20 @@ mod tests {
                     applies: copy::Applies {
                         kind: copy::AppliesKind::Topic,
                         value: Some("budget request".into()),
+                        channel: None,
                     },
                     text: "Ask for the project code.".into(),
+                    source: "Voice/rules.md".into(),
+                    editable: true,
+                },
+                copy::Rule {
+                    id: "no-profile-teams".into(),
+                    applies: copy::Applies {
+                        kind: copy::AppliesKind::NoProfile,
+                        value: None,
+                        channel: Some(copy::RuleChannel::Teams),
+                    },
+                    text: "Polite, full sentences.".into(),
                     source: "Voice/rules.md".into(),
                     editable: true,
                 },
@@ -294,6 +395,7 @@ mod tests {
                     applies: copy::Applies {
                         kind: copy::AppliesKind::Everyone,
                         value: None,
+                        channel: None,
                     },
                     text: "Never promise a date.".into(),
                     source: "Voice/rules.md".into(),
@@ -306,7 +408,9 @@ mod tests {
                     name: "Priya N.".into(),
                     names: vec!["Priya".into(), "Priya Nair".into()],
                     addresses: vec!["priya.n@example.test".into()],
+                    ids: Vec::new(),
                     text: "Product lead at the bank; prefers mornings.".into(),
+                    about: "Product lead, platform team.".into(),
                     updated_at: "2026-11-24T09:00:00Z".into(),
                     source: "People/priya-n.md".into(),
                 },
@@ -315,7 +419,9 @@ mod tests {
                     name: "Jordan Lee".into(),
                     names: Vec::new(),
                     addresses: vec!["jordan@example.test".into()],
+                    ids: Vec::new(),
                     text: "Engineering manager.".into(),
+                    about: String::new(),
                     updated_at: "2026-11-24T09:00:00Z".into(),
                     source: "People/jordan-lee.md".into(),
                 },
@@ -323,8 +429,10 @@ mod tests {
                     id: "marek-novak".into(),
                     name: "Marek Novak".into(),
                     names: Vec::new(),
-                    addresses: vec!["marek.novak@example.test".into()],
+                    addresses: Vec::new(),
+                    ids: vec!["00000000-0000-4000-8000-00000000a003".into()],
                     text: "Finance contact.".into(),
+                    about: String::new(),
                     updated_at: "2026-11-24T09:00:00Z".into(),
                     source: "People/marek-novak.md".into(),
                 },
@@ -364,14 +472,33 @@ mod tests {
             name: "Knowledge".into(),
             on: true,
             ready: true,
+            facts: true,
         }]);
 
         // ready: the plugin is on and ready, and the copy's own state is Ready.
         states.insert("ready".into(), core.voice_snapshot(&chosen));
 
+        // noFacts: same as ready, but the provider doesn't offer facts.
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: false,
+        }]);
+        states.insert("noFacts".into(), core.voice_snapshot(&chosen));
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: true,
+        }]);
+
         // needsSetup: a failed refresh recorded `needs_setup` on the copy.
         copy::set_state(
             &mut core.repo().unwrap(),
+            "plugin:knowledge",
             VoiceState::NeedsSetup,
             1_764_000_600,
         )
@@ -381,6 +508,7 @@ mod tests {
         // unavailable: a failed refresh recorded `unavailable` on the copy.
         copy::set_state(
             &mut core.repo().unwrap(),
+            "plugin:knowledge",
             VoiceState::Unavailable,
             1_764_001_200,
         )
@@ -393,6 +521,7 @@ mod tests {
             name: "Knowledge".into(),
             on: false,
             ready: false,
+            facts: false,
         }]);
         states.insert("pluginOff".into(), core.voice_snapshot(&chosen));
 

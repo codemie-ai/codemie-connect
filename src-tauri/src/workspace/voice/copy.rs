@@ -13,7 +13,7 @@
 use super::VoiceState;
 use crate::workspace::models::{id, Record, Result};
 use crate::workspace::repository::Repository;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 
 const KIND_STYLE: &str = "voice_style";
@@ -23,34 +23,72 @@ const KIND_META: &str = "voice_meta";
 const KINDS: [&str; 4] = [KIND_STYLE, KIND_RULE, KIND_PERSON, KIND_META];
 
 const STYLE_MAX: usize = 8_000;
+const STYLE_HEAD_MAX: usize = 2_500;
 const RULES_MAX: usize = 200;
 const RULE_TEXT_MAX: usize = 2_000;
 const PEOPLE_MAX: usize = 2_000;
 const PROFILE_MAX: usize = 8_000;
+const ABOUT_MAX: usize = 2_000;
 const NAMES_MAX: usize = 10;
 const ADDRESSES_MAX: usize = 10;
+const IDS_MAX: usize = 10;
 const ID_MAX: usize = 200;
 
-/// The style card (design §1): how the user writes.
+/// How many of the user's sent messages a style card was built from (design §1's `basedOn`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BasedOn {
+    pub mail: i64,
+    pub teams: i64,
+}
+
+/// The user's own page's writing preferences (design §1, §4): read-only in Connect, headed
+/// above the editable style card.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct StyleHead {
+    pub text: String,
+    pub source: String,
+}
+
+/// The style card (design §1): how the user writes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Style {
     pub text: String,
     pub updated_at: String,
     pub source: String,
-    /// How many sent messages it was built from; `None` when the user wrote it.
-    pub based_on: Option<i64>,
+    /// How many sent messages it was built from, by channel; `None` when the user wrote it, the
+    /// provider sent a bare number (an older shape), or a record `replace` stored before this
+    /// field existed (Task 1's `Style.basedOn` was itself a bare number).
+    #[serde(default, deserialize_with = "de_based_on")]
+    pub based_on: Option<BasedOn>,
+    /// The user's own page's writing preferences (design §1's `style.head`), `None` when the
+    /// provider has none.
+    pub head: Option<StyleHead>,
 }
 
-/// What an instruction `applies` to (design §1): `to` an address, `domain` a domain, `topic`
-/// one or more words, or `everyone` (no value).
+/// What an instruction `applies` to (design §1, amended): `to` an address, `chat` a Teams chat
+/// title, `domain` a domain, `topic` one or more words, `no-profile` (the draft's person has no
+/// profile) or `everyone` (no value).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AppliesKind {
     To,
+    Chat,
     Domain,
     Topic,
+    #[serde(rename = "no-profile")]
+    NoProfile,
     Everyone,
+}
+
+/// Which channel a rule is scoped to (design §4's `applies.channel`), or both when `None`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleChannel {
+    Mail,
+    Teams,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,6 +96,8 @@ pub enum AppliesKind {
 pub struct Applies {
     pub kind: AppliesKind,
     pub value: Option<String>,
+    #[serde(default)]
+    pub channel: Option<RuleChannel>,
 }
 
 /// One instruction (design §1).
@@ -71,7 +111,8 @@ pub struct Rule {
     pub editable: bool,
 }
 
-/// One person's profile (design §1); `text` never reaches the snapshot (`person_summary`).
+/// One person's profile (design §1, amended); `text` and `about` never reach the snapshot
+/// (`person_summary` carries only their lengths).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
@@ -81,7 +122,13 @@ pub struct Person {
     pub names: Vec<String>,
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// Teams user ids (`fromId`), design §1, §4's Teams matching.
+    #[serde(default)]
+    pub ids: Vec<String>,
     pub text: String,
+    /// A few facts about them (role, background); never the profile (design §1, §7).
+    #[serde(default)]
+    pub about: String,
     pub updated_at: String,
     pub source: String,
 }
@@ -99,13 +146,16 @@ pub struct Copy {
     pub people: Vec<Person>,
 }
 
-/// The snapshot's shape for one person (design §7): an index entry, never the profile text.
+/// The snapshot's shape for one person (design §7, amended): an index entry, never the profile
+/// or about text.
 pub(crate) fn person_summary(p: &Person) -> Value {
     json!({
         "id": p.id,
         "name": p.name,
         "addresses": p.addresses,
+        "ids": p.ids.len(),
         "chars": p.text.chars().count(),
+        "aboutChars": p.about.chars().count(),
         "source": p.source,
     })
 }
@@ -132,20 +182,60 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().count() <= ID_MAX
 }
 
-/// Parses one style object, applying its limit; `None` when there is no usable text (design §1,
-/// §2: an item over a limit is cut, never refused).
+/// Like `strings`, but each item also passes `valid_id` (non-empty, ≤ `ID_MAX` characters):
+/// design §2's `ids ≤ 200`.
+fn ids_list(v: &Value, max: usize) -> Vec<String> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|s| valid_id(s))
+        .map(str::to_string)
+        .take(max)
+        .collect()
+}
+
+/// Parses `basedOn`: an object `{mail, teams}`, or `None` for anything else — including a bare
+/// number, an older shape (design §1's "A bare number ... reads as `null`").
+fn parse_based_on(v: &Value) -> Option<BasedOn> {
+    v.as_object().map(|_| BasedOn {
+        mail: v["mail"].as_i64().unwrap_or(0),
+        teams: v["teams"].as_i64().unwrap_or(0),
+    })
+}
+
+/// `Style.based_on`'s own `Deserialize`, so a stored record with the field absent, a bare
+/// number (Task 1's own shape) or `null` all read back as `None`, same as `parse_based_on`.
+fn de_based_on<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<BasedOn>, D::Error> {
+    Ok(parse_based_on(&Value::deserialize(d)?))
+}
+
+/// Parses `style.head`, applying its limit; `None` when there is no usable text (design §1's
+/// `style.head`).
+fn parse_head(v: &Value) -> Option<StyleHead> {
+    let text = v["text"].as_str()?;
+    Some(StyleHead {
+        text: truncate_chars(text, STYLE_HEAD_MAX),
+        source: v["source"].as_str().unwrap_or_default().to_string(),
+    })
+}
+
+/// Parses one style object, applying its limits; `None` when there is no usable text (design
+/// §1, §2: an item over a limit is cut, never refused).
 fn parse_style(v: &Value) -> Option<Style> {
     let text = v["text"].as_str()?;
     Some(Style {
         text: truncate_chars(text, STYLE_MAX),
         updated_at: v["updatedAt"].as_str().unwrap_or_default().to_string(),
         source: v["source"].as_str().unwrap_or_default().to_string(),
-        based_on: v["basedOn"].as_i64(),
+        based_on: parse_based_on(&v["basedOn"]),
+        head: parse_head(&v["head"]),
     })
 }
 
-/// Parses one rule object; `None` when it has no usable id or an unrecognised `applies.kind` —
-/// dropped, never refused (design §2's id limit: over 200 characters is dropped).
+/// Parses one rule object; `None` when it has no usable id, an unrecognised `applies.kind`, or
+/// an unrecognised `applies.channel` — dropped, never widened to `everyone` (design §2's id
+/// limit: over 200 characters is dropped).
 fn parse_rule(v: &Value) -> Option<Rule> {
     let id = v["id"].as_str()?;
     if !valid_id(id) {
@@ -153,16 +243,25 @@ fn parse_rule(v: &Value) -> Option<Rule> {
     }
     let kind = match v["applies"]["kind"].as_str()? {
         "to" => AppliesKind::To,
+        "chat" => AppliesKind::Chat,
         "domain" => AppliesKind::Domain,
         "topic" => AppliesKind::Topic,
+        "no-profile" => AppliesKind::NoProfile,
         "everyone" => AppliesKind::Everyone,
         _ => return None,
+    };
+    let channel = match v["applies"]["channel"].as_str() {
+        Some("mail") => Some(RuleChannel::Mail),
+        Some("teams") => Some(RuleChannel::Teams),
+        Some(_) => return None,
+        None => None,
     };
     Some(Rule {
         id: id.to_string(),
         applies: Applies {
             kind,
             value: v["applies"]["value"].as_str().map(str::to_string),
+            channel,
         },
         text: truncate_chars(v["text"].as_str().unwrap_or_default(), RULE_TEXT_MAX),
         source: v["source"].as_str().unwrap_or_default().to_string(),
@@ -181,7 +280,9 @@ fn parse_person(v: &Value) -> Option<Person> {
         name: v["name"].as_str().unwrap_or_default().to_string(),
         names: strings(&v["names"], NAMES_MAX),
         addresses: strings(&v["addresses"], ADDRESSES_MAX),
+        ids: ids_list(&v["ids"], IDS_MAX),
         text: truncate_chars(v["text"].as_str().unwrap_or_default(), PROFILE_MAX),
+        about: truncate_chars(v["about"].as_str().unwrap_or_default(), ABOUT_MAX),
         updated_at: v["updatedAt"].as_str().unwrap_or_default().to_string(),
         source: v["source"].as_str().unwrap_or_default().to_string(),
     })
@@ -288,23 +389,24 @@ pub fn merge_context(r: &mut Repository, provider: &str, answer: &Value, at: i64
 }
 
 /// Records the copy's state after a refresh attempt that didn't replace it (design §2: "A
-/// refresh that fails keeps the copy and records the state ... and the time"). A no-op when no
-/// copy has ever been written (there is nothing to mark, and no provider to remember).
-pub fn set_state(r: &mut Repository, state: VoiceState, at: i64) -> Result<()> {
-    let Some(existing) = r.records_of_kind(KIND_META)?.into_iter().next() else {
-        return Ok(());
-    };
-    let provider = existing.data["provider"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let refreshed_at = existing.data["refreshedAt"].as_i64().unwrap_or(0);
+/// refresh that fails keeps the copy and records the state ... and the time"), unconditionally
+/// — including a provider's first failed refresh, before any `export` has ever succeeded, when
+/// there is no meta row yet to find a provider on: `provider` is given directly so `needs_setup`
+/// is still reachable then. An existing `refreshedAt` (the last successful full refresh) is kept;
+/// with no meta row yet it starts at 0.
+pub fn set_state(r: &mut Repository, provider: &str, state: VoiceState, at: i64) -> Result<()> {
+    let refreshed_at = r
+        .records_of_kind(KIND_META)?
+        .into_iter()
+        .next()
+        .map(|existing| existing.data["refreshedAt"].as_i64().unwrap_or(0))
+        .unwrap_or(0);
     let meta = Meta {
-        provider: provider.clone(),
+        provider: provider.to_string(),
         refreshed_at,
         state,
     };
-    r.put_global_records(&[item_record(KIND_META, "meta", &meta, &provider, at)])
+    r.put_global_records(&[item_record(KIND_META, "meta", &meta, provider, at)])
 }
 
 /// Deletes every copy record, whatever provider it belongs to (design §6's "Delete Connect's
@@ -393,7 +495,8 @@ mod tests {
                 text: "Short and direct.".into(),
                 updated_at: "t".into(),
                 source: "Voice/style.md".into(),
-                based_on: Some(10),
+                based_on: Some(BasedOn { mail: 10, teams: 0 }),
+                head: None,
             }),
             rules: Vec::new(),
             people: vec![
@@ -402,7 +505,9 @@ mod tests {
                     name: "Priya N.".into(),
                     names: Vec::new(),
                     addresses: vec!["priya.n@example.test".into()],
+                    ids: Vec::new(),
                     text: "Old text.".into(),
+                    about: String::new(),
                     updated_at: "t0".into(),
                     source: "People/priya-n.md".into(),
                 },
@@ -411,7 +516,9 @@ mod tests {
                     name: "Jordan Lee".into(),
                     names: Vec::new(),
                     addresses: vec!["jordan@example.test".into()],
+                    ids: Vec::new(),
                     text: "Unchanged.".into(),
+                    about: String::new(),
                     updated_at: "t0".into(),
                     source: "People/jordan-lee.md".into(),
                 },
@@ -478,5 +585,181 @@ mod tests {
             "a copy record leaked into records: {:?}",
             snapshot.records
         );
+    }
+
+    /// A person's `about` and Teams `ids`; a style card with `head` and an object `basedOn`;
+    /// rules of kind `chat` and `no-profile`, one scoped to a channel (design §1, §4).
+    #[test]
+    fn from_export_reads_about_ids_head_and_scopes() {
+        let v = json!({
+            "style": {
+                "text": "Short and direct.",
+                "updatedAt": "t",
+                "source": "Voice/style.md",
+                "basedOn": {"mail": 12, "teams": 140},
+                "head": {"text": "Head text.", "source": "people/me.md"},
+            },
+            "rules": [
+                {"id": "chat-platform-review", "applies": {"kind": "chat", "value": "Platform review"}, "text": "Terse."},
+                {"id": "no-profile-teams", "applies": {"kind": "no-profile", "channel": "teams"}, "text": "Polite."},
+            ],
+            "people": [
+                {"id": "priya-n", "name": "Priya N.", "ids": ["t-1"], "about": "Product lead.", "text": "Writing notes."},
+            ],
+        });
+        let c = from_export(&v);
+
+        let style = c.style.unwrap();
+        assert_eq!(
+            style.based_on,
+            Some(BasedOn {
+                mail: 12,
+                teams: 140
+            })
+        );
+        assert_eq!(style.head.unwrap().text, "Head text.");
+
+        let chat = c
+            .rules
+            .iter()
+            .find(|r| r.id == "chat-platform-review")
+            .unwrap();
+        assert_eq!(chat.applies.kind, AppliesKind::Chat);
+        assert_eq!(chat.applies.value, Some("Platform review".into()));
+        assert_eq!(chat.applies.channel, None);
+
+        let scoped = c.rules.iter().find(|r| r.id == "no-profile-teams").unwrap();
+        assert_eq!(scoped.applies.kind, AppliesKind::NoProfile);
+        assert_eq!(scoped.applies.channel, Some(RuleChannel::Teams));
+
+        let priya = &c.people[0];
+        assert_eq!(priya.about, "Product lead.");
+        assert_eq!(priya.ids, vec!["t-1".to_string()]);
+    }
+
+    /// design §2's new limits: a style head cut to 2,500, a person's `about` cut to 2,000 and
+    /// their `ids` capped at 10 — cut or dropped, never refused.
+    #[test]
+    fn from_export_applies_the_new_limits() {
+        let v = json!({
+            "style": {
+                "text": "Short.", "updatedAt": "t", "source": "s",
+                "head": {"text": "h".repeat(3_000), "source": "people/me.md"},
+            },
+            "people": [
+                {
+                    "id": "many-ids", "name": "Many",
+                    "ids": (0..12).map(|n| format!("id-{n}")).collect::<Vec<_>>(),
+                    "about": "a".repeat(2_500),
+                    "text": "t",
+                },
+            ],
+        });
+        let c = from_export(&v);
+        assert_eq!(c.style.unwrap().head.unwrap().text.chars().count(), 2_500);
+        assert_eq!(c.people[0].ids.len(), 10);
+        assert_eq!(c.people[0].about.chars().count(), 2_000);
+    }
+
+    /// design §1: "A bare number (an older shape) reads as `null`."
+    #[test]
+    fn a_bare_based_on_number_reads_as_null() {
+        let v =
+            json!({"style": {"text": "Short.", "updatedAt": "t", "source": "s", "basedOn": 40}});
+        let c = from_export(&v);
+        assert_eq!(c.style.unwrap().based_on, None);
+    }
+
+    /// An unrecognised `applies.kind` or `applies.channel` drops the rule outright — it is
+    /// never widened to `everyone` (design §2).
+    #[test]
+    fn a_rule_with_an_unknown_kind_or_channel_is_dropped() {
+        let v = json!({
+            "rules": [
+                {"id": "nobody", "applies": {"kind": "nobody"}, "text": "t"},
+                {"id": "bad-channel", "applies": {"kind": "everyone", "channel": "fax"}, "text": "t"},
+                {"id": "everyone", "applies": {"kind": "everyone"}, "text": "t"},
+            ],
+        });
+        let c = from_export(&v);
+        assert_eq!(
+            c.rules.len(),
+            1,
+            "only the valid rule survives: {:?}",
+            c.rules
+        );
+        assert_eq!(c.rules[0].id, "everyone");
+    }
+
+    /// A `context` answer carrying `facts` leaves no fact in the stored copy: `merge_context`
+    /// has no `facts` field to read in the first place (design §2: "Facts are never part of
+    /// it").
+    #[test]
+    fn merge_context_ignores_facts() {
+        const SENTINEL: &str = "VOICE_SENTINEL_9f3a";
+        let mut r = repo();
+        let c = from_export(&json!({"style": {"text": "Short.", "updatedAt": "t", "source": "s"}}));
+        replace(&mut r, "plugin:knowledge", &c, 1_000).unwrap();
+
+        merge_context(
+            &mut r,
+            "plugin:knowledge",
+            &json!({"facts": [{"id": "f1", "title": "Budget", "text": SENTINEL}]}),
+            2_000,
+        )
+        .unwrap();
+
+        let stored = read_copy(&r).unwrap().unwrap();
+        let text = serde_json::to_string(&stored).unwrap();
+        assert!(
+            !text.contains(SENTINEL),
+            "a fact leaked into the copy: {text}"
+        );
+    }
+
+    /// A `voice_style` record written by Task 1 — before `head` existed and `basedOn` was a
+    /// bare number — still reads under the amended `Style`: every new field carries a serde
+    /// default, and `based_on`'s own deserializer treats a bare number the same as
+    /// `parse_based_on` does.
+    #[test]
+    fn a_style_record_from_before_this_task_still_reads() {
+        let mut r = repo();
+        let old_style = json!({
+            "text": "Short and direct.",
+            "updatedAt": "t",
+            "source": "Voice/style.md",
+            "basedOn": 40,
+        });
+        let meta = json!({"provider": "plugin:knowledge", "refreshedAt": 1_000, "state": "ready"});
+        r.put_global_records(&[
+            item_record(KIND_STYLE, "style", &old_style, "plugin:knowledge", 1_000),
+            item_record(KIND_META, "meta", &meta, "plugin:knowledge", 1_000),
+        ])
+        .unwrap();
+
+        let stored = read_copy(&r).unwrap().unwrap();
+        let style = stored.style.expect("the old record still parses");
+        assert_eq!(style.text, "Short and direct.");
+        assert_eq!(
+            style.based_on, None,
+            "a bare number reads as null, not an error"
+        );
+        assert_eq!(style.head, None);
+    }
+
+    /// Carried from Task 1's review: a provider's first failed refresh, before any `export` has
+    /// ever succeeded, has no meta row to find a provider on. `set_state` is given the provider
+    /// directly and creates the row, so `needs_setup` is reachable then, not silently dropped.
+    #[test]
+    fn set_state_records_the_state_when_there_is_no_copy_yet() {
+        let mut r = repo();
+        assert!(read_copy(&r).unwrap().is_none());
+
+        set_state(&mut r, "plugin:knowledge", VoiceState::NeedsSetup, 1_000).unwrap();
+
+        let stored = read_copy(&r).unwrap().unwrap();
+        assert_eq!(stored.provider, "plugin:knowledge");
+        assert_eq!(stored.state, VoiceState::NeedsSetup);
+        assert_eq!(stored.refreshed_at, 0, "no export has ever succeeded");
     }
 }
