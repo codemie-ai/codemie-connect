@@ -1,0 +1,551 @@
+{
+  "loading": {
+    "available": [],
+    "copy": true,
+    "name": null,
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "loading",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "needsSetup": {
+    "available": [
+      {
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "name": "Knowledge",
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "needs_setup",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "off": {
+    "available": [],
+    "copy": false,
+    "name": null,
+    "people": [],
+    "provider": "off",
+    "refreshedAt": null,
+    "rules": [],
+    "state": "off",
+    "style": null
+  },
+  "offWithCopy": {
+    "available": [],
+    "copy": true,
+    "name": null,
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "off",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "off",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "pluginOff": {
+    "available": [
+      {
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": false,
+        "ready": false
+      }
+    ],
+    "copy": true,
+    "name": "Knowledge",
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "unavailable",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "ready": {
+    "available": [
+      {
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "name": "Knowledge",
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "ready",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "unavailable": {
+    "available": [
+      {
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "name": "Knowledge",
+    "people": [
+      {
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "addresses": [
+          "marek.novak@example.test"
+        ],
+        "chars": 16,
+        "id": "marek-novak",
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "unavailable",
+    "style": {
+      "basedOn": 40,
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  }
+}

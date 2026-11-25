@@ -251,6 +251,9 @@ pub struct Settings {
     /// Settings › Notifications › Menu bar: which of the four sources are counted (menu-bar
     /// count design §1).
     pub menu_bar: super::menu_bar::MenuBarSettings,
+    /// Settings › Your voice: the active reply-context provider (reply-voice design §7). Old
+    /// settings without `voice` read as Off (this struct's container-level `#[serde(default)]`).
+    pub voice: super::voice::VoiceSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -278,6 +281,7 @@ impl Default for Settings {
             meetings: Default::default(),
             tasks: Default::default(),
             menu_bar: Default::default(),
+            voice: Default::default(),
         }
     }
 }
@@ -400,6 +404,10 @@ pub struct Snapshot {
     /// `menuBar` (menu-bar design §5): the count, what it is made of and what needs fixing.
     /// Filled by `Core` for the window's snapshot; `Value::Null` elsewhere.
     pub menu_bar: Value,
+    /// `replyVoice` (reply-voice design §7): the active provider, its state and the copy's
+    /// style, rules and people index — never a person's profile text. Filled by `Core` for the
+    /// window's snapshot; `Value::Null` elsewhere.
+    pub reply_voice: Value,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

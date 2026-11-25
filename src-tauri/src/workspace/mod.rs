@@ -25,6 +25,9 @@ mod slots;
 pub(crate) mod task_provider;
 pub(crate) mod tasks;
 mod today;
+#[allow(dead_code)]
+// the role and host, the operations and the refresh job wire this in (later tasks)
+pub(crate) mod voice;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -119,6 +122,9 @@ pub struct Core {
     /// plugin manager; `None` while nothing has set it (every workspace test, and Task 1's own
     /// Local-only snapshot).
     task_providers: std::sync::OnceLock<Arc<dyn task_provider::TaskProviders>>,
+    /// Connect's way into reply-context provider plugins' host halves (`voice`), set once by
+    /// the plugin manager; `None` while nothing has set it (every test with no voice provider).
+    voice_providers: std::sync::OnceLock<Arc<dyn voice::VoiceProviders>>,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
     /// Held by one writer of meeting records and transcript files at a time
@@ -286,6 +292,7 @@ impl Core {
             plugin_ops: AtomicUsize::new(0),
             events: std::sync::OnceLock::new(),
             task_providers: std::sync::OnceLock::new(),
+            voice_providers: std::sync::OnceLock::new(),
             meetings_told: Default::default(),
             meeting_writes: Default::default(),
             home,
@@ -886,6 +893,7 @@ impl Core {
                     });
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
             snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
+            snapshot.reply_voice = self.voice_snapshot(&snapshot.settings);
             snapshot.menu_bar = self.menu_bar_snapshot(&mut snapshot);
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),

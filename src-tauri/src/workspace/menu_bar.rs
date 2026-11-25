@@ -955,6 +955,7 @@ mod tests {
             note_templates: Vec::new(),
             task_provider: Value::Null,
             menu_bar: Value::Null,
+            reply_voice: Value::Null,
         }
     }
 

@@ -354,6 +354,10 @@ impl Repository {
             .and_then(|s| self.connection(s).ok());
         let visible = shown_account(connection.as_ref(), active);
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
+        // A workspace-less, connection-less row only ever gets in here as `plugin_item` or
+        // `plugin_widget`: every other global bookkeeping kind (`menu_bar_seen`, and the voice
+        // copy's `voice_style`/`voice_rule`/`voice_person`/`voice_meta`, reply-voice design §2)
+        // stays out on its own, with no extra filter needed.
         let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run' ORDER BY updated_at DESC")?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
@@ -410,6 +414,7 @@ impl Repository {
             note_templates: Vec::new(),
             task_provider: Value::Null,
             menu_bar: Value::Null,
+            reply_voice: Value::Null,
         })
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is
@@ -535,6 +540,54 @@ impl Repository {
         }
         tx.commit()?;
         Ok(gone)
+    }
+    /// Deletes every global bookkeeping record (`connection_id` and `workspace_id` both empty)
+    /// whose kind is in `kinds`, then writes `upserts` in their place, all in one transaction
+    /// with one revision bump — the shape a full refresh needs (reply-voice design §2's
+    /// `voice::copy::replace`): the copy is never seen half old, half new.
+    pub fn replace_global_records(&mut self, kinds: &[&str], upserts: &[Record]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for kind in kinds {
+            tx.execute(
+                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
+                [kind],
+            )?;
+        }
+        for r in upserts {
+            put_record(&tx, r)?;
+        }
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Deletes every global bookkeeping record of these kinds, in one transaction with one
+    /// revision bump when any went. Answers how many were removed.
+    pub fn delete_global_records(&mut self, kinds: &[&str]) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let mut gone = 0;
+        for kind in kinds {
+            gone += tx.execute(
+                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
+                [kind],
+            )?;
+        }
+        if gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+    /// Upserts global bookkeeping records in one transaction with one revision bump, leaving
+    /// every other record (of the same or another kind) untouched — a partial update
+    /// (reply-voice design §2's `voice::copy::merge_context`), unlike `replace_global_records`.
+    pub fn put_global_records(&mut self, records: &[Record]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for r in records {
+            put_record(&tx, r)?;
+        }
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
     }
     /// The plugin records of `kind`.
     pub fn plugin_records(&self, kind: &str) -> Result<Vec<Record>> {
