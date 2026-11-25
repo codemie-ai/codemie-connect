@@ -27,9 +27,10 @@ export function applyChanges(result, delta) {
   const records = new Map();
   for (const r of snap.records || []) if (!replace.has(r.kind) && !removed.has(recordKey(r))) records.set(recordKey(r), r);
   for (const r of delta.records || []) records.set(recordKey(r), r);
-  const jobs = new Map(delta.jobsAll ? [] : (snap.jobs || []).map(j => [j.id, j]));
-  for (const id of delta.removedJobs || []) jobs.delete(id);
-  for (const j of delta.jobs || []) jobs.set(j.id, j);
+  // The delta's jobs first: of one second, the last written comes first, as native orders them.
+  const gone = new Set([...(delta.removedJobs || []), ...(delta.jobs || []).map(j => j.id)]);
+  const jobs = new Map((delta.jobs || []).map(j => [j.id, j]));
+  if (!delta.jobsAll) for (const j of snap.jobs || []) if (!gone.has(j.id)) jobs.set(j.id, j);
   const next = {
     ...snap,
     revision: delta.revision,

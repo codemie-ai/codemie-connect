@@ -639,7 +639,9 @@ impl Repository {
             .map(|c| c.id.as_str())
             .unwrap_or("__unavailable__");
         let jobs: Vec<Job> = self.documents(
-            "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC LIMIT 300",
+            // Newest first, and of one second the last written first: the window takes the first of
+            // a conversation's jobs as its newest (selectors.js `summaryJob`).
+            "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC, rowid DESC LIMIT 300",
         )?;
         Ok(jobs
             .into_iter()

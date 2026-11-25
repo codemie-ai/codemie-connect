@@ -46,3 +46,10 @@ test('automation runs come whole when a delta replaces their kind', () => {
   const next = applyChanges(before, { ...fixture.delta, records: [run('newer', 2)], removed: [], replace: ['automation_run'] });
   assert.deepEqual(next.snapshot.records.filter(r => r.kind === 'automation_run').map(r => r.id), ['newer']);
 });
+
+test('a job written in the same second as older ones comes before them, as the newest', () => {
+  const job = (id, state) => ({ id, dueAt: 1795000000, kind: 'ai_summarize', state, payload: { conversationKey: 'k' } });
+  const before = { ...fixture.before, snapshot: { ...fixture.before.snapshot, jobs: [job('older', 'succeeded'), job('oldest', 'succeeded')] } };
+  const next = applyChanges(before, { ...fixture.delta, jobs: [job('new', 'blocked')], removedJobs: [], jobsAll: false });
+  assert.deepEqual(next.snapshot.jobs.map(j => j.id), ['new', 'older', 'oldest']);
+});

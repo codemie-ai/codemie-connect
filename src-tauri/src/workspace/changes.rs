@@ -796,6 +796,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jobs_of_the_same_second_come_newest_first() {
+        let (_dir, core) = core();
+        connect(&core);
+        for id in ["first", "second", "third"] {
+            core.repo()
+                .unwrap()
+                .enqueue(&job(id, "ai_summarize", 1_795_000_000))
+                .unwrap();
+        }
+        let s = snapshot(&core).await;
+        let order: Vec<&str> = s["snapshot"]["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["third", "second", "first"]);
+    }
+
+    #[tokio::test]
     async fn jobs_come_as_upserts_and_removals() {
         let (_dir, core) = core();
         connect(&core);
