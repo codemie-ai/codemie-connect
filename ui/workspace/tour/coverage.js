@@ -105,11 +105,7 @@ export const FEATURES = [
   { id: 'tp4.nudge', step: 4, text: 'Nudge fills the reply to the person, and sends nothing', spec: TASKS, status: 'built' },
   { id: 'tp4.removed-local', step: 4, text: 'Removing the provider’s plugin switches tasks back to Connect, with a toast', spec: TASKS, status: 'built' },
   { id: 'tp4.provides-tasks', step: 4, text: 'Settings › Plugins: "Provides tasks" on the provider’s row', spec: TASKS, status: 'built' },
-  {
-    id: 'tp4.delete-ask', step: 4, text: 'Deleting a provider’s task asks "Delete … in Todoist too?"', spec: TASKS, status: 'browser',
-    reason: 'Its yes deletes the task in Todoist (a write outside Connect); the tour refuses delete controls.',
-    browserCheck: { file: 'ui/test/browser/tasks-dates-checks.mjs', check: 'tasks-dates provider: header line', set: 'tasks-dates' },
-  },
+  { id: 'tp4.delete-ask', step: 4, text: 'Deleting a provider’s task asks "Delete … in Todoist too?"', spec: TASKS, status: 'built' },
   {
     id: 'tp4.banners', step: 4, text: 'The provider banners for needs_token, off and failed', spec: TASKS, status: 'browser',
     reason: 'The seed has one provider state (ready); the other states are the browser run’s.',
@@ -157,7 +153,7 @@ export const FEATURES = [
   { id: 'pm7.chooser', step: 7, text: 'The first-use chooser offers the ready profiles, and leaves out one that is not running', spec: PROFILES, status: 'built' },
   {
     id: 'pm7.chooser-ollama', step: 7, text: 'The first-use chooser’s Ollama line ("Ollama · <model>") for a running Ollama', spec: PROFILES, status: 'browser',
-    reason: 'It needs Ollama running; the seed’s Ollama profile is not_running (spec § 4), as the banners need provider states the seed doesn’t hold.',
+    reason: 'A seed-state exception to ruling 12 (controller ruling, Task 6 fix round 2): it needs Ollama running, and the seed’s Ollama profile is not_running (spec § 4), as the banners need provider states the seed doesn’t hold.',
     browserCheck: { file: 'ui/test/browser/ai-routes-checks.mjs', check: 'ai-routes R5', set: 'ai-routes' },
   },
   { id: 'pm7.editor-default', step: 7, text: 'The automation editor’s "Default · <row> (…)" profile line', spec: PROFILES, status: 'built' },

@@ -160,14 +160,16 @@ export function buildSeed(testDir, nowMs) {
   // Menu bar: every source counted (spec § 4 "Menu bar").
   s.settings.menuBar = { replies: true, tasks: true, meetings: true, automations: true };
 
-  // AI: default Claude Code with fallback CodeMie · prod; Inbox triage on local-ollama with
-  // fallback Claude Code (Using fallback); Commitments on local-ollama with no fallback (Not
-  // working) (spec § 4 "AI").
+  // AI: default Claude Code; Inbox triage on local-ollama with fallback Claude Code (Using
+  // fallback); Commitments on local-ollama with no fallback anywhere (Not working) (spec § 4
+  // "AI"). A route's `fallback: null` means "same as its group", so the Default row has no
+  // fallback either: that is the only saveable way to a row with none (a fallback equal to the
+  // profile is refused, ai.rs).
   s.settings.ai = {
-    defaultProfile: 'claude', defaultModel: null, defaultFallback: 'codemie:prod',
+    defaultProfile: 'claude', defaultModel: null, defaultFallback: null,
     routes: {
       triage: { profile: 'codemie:local-ollama', model: null, fallback: 'claude' },
-      commitments: { profile: 'codemie:local-ollama', model: null, fallback: 'codemie:local-ollama' },
+      commitments: { profile: 'codemie:local-ollama', model: null, fallback: null },
     },
     plugins: {},
   };

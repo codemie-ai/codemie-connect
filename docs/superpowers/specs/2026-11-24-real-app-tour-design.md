@@ -142,7 +142,7 @@ It answers `{path, width, height, blank}`. `blank` is true when 1,024 sampled pi
 | Task provider | `FakeProvider` with `available = [{id: "plugin:todoist", name: "Todoist", on: true, ready: true}]` and the same tasks in its remote store | `task-provider-states.json` (`ready`) |
 | Automations | the habit automations (Inbox triage, Commitments, Morning briefing, Formal meeting summary) and their runs: a triage run that made 2 tasks in Todoist with 1 already there, a summary run, and a failed Commitments run (amber); one run with `fallbackFrom` | `withAutomations(s, now, {habits: true})`, `automation-run-*.json` |
 | Menu bar | `menuBar` settings all four on; a `menu_bar_seen` record with `since` one day before the run, so the seeded notes and runs count as new; count above 0 and amber (the failed run and the parked task) | `menu-bar-states.json` (`amberWithCount`) for the expected shape |
-| AI | profiles "Claude Code" (ready), "CodeMie · prod" (ready) and "CodeMie · local-ollama" (engine Ollama, `not_running`); default Claude Code with fallback CodeMie · prod; Inbox triage on local-ollama with fallback Claude Code (Using fallback); one job on local-ollama with no fallback (Not working); Ask hidden | `ai-status.json`, `ai-route-cases.json` |
+| AI | profiles "Claude Code" (ready), "CodeMie · prod" (ready) and "CodeMie · local-ollama" (engine Ollama, `not_running`); default Claude Code, with no default fallback; Inbox triage on local-ollama with fallback Claude Code (Using fallback); Commitments on local-ollama with `fallback: null` and so no fallback anywhere (Not working: `null` means "same as its group", and a fallback equal to the profile can't be saved); Ask hidden | `ai-status.json`, `ai-route-cases.json` |
 | Plugins | the built-ins `codemie`, then `onetest`, "Not fetched yet"; installed and on: the browser run's `hello` (its page draws in its frame), an offline Todoist stand-in that provides tasks (`scripts/tour/plugins/todoist`, no token), and `digest`, which agreed to Claude and has `call.minutes` (`scripts/tour/plugins/digest`) | step 0 |
 | Window | `theme: "light"`, `view: "default"`, `hiddenPages: []` | |
 
@@ -180,7 +180,7 @@ A stop that throws is failed, with the error as its detail, and the tour goes on
 - a `data-action` matching `/open|reveal|pick|link|terminal|download/` (Finder, Terminal, a browser, a picker, a download), except in-window folds named one by one (`task-row-open`);
 - `invoke` of anything but `workspace_request`, `plugins_request` with `markets` or `installed`, `smoke_mode`, `get_app_version` and the `tour_*` commands.
 
-The window's own `invoke` goes through the same gate (`gate` in `runner.js`), for every call it makes to native: a send word, or `/open|reveal|pick|link|download|relaunch|restart/` in the command (or `plugins_request:<op>`), is refused before it is sent and recorded. A stop may lift one named control or request with `allow` (T60 removes the Todoist plugin); `allow` never lifts a send. Rust refuses every desktop opener in tour mode with "The tour opens nothing." (`commands::tour::opens_nothing`, called by the folder pickers, Finder reveals, `open` launches, a relaunch and every external link), so the window's gate is the first guard and Rust the second.
+The window's own `invoke` goes through the same gate (`gate` in `runner.js`), for every call it makes to native: a send word, or `/open|reveal|pick|link|download|relaunch|restart/` in the command (or `plugins_request:<op>`), is refused before it is sent and recorded. A stop may lift one named control or request with `allow` (T60 opens the Delete ask; T61 removes the Todoist plugin); `allow` never lifts a send, and the control's name never lifts its op (`task_delete` stays refused). Rust also refuses a `launchAtLogin` change and the notification permission prompt in tour mode, and shows no OS notification. Rust refuses every desktop opener in tour mode with "The tour opens nothing." (`commands::tour::opens_nothing`, called by the folder pickers, Finder reveals, `open` launches, a relaunch and every external link), so the window's gate is the first guard and Rust the second.
 
 Each captured stop also checks `noClip` (the browser run's: nothing the user sees overflows its box, or is cut off without an ellipsis). A stop with `frame` also judges the capture's area under that element on its own (`tour_capture {region}` answers `regionBlank`). A stop with `next` takes a second picture (`<id>-next`) after a second action.
 
@@ -190,7 +190,7 @@ Every `workspace_request` op is recorded (`recordOps` from `status-smoke.js`), a
 
 ### 6. The stops for steps 0–7
 
-Seed ids are named in the plan. 60 stops: every stop but T28 is captured, and T23 also takes `T23-next`, so a full tour writes 60 screenshots. T01–T30 are the first table's; T31–T60 were added in Task 6 (T31 the plugin frame, Ruling 5; T32–T60 every built feature T01–T30 didn't check). The real app's answers changed four rows of the first table: T06's ⋯ has no Summarize (offered only on a long conversation), T14 reads "Add 1 to Todoist" (the seed ticks only the user's own item), T17 goes back to the summary after its capture, and T23 returns to Todoist through the Copy dialog (`copyOffered` starts empty).
+Seed ids are named in the plan. 61 stops: every stop but T28 is captured, and T23 also takes `T23-next`, so a full tour writes 61 screenshots. T01–T30 are the first table's; T31–T61 were added in Task 6 (T31 the plugin frame, Ruling 5; T32–T61 every built feature T01–T30 didn't check). The real app's answers changed four rows of the first table: T06's ⋯ has no Summarize (offered only on a long conversation), T14 reads "Add 1 to Todoist" (the seed ticks only the user's own item), T17 goes back to the summary after its capture, and T23 returns to Todoist through the Copy dialog (`copyOffered` starts empty).
 
 | Stop | Step | Route | View · theme · width | Action | Must be visible |
 |---|---|---|---|---|---|
@@ -253,7 +253,8 @@ Seed ids are named in the plan. 60 stops: every stop but T28 is captured, and T2
 | T57 | 5 | automations/automations | default · light · 1440 | none | Inbox triage delivers to Today and Tasks |
 | T58 | 5 | automations/runs | default · light · 1440 | unfoldRun | "Formal summary queued for …"; Open meeting |
 | T59 | 7 | inbox | default · dark · 1440 | `ai_settings_save`, selectRow, click; after: click, `ai_settings_save` | "Choose which AI writes for you"; Claude Code and CodeMie · prod, the ready profiles; the not-running Ollama profile is not offered |
-| T60 | 4 | settings/plugins/todoist | default · light · 1440 | click, click | "Todoist was removed, so tasks are back in Connect." |
+| T60 | 4 | tasks | default · light · 1440 | unfoldTask, menu, click; after: click | "Delete … in Todoist too? Undo makes it again as a new task." |
+| T61 | 4 | settings/plugins/todoist | default · light · 1440 | click, click | "Todoist was removed, so tasks are back in Connect." |
 
 ### 7. The coverage matrix
 
@@ -267,13 +268,12 @@ Each stop's `covers` names feature ids. The report's table has one row per featu
 - **amber**: `browser`, shown with its reason and the browser set that covers it;
 - **grey**: `planned`.
 
-`browser` is only for what the real app can't show without sending or without the desktop, or a state the seed doesn't hold. There are eight today:
+`browser` is only for what the real app can't show without sending or without the desktop, or a state the seed doesn't hold. There are seven today:
 - the mail confirm dialog (it needs `action_prepare`, which reads Microsoft): `reply` R6;
 - a Teams send on click, and ⌘↩ (real sends): `reply` R4 and R7;
 - the task-provider banners for `needs_token`, `off` and `failed` (the seed has one provider state): `tasks-provider` P8;
-- "Delete … in Todoist too?" (its yes deletes in Todoist): `tasks-dates` provider check;
 - a tray row's click and seen marks (the macOS menu bar; marks need window focus): `menu-bar` M6 and M5;
-- the chooser's line for a running Ollama (the seed's Ollama is `not_running`): `ai-routes` R5.
+- the chooser's line for a running Ollama (the seed's Ollama is `not_running`; a seed-state exception, like the banners): `ai-routes` R5.
 
 One Settings › AI row per plugin with `claude` agreed is `built`: the seed installs `digest`, which agreed to Claude.
 

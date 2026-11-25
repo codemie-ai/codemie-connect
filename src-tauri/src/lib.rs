@@ -142,6 +142,9 @@ pub fn run() {
                             }
                         }))?
                     }
+                    // Registered in a tour too, since its API needs the plugin's state; a tour
+                    // shows no banner and asks no permission (`Core::request`,
+                    // `deliver_notification` and `plugin_notify` check first).
                     "notification" => app.handle().plugin(tauri_plugin_notification::init())?,
                     "autostart" => app
                         .handle()

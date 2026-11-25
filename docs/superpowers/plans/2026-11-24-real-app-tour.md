@@ -397,7 +397,7 @@ Expected: FAIL.
   - `TOUR {"pass":true…}`;
   - `Report: output/tour/<stamp>-<sha>/index.html`.
 - [ ] **Step 3: Check the evidence**:
-  - 60 screenshots (59 stops, T28 has none, plus `T23-next`), none blank;
+  - 61 screenshots (60 stops, T28 has none, plus `T23-next`), none blank;
   - the coverage table has no red row;
   - each amber row's check file exists and holds the check named (`grep` it);
   - the ops list holds no `action_*` and no send;

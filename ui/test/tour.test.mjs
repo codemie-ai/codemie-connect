@@ -109,7 +109,7 @@ test('every browser feature names a check file that exists', () => {
   const browser = FEATURES.filter(f => f.status === 'browser');
   // Ruling 12: amber only for what needs a real send or the desktop (or a provider state the seed
   // doesn't hold), each naming its browser check.
-  assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners', 'tp4.delete-ask']);
+  assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners']);
   for (const f of browser) {
     const file = new URL(f.browserCheck.file, repo);
     assert.ok(existsSync(file), `${f.id}: ${f.browserCheck.file} is missing`);
@@ -118,8 +118,8 @@ test('every browser feature names a check file that exists', () => {
   }
 });
 
-test('stops are T01..T60 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7', () => {
-  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 60 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
+test('stops are T01..T61 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7', () => {
+  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 61 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
   for (const s of STOPS) {
     assert.ok(s.checks.length > 0, `${s.id} has no checks`);
     if (s.capture === false) continue;
@@ -561,4 +561,21 @@ test('a stop’s `next` phase is checked and captured on its own, before the aft
   assert.equal(result.next.capture.path, '/x/T23-next.png');
   assert.ok(result.checks.some(c => c.name === 'next: the dialog' && c.pass));
   assert.deepEqual(h.mutations.at(-1), ['task_provider_set', { provider: 'plugin:todoist' }]);
+});
+
+test('allowing the Delete control opens its ask but never lets task_delete through', async () => {
+  const allow = new Set(['task-delete']);
+  const refused = [];
+  const guarded = gate(async () => 'ok', { ops: [], refused, allow });
+  await assert.rejects(guarded('workspace_request', { request: { op: 'task_delete', data: { id: 'task-legal' } } }), /sends nothing/);
+  assert.deepEqual(refused, [{ kind: 'op', name: 'task_delete' }]);
+  const stop60 = STOPS.find(s => s.covers.includes('tp4.delete-ask'));
+  assert.deepEqual(stop60.allow, ['task-delete']);
+  assert.ok(STOPS.at(-1).covers.includes('tp4.removed-local'), 'removing the plugin stays last');
+});
+
+test('the seed’s AI settings are the ones the chooser stop saves back', async () => {
+  const { SEED_AI } = await import('../workspace/tour/script.js');
+  const { buildSeed } = await import('../../scripts/tour/seed.mjs');
+  assert.deepEqual(buildSeed('/tmp/connect-tour-x/workspace', Date.now()).seed.settings.ai, SEED_AI);
 });

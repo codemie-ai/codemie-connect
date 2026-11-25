@@ -854,6 +854,20 @@ impl Core {
             ) {
                 return Err(WorkspaceError::new("tour", "The tour opens nothing."));
             }
+            // A login item would start the tour binary at the user's next login; the OS prompt
+            // for notifications would show on their screen (Task 6 fix round 2).
+            if req.op == Operation::SettingsUpdate && req.data.get("launchAtLogin").is_some() {
+                return Err(WorkspaceError::new(
+                    "tour",
+                    "The tour changes no login items.",
+                ));
+            }
+            if req.op == Operation::NotificationPermission {
+                return Err(WorkspaceError::new(
+                    "tour",
+                    "The tour shows no notifications.",
+                ));
+            }
         }
         if req.op == Operation::Snapshot {
             let mut snapshot = self.repo()?.snapshot()?;
@@ -1777,6 +1791,10 @@ impl Core {
         materialize_due_schedules(&mut *self.repo()?)
     }
     fn deliver_notification(&self, job: &Job) -> Result<String> {
+        // A tour shows nothing on the user's screen: no banner, whatever the schedule says.
+        if tour_sends_nothing() {
+            return Ok("The tour shows no notifications.".into());
+        }
         let mut r = self.repo()?;
         r.check_claim(&job.id, job.attempts)?;
         if job_paused(job) {
@@ -3328,6 +3346,61 @@ mod tests {
     /// `GraphConnect`, `OpenSource` and `MeetingsReveal` each open another app on the user's
     /// desktop (the Microsoft sign-in page, or Finder); the tour's deny-list regex names none of
     /// them, so `Core::request` refuses them too (controller ruling, Task 2 fix round 1).
+    /// No login item and no OS notification from a tour (controller ruling, Task 6 fix round 2):
+    /// a login item would point at the tour binary, and a banner or a permission prompt would
+    /// show on the user's screen.
+    #[tokio::test]
+    async fn tour_refuses_launch_at_login_and_the_notification_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        let _touring = Touring::on();
+        for on in [true, false] {
+            let req = mutation(
+                &core,
+                Operation::SettingsUpdate,
+                json!({ "launchAtLogin": on }),
+            );
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour", "{on}");
+            assert_eq!(err.message, "The tour changes no login items.", "{on}");
+        }
+        let req = mutation(&core, Operation::NotificationPermission, json!({}));
+        let err = core.request(req).await.unwrap_err();
+        assert_eq!(err.code, "tour");
+        assert_eq!(err.message, "The tour shows no notifications.");
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        // Other settings still save in a tour.
+        let req = mutation(&core, Operation::SettingsUpdate, json!({ "theme": "dark" }));
+        assert!(core.request(req).await.is_ok());
+    }
+
+    /// Every place that shows an OS notification asks `tour_sends_nothing()` first.
+    #[test]
+    fn every_notification_banner_is_off_in_a_tour() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workspace");
+        for (file, signature) in [
+            ("mod.rs", "fn deliver_notification("),
+            ("plugin_data.rs", "pub(crate) fn plugin_notify("),
+        ] {
+            let text = std::fs::read_to_string(src.join(file)).unwrap();
+            let start = text
+                .find(signature)
+                .unwrap_or_else(|| panic!("{file}: no {signature}"));
+            let body = &text[start..];
+            let end = body.find("\n    }\n").unwrap();
+            let body = &body[..end];
+            let guard = body
+                .find("tour_sends_nothing()")
+                .unwrap_or_else(|| panic!("{file}: {signature} has no tour guard"));
+            let shown = body.find(".notification()").unwrap();
+            assert!(
+                guard < shown,
+                "{file}: {signature} shows before asking tour_sends_nothing()"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn tour_refuses_ops_that_open_the_desktop() {
         let dir = tempfile::tempdir().unwrap();

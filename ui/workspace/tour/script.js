@@ -49,11 +49,10 @@ const TODAY_MORE = '.ws-today-actions details[data-menu="today-more"]';
 const MEETING_MORE = '.ws-mtg-strip > .ws-menu';
 const TASK = id => `.ws-tdate-row[data-task="${id}"]`;
 
-/** The AI settings the chooser stop saves back: the seed's (scripts/tour/seed.mjs), except that
- *  Commitments has no fallback of its own, as a save requires (the seed stores one equal to its
- *  profile, which only an import can). Only the plugin-removal stop runs after it. */
-const SEED_AI = {
-  defaultProfile: 'claude', defaultModel: null, defaultFallback: 'codemie:prod',
+/** The seed's AI settings (scripts/tour/seed.mjs; a test pins the two equal): the chooser stop
+ *  clears the default to open the chooser, then saves these back. */
+export const SEED_AI = {
+  defaultProfile: 'claude', defaultModel: null, defaultFallback: null,
   routes: {
     triage: { profile: 'codemie:local-ollama', model: null, fallback: 'claude' },
     commitments: { profile: 'codemie:local-ollama', model: null, fallback: null },
@@ -68,9 +67,10 @@ const menu = arg => ({ name: 'menu', arg });
 const until = arg => ({ name: 'until', arg });
 const settings = data => ({ name: 'mutate', arg: { op: 'settings_update', data } });
 
-/** Stops added after spec § 6's first table (fix round 1 of Task 6): every built feature of steps
- *  0–7 that T01–T31 didn't check. They change state only through in-app clicks and store actions,
- *  and each puts back what it changed (`after`); T61, which removes the Todoist plugin, runs last. */
+/** Stops added after spec § 6's first table (Task 6's fix rounds): every built feature of steps
+ *  0–7 that T01–T31 didn't check. They change state only through in-app clicks and store actions.
+ *  Most put back what they changed (`after`); T50 (tasks accepted), T54 (a task added) and T61
+ *  (the Todoist plugin removed) leave it changed, and T61 runs last. */
 const MORE = [
   // ---------------------------------------------------------------- step 0 (marketplace plan, plugins-checks.mjs)
   {
@@ -344,7 +344,7 @@ const MORE = [
   {
     id: 'T59', step: [7], title: 'The first-use chooser offers the ready profiles', route: '#/inbox',
     view: 'default', theme: 'dark', width: 1440,
-    action: [{ name: 'mutate', arg: { op: 'ai_settings_save', data: { ...SEED_AI, defaultProfile: null, defaultFallback: null } } }, { name: 'selectRow', arg: SEED_IDS.teams1to1 },
+    action: [{ name: 'mutate', arg: { op: 'ai_settings_save', data: { ...SEED_AI, defaultProfile: null } } }, { name: 'selectRow', arg: SEED_IDS.teams1to1 },
       click(`${read(SEED_IDS.teams1to1)} [data-action="ai-draft-quick"]`), until('.ws-modal[open] [data-action="ai-choose"]'), { name: 'wait', arg: 400 }],
     after: [click('.ws-modal[open] [data-modal-close]'), { name: 'mutate', arg: { op: 'ai_settings_save', data: SEED_AI } }],
     checks: [
@@ -356,9 +356,25 @@ const MORE = [
     covers: ['pm7.chooser'],
   },
 
+  // ---------------------------------------------------------------- step 4 (tasks-dates-checks.mjs provider)
+  {
+    id: 'T60', step: [4], title: 'Deleting a Todoist task asks first', route: '#/tasks',
+    view: 'default', theme: 'light', width: 1440,
+    // The Delete control only opens the ask; `task_delete` (its yes) is still refused by the
+    // gate, and the stop answers Cancel.
+    allow: ['task-delete'],
+    action: [{ name: 'unfoldTask', arg: 'task-legal' }, menu('.ws-tdate-row[data-task="task-legal"] .ws-tdate-more'),
+      click('.ws-tdate-row[data-task="task-legal"] [data-action="task-delete"]'), until('.ws-modal[open] .ws-modal-text'), { name: 'wait', arg: 400 }],
+    after: click('.ws-modal[open] [data-modal-close]'),
+    checks: [
+      { name: '"Delete … in Todoist too? Undo makes it again as a new task."', selector: '.ws-modal[open] .ws-modal-text', exact: 'Delete “Send Legal the written legal-hold requirement” in Todoist too? Undo makes it again as a new task.' },
+    ],
+    covers: ['tp4.delete-ask'],
+  },
+
   // ---------------------------------------------------------------- step 4, last: removing the plugin (settings-tasks-checks.mjs)
   {
-    id: 'T60', step: [4], title: 'Removing the Todoist plugin puts tasks back in Connect', route: '#/settings/plugins/todoist',
+    id: 'T61', step: [4], title: 'Removing the Todoist plugin puts tasks back in Connect', route: '#/settings/plugins/todoist',
     view: 'default', theme: 'light', width: 1440,
     // Removing deletes the plugin's files, all inside the tour's own test folder; this one stop
     // allows that control and that request, and runs last.
