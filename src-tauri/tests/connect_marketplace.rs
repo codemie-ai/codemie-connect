@@ -397,8 +397,8 @@ const VOICE_SHEET_LINE: &str = "Shape your replies: Connect asks it how you writ
                                 the text of messages you sent that Connect has synced.";
 const OFF_MAC: &str = "A reply-context plugin can't use the network: what it reads of your sent \
                        messages stays on this Mac.";
-const PAGE_CHANGED: &str = "Knowledge didn't save it: The page changed in your folder. Refresh \
-                            and try again.";
+const NOT_UTF8: &str = "Knowledge didn't save it: Knowledge can't read Voice/rules.md: it isn't \
+                        UTF-8 text. Save it as UTF-8 in your folder, then try again.";
 /// Sam Ortiz's Teams user id (invented).
 const SAM_TEAMS_ID: &str = "29:sam-ortiz-0001";
 
@@ -754,6 +754,17 @@ async fn knowledge_needs_setup_until_a_folder_is_chosen() {
         refused,
         "needs_setup: Choose its folder in Knowledge first."
     );
+    // An empty folder chosen: the first instruction makes Voice/rules.md.
+    k.pick_folder().await;
+    assert_eq!(testing::voice_refresh(&k.core).await, "ready");
+    testing::workspace_op(
+        &k.core,
+        "voice_save",
+        json!({"kind": "rule", "applies": {"kind": "everyone"}, "text": "Be brief."}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(k.read("Voice/rules.md"), "## everyone\nBe brief.\n");
     k.nothing_left_this_mac();
     k.microsoft_asked_nothing();
 }
@@ -950,7 +961,7 @@ async fn a_draft_carries_knowledges_voice() {
     assert_eq!(p["provider"], "Knowledge");
     assert_eq!(p["person"], "Priya N.");
     assert_eq!(p["style"], true);
-    assert!(!draft["provenance"].to_string().contains(VOICE_SENTINEL));
+    assert!(!draft.to_string().contains(VOICE_SENTINEL), "{draft}");
     k.voice_text_kept_nowhere();
     k.nothing_left_this_mac();
 }
@@ -990,10 +1001,9 @@ async fn a_draft_carries_knowledges_facts() {
         p["facts"][0],
         json!({"id": "projects/atlas-rollout.md", "title": "Atlas Rollout"})
     );
-    assert!(
-        !draft["provenance"].to_string().contains("Go-live"),
-        "never a fact's text"
-    );
+    let stored = draft.to_string();
+    assert!(!stored.contains("Go-live"), "never a fact's text: {stored}");
+    assert!(!stored.contains(VOICE_SENTINEL), "{stored}");
     k.voice_text_kept_nowhere();
     k.nothing_left_this_mac();
 }
@@ -1026,7 +1036,7 @@ async fn knowledge_turned_off_drafts_from_the_copy() {
 /// Delete Connect's copy: the voice is off, the copy is gone and no refresh refills it, and the
 /// folder is left as it was.
 #[tokio::test]
-async fn delete_removes_connects_copy_and_leaves_the_folder() {
+async fn knowledge_delete_removes_connects_copy_and_leaves_the_folder() {
     let Some(dir) = knowledge_marketplace() else {
         return;
     };
@@ -1072,7 +1082,7 @@ async fn delete_removes_connects_copy_and_leaves_the_folder() {
 }
 
 #[tokio::test]
-async fn an_edit_in_connect_lands_in_the_folder() {
+async fn knowledge_an_edit_in_connect_lands_in_the_folder() {
     let Some(dir) = knowledge_marketplace() else {
         return;
     };
@@ -1165,7 +1175,8 @@ async fn an_edit_in_connect_lands_in_the_folder() {
     );
     assert_eq!(k.read("Voice/rules.md"), without);
 
-    // A page Knowledge can't read back exactly (bytes that aren't UTF-8) is never overwritten.
+    // An unreadable page (bytes that aren't UTF-8) is never overwritten, and the refusal says
+    // what is wrong, not "The page changed" (a refresh can't help).
     let mut odd = without.clone().into_bytes();
     odd.extend_from_slice(b"\n## everyone\nCaf\xe9 rules.\n");
     std::fs::write(k.folder.join("Voice/rules.md"), &odd).unwrap();
@@ -1176,7 +1187,8 @@ async fn an_edit_in_connect_lands_in_the_folder() {
     )
     .await
     .unwrap_err();
-    assert_eq!(refused, format!("refused: {PAGE_CHANGED}"));
+    assert_eq!(refused, format!("refused: {NOT_UTF8}"));
+    assert!(!refused.contains("The page changed"), "{refused}");
     assert_eq!(std::fs::read(k.folder.join("Voice/rules.md")).unwrap(), odd);
 
     // Remove, through Knowledge: gone from the file and the copy.
@@ -1202,7 +1214,7 @@ async fn an_edit_in_connect_lands_in_the_folder() {
 }
 
 #[tokio::test]
-async fn importing_skills_lands_in_rules_md() {
+async fn knowledge_importing_skills_lands_in_rules_md() {
     let Some(dir) = knowledge_marketplace() else {
         return;
     };
@@ -1364,7 +1376,7 @@ async fn knowledge_reads_only_synced_sent_messages() {
 /// A knowledge folder that is a git repository: refresh, facts, save and Build leave `.git`
 /// byte for byte as it was, and no fact comes from inside it.
 #[tokio::test]
-async fn a_git_folder_is_left_alone() {
+async fn knowledge_a_git_folder_is_left_alone() {
     let Some(dir) = knowledge_marketplace() else {
         return;
     };
