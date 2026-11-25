@@ -6,11 +6,68 @@
 use super::{
     ai_jobs, inbox, meetings,
     models::*,
-    repository::{job_shown, scope_hash_of, ChangeRow, RecordKey},
+    prompts,
+    repository::{job_shown, scope_hash_of, ChangeRow, RecordKey, Repository},
     Core,
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
+
+/// Kinds the Inbox projection reads across a conversation: a change to one sends its whole
+/// conversation's messages and summaries again, projected.
+const INBOX: [&str; 4] = ["message", "decision", "incident", "summary"];
+
+/// The conversations (`conversationId`, "" for none, as `inbox::project` groups them) that
+/// changed inbox rows touch, and the summary keys they name; `None` when one can't be told (an
+/// incident gone): the window then reads the whole snapshot.
+fn touched(
+    repo: &Repository,
+    all: &[Record],
+    rows: &[&ChangeRow],
+    cid: &str,
+) -> Result<Option<(HashSet<String>, HashSet<String>)>> {
+    let conversation_of = |id: &str| {
+        all.iter()
+            .find(|m| m.kind == "message" && m.id == id)
+            .map(|m| m.data["conversationId"].as_str().unwrap_or("").to_string())
+    };
+    let mut convs = HashSet::new();
+    let mut summaries = HashSet::new();
+    for row in rows {
+        match row.kind.as_str() {
+            "message" => {
+                convs.insert(row.conversation.clone().unwrap_or_default());
+            }
+            // A decision is named by its message.
+            "decision" => convs.extend(conversation_of(&row.id)),
+            "incident" => {
+                if row.deleted {
+                    return Ok(None);
+                }
+                let Ok(incident) = repo.record("incident", &row.id, Some(cid), None) else {
+                    return Ok(None);
+                };
+                convs.extend(incident.data["itemId"].as_str().and_then(conversation_of));
+            }
+            "summary" => {
+                if let Some(key) = all
+                    .iter()
+                    .find(|r| r.kind == "summary" && r.id == row.id)
+                    .and_then(|r| r.data["conversationKey"].as_str())
+                {
+                    summaries.insert(key.to_string());
+                    convs.extend(
+                        all.iter()
+                            .filter(|m| m.kind == "message" && prompts::conversation_key(m) == key)
+                            .map(|m| m.data["conversationId"].as_str().unwrap_or("").to_string()),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Some((convs, summaries)))
+}
 
 /// More changed records than this: the window reads the whole snapshot instead.
 const MAX_RECORDS: usize = 2000;
@@ -81,19 +138,66 @@ impl Core {
             {
                 return Ok(json!({"reset": true}));
             }
+            let cid = scope
+                .visible
+                .as_ref()
+                .map(|c| c.id.as_str())
+                .unwrap_or("__unavailable__");
             let runs = record_rows.iter().any(|c| c.kind == "automation_run");
             let keys: Vec<RecordKey> = record_rows
                 .iter()
                 .filter(|c| c.kind != "automation_run")
                 .map(|c| key_of(c))
                 .collect();
-            let mut records = if keys.is_empty() && !runs {
+            // Messages and summaries come projected with their conversations, below.
+            let direct: Vec<RecordKey> = keys
+                .iter()
+                .filter(|k| k.kind != "message" && k.kind != "summary")
+                .cloned()
+                .collect();
+            let mut records = if direct.is_empty() && !runs {
                 Vec::new()
             } else {
-                repo.visible_records_in(&scope, Some(&keys), runs)?
+                repo.visible_records_in(&scope, Some(&direct), runs)?
             };
-            inbox::project(&repo, &scope.active, scope.visible.as_ref(), &mut records)?;
-            ai_jobs::mark_stale_summaries(&mut records);
+            let inbox_rows: Vec<&ChangeRow> = record_rows
+                .iter()
+                .copied()
+                .filter(|c| INBOX.contains(&c.kind.as_str()))
+                .collect();
+            if !inbox_rows.is_empty() {
+                // Projected as the snapshot projects them: across every conversation's messages,
+                // with the decisions and the chat catalog.
+                let mut all = repo.visible_records_of_kinds(
+                    &scope,
+                    &["message", "summary", "decision", "catalog"],
+                )?;
+                inbox::project(&repo, &scope.active, scope.visible.as_ref(), &mut all)?;
+                ai_jobs::mark_stale_summaries(&mut all);
+                let Some((convs, mut summary_keys)) = touched(&repo, &all, &inbox_rows, cid)?
+                else {
+                    return Ok(json!({"reset": true}));
+                };
+                summary_keys.extend(
+                    all.iter()
+                        .filter(|m| {
+                            m.kind == "message"
+                                && convs.contains(m.data["conversationId"].as_str().unwrap_or(""))
+                        })
+                        .map(prompts::conversation_key),
+                );
+                records.extend(all.into_iter().filter(|r| {
+                    match r.kind.as_str() {
+                        "message" => {
+                            convs.contains(r.data["conversationId"].as_str().unwrap_or(""))
+                        }
+                        "summary" => r.data["conversationKey"]
+                            .as_str()
+                            .is_some_and(|k| summary_keys.contains(k)),
+                        _ => false,
+                    }
+                }));
+            }
             let shown: HashSet<RecordKey> = records.iter().map(record_key).collect();
             let removed: Vec<Value> = keys
                 .iter()
@@ -103,11 +207,6 @@ impl Core {
                         "workspaceId": none_if_empty(&k.workspace_id)})
                 })
                 .collect();
-            let cid = scope
-                .visible
-                .as_ref()
-                .map(|c| c.id.as_str())
-                .unwrap_or("__unavailable__");
             let changed: Vec<&str> = job_rows.iter().map(|c| c.id.as_str()).collect();
             let found = repo.jobs_by_id(&changed)?;
             let mut jobs = Vec::new();
@@ -401,6 +500,173 @@ mod tests {
             provider("chats", "catalog", "catalog", json!({"values": []})),
         );
         assert_eq!(since(&core, &before).await, json!({"reset": true}));
+    }
+
+    /// A mail message of conversation `conv`, from Ann or from me, at `at`.
+    fn mail(id: &str, conv: &str, at: i64, mine: bool, text: &str) -> Record {
+        provider(
+            id,
+            "message",
+            "mail:inbox",
+            json!({
+                "conversationId": conv, "at": at, "isMine": mine, "title": "Q3 budget", "text": text,
+                "fromAddress": if mine { "taylor@example.test" } else { "ann@example.test" },
+                "to": [{"emailAddress": {"address": "taylor@example.test"}}]
+            }),
+        )
+    }
+
+    fn decision(message: &str, data: Value) -> Record {
+        Record {
+            id: message.into(),
+            kind: "decision".into(),
+            connection_id: Some(ACCT.into()),
+            workspace_id: Some("personal".into()),
+            source: "mail:inbox".into(),
+            revision: id(),
+            updated_at: 1000,
+            data,
+        }
+    }
+
+    fn record<'a>(delta: &'a Value, kind: &str, id: &str) -> &'a Value {
+        delta["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == kind && r["id"] == id)
+            .unwrap_or_else(|| panic!("{kind} {id} not in {delta}"))
+    }
+    fn messages(delta: &Value) -> Vec<String> {
+        let mut ids: Vec<String> = delta["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "message")
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// conv-1: Ann asks, I answer (marked Waiting since 350), Ann writes again at 300.
+    fn waiting_thread(core: &Core) {
+        put(
+            core,
+            mail("m1", "conv-1", 100, false, "Can you review the Q3 budget?"),
+        );
+        put(
+            core,
+            mail("m2", "conv-1", 200, true, "Sure, which version?"),
+        );
+        put(
+            core,
+            mail("m3", "conv-1", 300, false, "The one from Monday."),
+        );
+        put(
+            core,
+            decision("m2", json!({"lane": "waiting", "waitingSince": 350})),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_reply_moves_the_waiting_conversation_in_the_delta() {
+        let (_dir, core) = core();
+        connect(&core);
+        waiting_thread(&core);
+        let before = snapshot(&core).await;
+        put(&core, mail("m4", "conv-1", 400, false, "Any news?"));
+        let delta = since(&core, &before).await;
+        assert_eq!(
+            messages(&delta),
+            ["m1", "m2", "m3", "m4"],
+            "the whole conversation"
+        );
+        assert_eq!(record(&delta, "message", "m2")["data"]["lane"], "waiting");
+        assert_eq!(
+            record(&delta, "message", "m2")["data"]["responseSourceId"],
+            "m4"
+        );
+        // As the snapshot after it shows them.
+        let after = snapshot(&core).await;
+        let snap_m2 = after["snapshot"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "m2")
+            .unwrap();
+        assert_eq!(record(&delta, "message", "m2")["data"], snap_m2["data"]);
+    }
+
+    #[tokio::test]
+    async fn a_summary_turns_stale_in_the_delta_when_its_conversation_moves() {
+        let (_dir, core) = core();
+        connect(&core);
+        waiting_thread(&core);
+        let m3 = core
+            .repo()
+            .unwrap()
+            .record("message", "m3", Some(ACCT), None)
+            .unwrap();
+        put(
+            &core,
+            Record {
+                id: "sum-1".into(),
+                kind: "summary".into(),
+                connection_id: Some(ACCT.into()),
+                workspace_id: Some("personal".into()),
+                source: "mail:inbox".into(),
+                revision: id(),
+                updated_at: now(),
+                data: json!({"conversationKey": prompts::conversation_key(&m3), "latestMessageId": "m3",
+                "latestFingerprint": prompts::fingerprint(&m3), "text": "Ann wants a review."}),
+            },
+        );
+        let before = snapshot(&core).await;
+        let sum = before["snapshot"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "sum-1")
+            .unwrap();
+        assert_eq!(sum["data"]["stale"], false);
+        put(&core, mail("m4", "conv-1", 400, false, "Any news?"));
+        let delta = since(&core, &before).await;
+        assert_eq!(record(&delta, "summary", "sum-1")["data"]["stale"], true);
+    }
+
+    #[tokio::test]
+    async fn a_decision_change_reprojects_its_conversation_only() {
+        let (_dir, core) = core();
+        connect(&core);
+        waiting_thread(&core);
+        put(&core, mail("m5", "conv-2", 500, false, "Lunch?"));
+        let before = snapshot(&core).await;
+        put(&core, decision("m1", json!({"lane": "fyi"})));
+        let delta = since(&core, &before).await;
+        assert_eq!(record(&delta, "message", "m1")["data"]["lane"], "fyi");
+        assert_eq!(
+            messages(&delta),
+            ["m1", "m2", "m3"],
+            "another conversation stays"
+        );
+        // A message gone: its conversation comes again, without it.
+        let before = snapshot(&core).await;
+        core.repo()
+            .unwrap()
+            .db_for_tests()
+            .execute("DELETE FROM records WHERE kind='message' AND id='m3'", [])
+            .unwrap();
+        let delta = since(&core, &before).await;
+        assert!(
+            delta["removed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|k| k["id"] == "m3"),
+            "{delta}"
+        );
+        assert_eq!(messages(&delta), ["m1", "m2"]);
     }
 
     #[tokio::test]

@@ -78,7 +78,8 @@ pub fn scope_hash_of(scope: &SnapshotScope) -> String {
 }
 
 /// One line of the change log (`changes`): a record or job written or deleted on top of
-/// `revision` (meta's revision before the write's bump). A job has no kind or scope.
+/// `revision` (meta's revision before the write's bump). A job has no kind or scope. A message's
+/// `conversation` is kept, so one deleted still names the conversation to show again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeRow {
     pub revision: i64,
@@ -88,20 +89,21 @@ pub struct ChangeRow {
     pub connection_id: String,
     pub workspace_id: String,
     pub deleted: bool,
+    pub conversation: Option<String>,
 }
 
 /// The change log and its triggers: every write to `records` and `jobs` leaves a row, however
 /// it is made. Added beside the schema (no version bump: an older Connect still opens the data
 /// folder; its writes are logged by the triggers too).
 const CHANGE_LOG: &str = "
-    CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL, conversation TEXT);
     CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
     CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER)); END;
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
     CREATE TRIGGER IF NOT EXISTS records_logged_update AFTER UPDATE ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER)); END;
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
     CREATE TRIGGER IF NOT EXISTS records_logged_delete AFTER DELETE ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER)); END;
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER),json_extract(OLD.body,'$.conversationId')); END;
     CREATE TRIGGER IF NOT EXISTS jobs_logged_insert AFTER INSERT ON jobs BEGIN
       INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
     CREATE TRIGGER IF NOT EXISTS jobs_logged_update AFTER UPDATE ON jobs BEGIN
@@ -385,6 +387,11 @@ impl Repository {
         tx.commit()?;
         Ok(n > 0)
     }
+    /// The database, for tests that write what no repository function writes.
+    #[cfg(test)]
+    pub(crate) fn db_for_tests(&self) -> &Sqlite {
+        &self.db
+    }
     /// The revision the change log is complete from: changes since an older one may be gone.
     pub fn changes_from(&self) -> Result<i64> {
         Ok(self.db.query_row(
@@ -397,7 +404,7 @@ impl Repository {
     /// oldest first. A snapshot read at `revision` was taken before those writes committed.
     pub fn changes_since_rows(&self, revision: i64) -> Result<Vec<ChangeRow>> {
         let mut stmt = self.db.prepare(
-            "SELECT revision,tbl,kind,id,connection_id,workspace_id,deleted FROM changes WHERE seq IN (SELECT MAX(seq) FROM changes WHERE revision>=?1 GROUP BY tbl,kind,id,connection_id,workspace_id) ORDER BY seq",
+            "SELECT revision,tbl,kind,id,connection_id,workspace_id,deleted,conversation FROM changes WHERE seq IN (SELECT MAX(seq) FROM changes WHERE revision>=?1 GROUP BY tbl,kind,id,connection_id,workspace_id) ORDER BY seq",
         )?;
         let rows = stmt
             .query_map([revision], |r| {
@@ -409,6 +416,7 @@ impl Repository {
                     connection_id: r.get(4)?,
                     workspace_id: r.get(5)?,
                     deleted: r.get::<_, i64>(6)? != 0,
+                    conversation: r.get(7)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -522,9 +530,6 @@ impl Repository {
         only: Option<&[RecordKey]>,
         runs: bool,
     ) -> Result<Vec<Record>> {
-        let active = &scope.active;
-        let visible = scope.visible.as_ref();
-        let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
         let wanted = if let Some(keys) = only {
             self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted(kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL); DELETE FROM wanted;")?;
             let mut add = self.db.prepare("INSERT INTO wanted VALUES(?1,?2,?3,?4)")?;
@@ -535,11 +540,38 @@ impl Repository {
         } else {
             ""
         };
+        self.visible_where(scope, wanted, only.is_none() || runs)
+    }
+    /// The records of these kinds a view sees, as the snapshot holds them before the Inbox
+    /// projection (no automation runs).
+    pub fn visible_records_of_kinds(
+        &self,
+        scope: &SnapshotScope,
+        kinds: &[&str],
+    ) -> Result<Vec<Record>> {
+        self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted_kinds(kind TEXT NOT NULL); DELETE FROM wanted_kinds;")?;
+        let mut add = self.db.prepare("INSERT INTO wanted_kinds VALUES(?1)")?;
+        for k in kinds {
+            add.execute([k])?;
+        }
+        self.visible_where(scope, " AND kind IN (SELECT kind FROM wanted_kinds)", false)
+    }
+    /// The snapshot's record queries with `wanted` added to the local and account ones; the
+    /// automation runs (each automation's newest) when `runs`.
+    fn visible_where(
+        &self,
+        scope: &SnapshotScope,
+        wanted: &str,
+        runs: bool,
+    ) -> Result<Vec<Record>> {
+        let active = &scope.active;
+        let visible = scope.visible.as_ref();
+        let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
         let mut local_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run'{wanted} ORDER BY updated_at DESC"))?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        if only.is_none() || runs {
+        if runs {
             // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
             // list and Today show: each automation's latest run and its latest run delivered to Today.
             let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
@@ -2199,6 +2231,7 @@ mod tests {
                 connection_id: "".into(),
                 workspace_id: "personal".into(),
                 deleted: false,
+                conversation: None,
             }]
         );
     }
