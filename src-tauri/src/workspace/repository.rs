@@ -34,6 +34,85 @@ const AUTOMATION_RUN_RETENTION_DAYS: i64 = 90;
 const AUTOMATION_RUNS_KEPT: i64 = 200;
 /// The database `user_version` this build writes; a newer one is refused, never downgraded.
 pub const SCHEMA_VERSION: i64 = 1;
+/// The change log keeps the last this many revisions…
+pub const CHANGES_KEEP_REVISIONS: i64 = 100_000;
+/// …or the last this many seconds, whichever keeps more.
+pub const CHANGES_KEEP_SECS: i64 = 86_400;
+
+/// A record's key: what the window keys a snapshot's records by.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecordKey {
+    pub kind: String,
+    pub id: String,
+    pub connection_id: String,
+    pub workspace_id: String,
+}
+
+/// What decides which records and jobs a view sees ([`Repository::snapshot_scope`]).
+pub struct SnapshotScope {
+    pub settings: Settings,
+    pub workspaces: Vec<Workspace>,
+    pub active: Workspace,
+    pub connection: Option<Connection>,
+    pub visible: Option<Connection>,
+}
+
+/// Whether a job shows in a view of workspace `wid` and account `cid`.
+pub fn job_shown(j: &Job, wid: &str, cid: &str) -> bool {
+    (j.workspace_id.is_none() || j.workspace_id.as_deref() == Some(wid))
+        && (j.connection_id.is_none() || j.connection_id.as_deref() == Some(cid))
+}
+
+/// sha256 of what decides visibility: the active workspace, its account and sources, and the
+/// account shown with what it may read (and its address: the Inbox projection reads it).
+pub fn scope_hash_of(scope: &SnapshotScope) -> String {
+    use sha2::{Digest, Sha256};
+    let account = scope.visible.as_ref().map(|c| {
+        json!({"id": c.id, "status": c.status, "scopes": c.scopes, "enabled": c.enabled,
+            "generation": c.generation, "policyRevision": c.policy_revision,
+            "sourceRevision": c.source_revision, "email": c.email})
+    });
+    let key = json!({"workspace": scope.active.id, "workspaceAccount": scope.active.connection_id,
+        "sources": scope.active.sources, "account": account});
+    format!("{:x}", Sha256::digest(key.to_string().as_bytes()))
+}
+
+/// One line of the change log (`changes`): a record or job written or deleted on top of
+/// `revision` (meta's revision before the write's bump). A job has no kind or scope. A message's
+/// `conversation` is kept, so one deleted still names the conversation to show again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeRow {
+    pub revision: i64,
+    pub tbl: String,
+    pub kind: String,
+    pub id: String,
+    pub connection_id: String,
+    pub workspace_id: String,
+    pub deleted: bool,
+    pub conversation: Option<String>,
+}
+
+/// The change log and its triggers: every write to `records` and `jobs` leaves a row, however
+/// it is made. Added beside the schema (no version bump: an older Connect still opens the data
+/// folder; its writes are logged by the triggers too).
+const CHANGE_LOG: &str = "
+    CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL, conversation TEXT);
+    CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
+    CREATE TABLE IF NOT EXISTS changes_meta (id INTEGER PRIMARY KEY CHECK(id=1), changes_from INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS message_conversation ON records(COALESCE(json_extract(body,'$.conversationId'),'')) WHERE kind='message';
+    CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
+    CREATE TRIGGER IF NOT EXISTS records_logged_update AFTER UPDATE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
+    CREATE TRIGGER IF NOT EXISTS records_logged_delete AFTER DELETE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER),json_extract(OLD.body,'$.conversationId')); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_insert AFTER INSERT ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_update AFTER UPDATE ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_delete AFTER DELETE ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',OLD.id,'','',1,CAST(strftime('%s','now') AS INTEGER)); END;
+";
 
 impl Repository {
     pub fn open(path: &Path) -> Result<Self> {
@@ -67,10 +146,27 @@ impl Repository {
             CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result TEXT);
             CREATE TABLE IF NOT EXISTS reservation_scopes (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, scope TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cursors (connection_id TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(connection_id,resource));
+            {CHANGE_LOG}
             PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"))?;
+        // The revision the change log is complete from (`changes_since`), in a table of its own:
+        // every older build inserts three values into `meta` in its init, so `meta` keeps three
+        // columns. A folder an earlier build of the change log gave `meta.changes_from` is mended
+        // first, keeping the later of the two.
+        let in_meta: i64 = db.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('meta') WHERE name='changes_from'",
+            [],
+            |r| r.get(0),
+        )?;
+        if in_meta > 0 {
+            db.execute_batch("INSERT INTO changes_meta SELECT 1, COALESCE(changes_from, revision) FROM meta WHERE id=1 ON CONFLICT(id) DO UPDATE SET changes_from=MAX(changes_meta.changes_from, excluded.changes_from); ALTER TABLE meta DROP COLUMN changes_from;")?;
+        }
         db.execute(
             "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
             [encode(&Settings::default())?],
+        )?;
+        db.execute(
+            "INSERT OR IGNORE INTO changes_meta SELECT 1, revision FROM meta WHERE id=1",
+            [],
         )?;
         let personal = Workspace {
             id: "personal".into(),
@@ -128,6 +224,7 @@ impl Repository {
         )?;
         prune_automation_runs(&db, None)?;
         let mut repo = Self { db };
+        let _ = repo.prune_changes(CHANGES_KEEP_REVISIONS, CHANGES_KEEP_SECS, now());
         // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
         let _ = repo.bind_default_to_active();
         // Earlier builds kept every Teams message in the window; keep each chat's newest tail.
@@ -295,6 +392,72 @@ impl Repository {
         tx.commit()?;
         Ok(n > 0)
     }
+    /// The database, for tests that write what no repository function writes.
+    #[cfg(test)]
+    pub(crate) fn db_for_tests(&self) -> &Sqlite {
+        &self.db
+    }
+    /// The revision the change log is complete from: changes since an older one may be gone.
+    pub fn changes_from(&self) -> Result<i64> {
+        Ok(self.db.query_row(
+            "SELECT changes_from FROM changes_meta WHERE id=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    /// What was written on top of `revision` or later: the newest line of each record and job,
+    /// oldest first. A snapshot read at `revision` was taken before those writes committed.
+    pub fn changes_since_rows(&self, revision: i64) -> Result<Vec<ChangeRow>> {
+        let mut stmt = self.db.prepare(
+            "SELECT revision,tbl,kind,id,connection_id,workspace_id,deleted,conversation FROM changes WHERE seq IN (SELECT MAX(seq) FROM changes WHERE revision>=?1 GROUP BY tbl,kind,id,connection_id,workspace_id) ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map([revision], |r| {
+                Ok(ChangeRow {
+                    revision: r.get(0)?,
+                    tbl: r.get(1)?,
+                    kind: r.get(2)?,
+                    id: r.get(3)?,
+                    connection_id: r.get(4)?,
+                    workspace_id: r.get(5)?,
+                    deleted: r.get::<_, i64>(6)? != 0,
+                    conversation: r.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    /// Forgets log lines older than the last `keep_revisions` revisions or `keep_secs` seconds
+    /// (whichever keeps less: a window that far behind reads the whole snapshot once), and moves
+    /// `changes_from` past the newest one forgotten. Returns how many went.
+    pub fn prune_changes(
+        &mut self,
+        keep_revisions: i64,
+        keep_secs: i64,
+        now: i64,
+    ) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let current: i64 =
+            tx.query_row("SELECT revision FROM meta WHERE id=1", [], |r| r.get(0))?;
+        let cond = "(revision<?1 OR at<?2)";
+        let newest_gone: Option<i64> = tx.query_row(
+            &format!("SELECT MAX(revision) FROM changes WHERE {cond}"),
+            params![current - keep_revisions, now - keep_secs],
+            |r| r.get(0),
+        )?;
+        let gone = tx.execute(
+            &format!("DELETE FROM changes WHERE {cond}"),
+            params![current - keep_revisions, now - keep_secs],
+        )?;
+        if let Some(newest) = newest_gone {
+            tx.execute(
+                "UPDATE changes_meta SET changes_from=MAX(changes_from,?1) WHERE id=1",
+                [newest + 1],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
             .db
@@ -341,32 +504,115 @@ impl Repository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter().map(decode).collect()
     }
-    pub fn snapshot(&self) -> Result<Snapshot> {
+    /// What decides which records a view sees: settings, workspaces, the active one, the
+    /// account and the account it may show (none while another account is signed in).
+    pub fn snapshot_scope(&self) -> Result<SnapshotScope> {
         let settings = self.settings()?;
         let workspaces: Vec<Workspace> = self.documents("SELECT body FROM workspaces ORDER BY id='personal' DESC,json_extract(body,'$.name') COLLATE NOCASE")?;
         let active = workspaces
             .iter()
             .find(|w| w.id == settings.active_workspace)
+            .cloned()
             .ok_or_else(|| WorkspaceError::new("storage", "Active workspace is unavailable."))?;
         let connection = settings
             .active_connection
             .as_ref()
             .and_then(|s| self.connection(s).ok());
-        let visible = shown_account(connection.as_ref(), active);
+        let visible = shown_account(connection.as_ref(), &active).cloned();
+        Ok(SnapshotScope {
+            settings,
+            workspaces,
+            active,
+            connection,
+            visible,
+        })
+    }
+    /// The records a view sees, as the snapshot holds them before the Inbox projection. With
+    /// `only`, just those keys (the automation runs only with `runs`: they come whole, the
+    /// newest of each automation).
+    pub fn visible_records_in(
+        &self,
+        scope: &SnapshotScope,
+        only: Option<&[RecordKey]>,
+        runs: bool,
+    ) -> Result<Vec<Record>> {
+        let wanted = if let Some(keys) = only {
+            self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted(kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL); DELETE FROM wanted;")?;
+            let mut add = self.db.prepare("INSERT INTO wanted VALUES(?1,?2,?3,?4)")?;
+            for k in keys {
+                add.execute(params![k.kind, k.id, k.connection_id, k.workspace_id])?;
+            }
+            " AND (kind,id,connection_id,workspace_id) IN (SELECT kind,id,connection_id,workspace_id FROM wanted)"
+        } else {
+            ""
+        };
+        self.visible_where(scope, wanted, only.is_none() || runs)
+    }
+    /// The records of these kinds a view sees, as the snapshot holds them before the Inbox
+    /// projection (no automation runs).
+    pub fn visible_records_of_kinds(
+        &self,
+        scope: &SnapshotScope,
+        kinds: &[&str],
+    ) -> Result<Vec<Record>> {
+        self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted_kinds(kind TEXT NOT NULL); DELETE FROM wanted_kinds;")?;
+        let mut add = self.db.prepare("INSERT INTO wanted_kinds VALUES(?1)")?;
+        for k in kinds {
+            add.execute([k])?;
+        }
+        self.visible_where(scope, " AND kind IN (SELECT kind FROM wanted_kinds)", false)
+    }
+    /// The messages a view sees of these conversations (`conversationId`, "" for none, as the
+    /// Inbox projection groups them), as the snapshot holds them before the projection.
+    pub fn visible_messages_of(
+        &self,
+        scope: &SnapshotScope,
+        conversations: &[String],
+    ) -> Result<Vec<Record>> {
+        self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted_conversations(conversation TEXT NOT NULL); DELETE FROM wanted_conversations;")?;
+        let mut add = self
+            .db
+            .prepare("INSERT INTO wanted_conversations VALUES(?1)")?;
+        for c in conversations {
+            add.execute([c])?;
+        }
+        self.visible_where(
+            scope,
+            " AND kind='message' AND COALESCE(json_extract(body,'$.conversationId'),'') IN (SELECT conversation FROM wanted_conversations)",
+            false,
+        )
+    }
+    /// Every chat message a view sees (at most `graph::CHAT_KEEP_MESSAGES` a chat), as the
+    /// snapshot holds them before the projection.
+    pub fn visible_chat_messages(&self, scope: &SnapshotScope) -> Result<Vec<Record>> {
+        self.visible_where(scope, " AND kind='message' AND source LIKE 'chat:%'", false)
+    }
+    /// The snapshot's record queries with `wanted` added to the local and account ones; the
+    /// automation runs (each automation's newest) when `runs`.
+    fn visible_where(
+        &self,
+        scope: &SnapshotScope,
+        wanted: &str,
+        runs: bool,
+    ) -> Result<Vec<Record>> {
+        let active = &scope.active;
+        let visible = scope.visible.as_ref();
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
-        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run' ORDER BY updated_at DESC")?;
+        let mut local_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run'{wanted} ORDER BY updated_at DESC"))?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
-        // list and Today show: each automation's latest run and its latest run delivered to Today.
-        let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
-        raw.extend(
-            runs_stmt
-                .query_map(params![active.id, cid, None::<&str>], record_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-        );
-        let mut provider_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
+        if runs {
+            // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
+            // list and Today show: each automation's latest run and its latest run delivered to Today.
+            let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
+            raw.extend(
+                runs_stmt
+                    .query_map(params![active.id, cid, None::<&str>], record_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        let mut provider_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))){wanted} ORDER BY updated_at DESC"))?;
         raw.extend(
             provider_stmt
                 .query_map(
@@ -375,40 +621,61 @@ impl Repository {
                 )?
                 .collect::<std::result::Result<Vec<_>, _>>()?,
         );
-        let mut records = Vec::new();
-        for r in raw {
-            if r.connection_id.is_none()
-                || visible.is_some_and(|c| source_permitted(&r, c)) && record_selected(&r, active)
-            {
-                records.push(r);
-            }
-        }
-        super::inbox::project(self, active, visible, &mut records)?;
-        super::ai_jobs::mark_stale_summaries(&mut records);
-        // The newest 300 jobs, leaving out transcript checks that found nothing: one runs per
-        // waiting meeting every few minutes and would push sync, send and AI rows out of Activity.
-        let jobs: Vec<Job> = self.documents(
-            "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC LIMIT 300",
-        )?;
-        let jobs = jobs
+        Ok(raw
             .into_iter()
-            .filter(|j| {
-                (j.workspace_id.is_none() || j.workspace_id.as_deref() == Some(&active.id))
-                    && (j.connection_id.is_none() || j.connection_id.as_deref() == Some(cid))
+            .filter(|r| {
+                r.connection_id.is_none()
+                    || visible.is_some_and(|c| source_permitted(r, c)) && record_selected(r, active)
             })
-            .collect();
-        let available = visible.is_some();
-        Ok(Snapshot {
-            revision: self.revision()?,
-            workspaces,
-            settings,
-            connection,
-            records,
-            jobs,
-            available,
-            meetings_root: None,
-            note_templates: Vec::new(),
-        })
+            .collect())
+    }
+    /// The jobs a view sees: the newest 300, leaving out transcript checks that found nothing
+    /// (one runs per waiting meeting every few minutes and would push sync, send and AI rows out
+    /// of Activity), of the active workspace and account.
+    pub fn snapshot_jobs(&self, scope: &SnapshotScope) -> Result<Vec<Job>> {
+        let cid = scope
+            .visible
+            .as_ref()
+            .map(|c| c.id.as_str())
+            .unwrap_or("__unavailable__");
+        let jobs: Vec<Job> = self.documents(
+            // Newest first, and of one second the last written first: the window takes the first of
+            // a conversation's jobs as its newest (selectors.js `summaryJob`).
+            "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC, rowid DESC LIMIT 300",
+        )?;
+        Ok(jobs
+            .into_iter()
+            .filter(|j| job_shown(j, &scope.active.id, cid))
+            .collect())
+    }
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        Ok(self.snapshot_scoped()?.0)
+    }
+    /// The snapshot and the hash of the scope it was read in.
+    pub fn snapshot_scoped(&self) -> Result<(Snapshot, String)> {
+        // The revision first: a write landing while the records are read is then in a delta
+        // since this revision again, never lost (its log lines are at this revision or later).
+        let revision = self.revision()?;
+        let scope = self.snapshot_scope()?;
+        let mut records = self.visible_records_in(&scope, None, true)?;
+        super::inbox::project(self, &scope.active, scope.visible.as_ref(), &mut records)?;
+        super::ai_jobs::mark_stale_summaries(&mut records);
+        let jobs = self.snapshot_jobs(&scope)?;
+        let hash = scope_hash_of(&scope);
+        Ok((
+            Snapshot {
+                revision,
+                available: scope.visible.is_some(),
+                workspaces: scope.workspaces,
+                settings: scope.settings,
+                connection: scope.connection,
+                records,
+                jobs,
+                meetings_root: None,
+                note_templates: Vec::new(),
+            },
+            hash,
+        ))
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is
     /// bound to it.
@@ -945,7 +1212,14 @@ impl Repository {
         let tx = self.db.transaction()?;
         if reconcile {
             if let Some((start, end)) = range {
-                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind='event' AND CAST(strftime('%s',json_extract(body,'$.start')) AS INTEGER) < ?4 AND CAST(strftime('%s',json_extract(body,'$.end')) AS INTEGER) > ?3",params![c.id,resource,start,end])?;
+                // The events of the window the round no longer has; the ones it has are written
+                // below, and only when they changed (a round reads every event every time).
+                let kept: Vec<&str> = records
+                    .iter()
+                    .filter(|r| r.kind == "event")
+                    .map(|r| r.id.as_str())
+                    .collect();
+                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind='event' AND CAST(strftime('%s',json_extract(body,'$.start')) AS INTEGER) < ?4 AND CAST(strftime('%s',json_extract(body,'$.end')) AS INTEGER) > ?3 AND id NOT IN (SELECT value FROM json_each(?5))",params![c.id,resource,start,end,encode(&kept)?])?;
             } else {
                 tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind IN ('event','message') AND EXISTS(SELECT 1 FROM records d WHERE d.kind='decision' AND d.connection_id=records.connection_id AND d.id=records.id AND json_extract(d.body,'$.lifecycle') IN ('archived','resolved')) AND NOT EXISTS(SELECT 1 FROM workspaces w WHERE json_extract(w.body,'$.connectionId')=records.connection_id AND ((json_extract(w.body,'$.sources.all')=1 AND (records.source LIKE 'mail:%' OR records.source LIKE 'chat:%' OR records.source LIKE 'calendar:%')) OR (records.source LIKE 'mail:%' AND json_extract(w.body,'$.sources.mail')=1) OR records.source IN(SELECT 'chat:'||value FROM json_each(w.body,'$.sources.chats'))) AND NOT EXISTS(SELECT 1 FROM records own WHERE own.kind='decision' AND own.id=records.id AND own.connection_id=records.connection_id AND own.workspace_id=w.id AND json_extract(own.body,'$.lifecycle') IN ('archived','resolved')))",params![c.id,resource])?;
             }
@@ -958,6 +1232,15 @@ impl Repository {
             }
         }
         for r in records {
+            // A sync round reads the catalogs every time: one that says the same is not written
+            // again, so it is not a change (the change log, and the window's next read).
+            if r.kind == "catalog" && same_body(&tx, r)? {
+                continue;
+            }
+            // An event the same as stored, change key included (reminders and edits go by it).
+            if r.kind == "event" && same_body(&tx, r)? && same_revision(&tx, r)? {
+                continue;
+            }
             put_record(&tx, r)?;
         }
         if let Some(key) = cursor_resource {
@@ -1098,6 +1381,19 @@ impl Repository {
             "DELETE FROM jobs WHERE state IN ('succeeded','failed','cancelled','blocked') AND due_at<?1 AND json_extract(body,'$.kind') IN (SELECT value FROM json_each(?2))",
             params![before, encode(&kinds)?],
         )?)
+    }
+    /// The jobs with these ids that are still there.
+    pub fn jobs_by_id(&self, ids: &[&str]) -> Result<Vec<Job>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .db
+            .prepare("SELECT body FROM jobs WHERE id IN (SELECT value FROM json_each(?1))")?;
+        let rows = stmt
+            .query_map([encode(&ids)?], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.iter().map(|b| decode(b.clone())).collect()
     }
     pub fn jobs(&self) -> Result<Vec<Job>> {
         self.documents("SELECT body FROM jobs ORDER BY due_at")
@@ -1331,6 +1627,30 @@ fn prune_automation_runs(db: &Sqlite, automation_id: Option<&str>) -> Result<()>
 fn bump(tx: &Transaction<'_>) -> Result<()> {
     tx.execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
     Ok(())
+}
+/// Whether `r` is stored already with this source and body.
+fn same_body(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
+    let stored: Option<(String, String)> = tx
+        .query_row(
+            "SELECT source,body FROM records WHERE id=?1 AND kind=?2 AND connection_id=?3 AND workspace_id=?4",
+            params![r.id, r.kind, r.connection_id.as_deref().unwrap_or(""), r.workspace_id.as_deref().unwrap_or("")],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(stored.is_some_and(|(source, body)| {
+        source == r.source && body == encode(&r.data).unwrap_or_default()
+    }))
+}
+/// Whether `r` is stored already with this revision (a provider's change key).
+fn same_revision(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT revision FROM records WHERE id=?1 AND kind=?2 AND connection_id=?3 AND workspace_id=?4",
+            params![r.id, r.kind, r.connection_id.as_deref().unwrap_or(""), r.workspace_id.as_deref().unwrap_or("")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(stored.as_deref() == Some(r.revision.as_str()))
 }
 fn put_record(tx: &Transaction<'_>, r: &Record) -> Result<()> {
     tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=excluded.body",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&r.data)?])?;
@@ -1932,6 +2252,341 @@ mod tests {
             updated_at: now(),
             data,
         }
+    }
+    fn local_note(id: &str) -> Record {
+        let mut note = item("", id, "note", "local", json!({"text": id}));
+        note.connection_id = None;
+        note.workspace_id = Some("personal".into());
+        note
+    }
+    fn test_job(id: &str) -> Job {
+        Job {
+            id: id.into(),
+            kind: "sync".into(),
+            key: id.into(),
+            state: "queued".into(),
+            workspace_id: None,
+            connection_id: None,
+            due_at: now(),
+            lease_until: None,
+            attempts: 0,
+            policy: json!({}),
+            payload: json!({}),
+            result: None,
+            error_class: None,
+            error_code: None,
+        }
+    }
+    #[test]
+    fn writes_log_one_row_per_record_with_the_revision_before_their_bump() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let before = r.revision().unwrap();
+        r.put_record(&local_note("n1")).unwrap();
+        assert_eq!(r.revision().unwrap(), before + 1);
+        assert_eq!(
+            r.changes_since_rows(before).unwrap(),
+            vec![ChangeRow {
+                revision: before,
+                tbl: "record".into(),
+                kind: "note".into(),
+                id: "n1".into(),
+                connection_id: "".into(),
+                workspace_id: "personal".into(),
+                deleted: false,
+                conversation: None,
+            }]
+        );
+    }
+    #[test]
+    fn deletes_and_job_changes_are_logged() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        r.put_record(&local_note("n1")).unwrap();
+        r.delete_local("note", "n1", "personal").unwrap();
+        let rows = r.changes_since_rows(0).unwrap();
+        assert_eq!(rows.len(), 1, "the newest row of a key: {rows:?}");
+        assert!(rows[0].deleted && rows[0].id == "n1");
+        let mut job = test_job("j1");
+        r.enqueue(&job).unwrap();
+        job.state = "succeeded".into();
+        r.save_job(&job).unwrap();
+        let jobs: Vec<ChangeRow> = r
+            .changes_since_rows(0)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.tbl == "job")
+            .collect();
+        assert_eq!(jobs.len(), 1);
+        assert!(!jobs[0].deleted && jobs[0].id == "j1" && jobs[0].kind.is_empty());
+        r.db.execute("DELETE FROM jobs WHERE id='j1'", []).unwrap();
+        assert!(r
+            .changes_since_rows(0)
+            .unwrap()
+            .iter()
+            .any(|c| c.tbl == "job" && c.id == "j1" && c.deleted));
+    }
+    #[test]
+    fn changes_since_a_snapshot_are_the_writes_after_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        r.put_record(&local_note("n0")).unwrap();
+        let at = r.snapshot().unwrap().revision;
+        r.put_record(&local_note("n1")).unwrap();
+        r.put_record(&local_note("n2")).unwrap();
+        let ids: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, ["n1", "n2"]);
+        assert!(r.changes_since_rows(at + 4).unwrap().is_empty());
+    }
+    #[test]
+    fn pruning_keeps_the_newest_and_raises_changes_from() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        for i in 0..10 {
+            r.put_record(&local_note(&format!("n{i}"))).unwrap();
+        }
+        let current = r.revision().unwrap();
+        assert_eq!(r.prune_changes(3, 3600, now()).unwrap(), 7);
+        let kept: Vec<i64> = r
+            .changes_since_rows(0)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.revision)
+            .collect();
+        assert_eq!(kept, [current - 3, current - 2, current - 1]);
+        assert_eq!(r.changes_from().unwrap(), current - 3);
+        // Older than the time kept: gone whatever their revision (whichever keeps less).
+        r.put_record(&local_note("n10")).unwrap();
+        assert_eq!(r.prune_changes(1_000_000, 0, now() + 10).unwrap(), 4);
+        assert_eq!(r.changes_from().unwrap(), r.revision().unwrap());
+    }
+    #[test]
+    fn an_older_connect_still_opens_the_data_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        drop(Repository::open(&path).unwrap());
+        // Every build before the change log runs this in its init.
+        let db = Sqlite::open(&path).unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
+            [encode(&Settings::default()).unwrap()],
+        )
+        .expect("an older build's init");
+        // A folder opened by an earlier build of this branch (meta.changes_from) is mended.
+        db.execute_batch(
+            "ALTER TABLE meta ADD COLUMN changes_from INTEGER; UPDATE meta SET changes_from=3;",
+        )
+        .unwrap();
+        drop(db);
+        let r = Repository::open(&path).unwrap();
+        let columns: i64 =
+            r.db.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('meta')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 3);
+        assert_eq!(r.changes_from().unwrap(), 3, "its value is kept");
+    }
+    #[test]
+    fn a_catalog_written_again_unchanged_logs_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let catalog = item(
+            "a",
+            "calendars",
+            "catalog",
+            "catalog",
+            json!({"values": [{"id": "cal-1"}]}),
+        );
+        r.commit_sync(
+            &c,
+            "catalog",
+            std::slice::from_ref(&catalog),
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        let at = r.revision().unwrap();
+        let mut again = catalog.clone();
+        again.revision = "another".into();
+        again.updated_at += 60;
+        r.commit_sync(&c, "catalog", &[again.clone()], &[], None, false)
+            .unwrap();
+        r.commit_chat_catalog(
+            &c,
+            &item("a", "chats", "catalog", "catalog", json!({"values": []})),
+            None,
+        )
+        .unwrap();
+        r.commit_chat_catalog(
+            &c,
+            &item("a", "chats", "catalog", "catalog", json!({"values": []})),
+            None,
+        )
+        .unwrap();
+        let logged: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            logged,
+            ["chats"],
+            "the unchanged calendars catalog is not written again"
+        );
+        // A changed one is.
+        again.data = json!({"values": [{"id": "cal-1"}, {"id": "cal-2"}]});
+        r.commit_sync(&c, "catalog", &[again], &[], None, false)
+            .unwrap();
+        assert!(r
+            .changes_since_rows(at)
+            .unwrap()
+            .iter()
+            .any(|c| c.id == "calendars"));
+    }
+    #[test]
+    fn a_calendar_round_writes_only_the_events_that_changed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let event = |id: &str, title: &str, key: &str| Record {
+            id: id.into(),
+            kind: "event".into(),
+            connection_id: Some("a".into()),
+            workspace_id: None,
+            source: "calendar:cal-1".into(),
+            revision: key.into(),
+            updated_at: now(),
+            data: json!({"title": title, "start": "2026-11-25T10:00:00Z", "end": "2026-11-25T11:00:00Z"}),
+        };
+        let window = (1_795_564_800, 1_795_651_200); // 25 Nov 2026, the whole day (UTC)
+        let mut round = |r: &mut Repository, events: &[Record]| {
+            r.commit_calendar_round(
+                &c,
+                "calendar:cal-1",
+                events,
+                &[],
+                CalendarRound {
+                    window,
+                    full: true,
+                    cursor_key: "calendar:cal-1",
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1"),
+                event("e2", "Review", "k2"),
+                event("e4", "Lunch", "k4"),
+            ],
+        );
+        let at = r.revision().unwrap();
+        // The next round: e1 the same, e2 changed, e3 new, e4 gone from the calendar.
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1"),
+                event("e2", "Review moved", "k2b"),
+                event("e3", "Retro", "k3"),
+            ],
+        );
+        let mut logged: Vec<(String, bool)> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.kind == "event")
+            .map(|c| (c.id, c.deleted))
+            .collect();
+        logged.sort();
+        assert_eq!(
+            logged,
+            [
+                ("e2".to_string(), false),
+                ("e3".to_string(), false),
+                ("e4".to_string(), true)
+            ]
+        );
+        let events: Vec<String> = r
+            .provider_records("a", "event")
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert!(
+            events.contains(&"e1".to_string()) && !events.contains(&"e4".to_string()),
+            "{events:?}"
+        );
+        // A new change key alone is a change: reminders and edits go by it.
+        let at = r.revision().unwrap();
+        round(
+            &mut r,
+            &[
+                event("e1", "Standup", "k1b"),
+                event("e2", "Review moved", "k2b"),
+                event("e3", "Retro", "k3"),
+            ],
+        );
+        let logged: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.kind == "event")
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(logged, ["e1"]);
+    }
+    #[test]
+    fn an_existing_data_folder_gets_the_log_without_a_schema_bump() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        {
+            // A data folder from before the change log.
+            let db = Sqlite::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, settings TEXT NOT NULL);
+                CREATE TABLE records (id TEXT NOT NULL, kind TEXT NOT NULL, connection_id TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, revision TEXT NOT NULL, updated_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(id,kind,connection_id,workspace_id));
+                CREATE TABLE jobs (id TEXT PRIMARY KEY, execution_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, due_at INTEGER NOT NULL, lease_until INTEGER, body TEXT NOT NULL);
+                PRAGMA user_version=1;").unwrap();
+            db.execute(
+                "INSERT INTO meta VALUES(1,7,?1)",
+                [encode(&Settings::default()).unwrap()],
+            )
+            .unwrap();
+        }
+        let mut r = Repository::open(&path).unwrap();
+        let version: i64 =
+            r.db.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(
+            version, 1,
+            "no schema bump: an older Connect still opens it"
+        );
+        let triggers: i64 = r
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('records','jobs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 6);
+        assert_eq!(r.changes_from().unwrap(), 7);
+        r.put_record(&local_note("n1")).unwrap();
+        assert_eq!(r.changes_since_rows(7).unwrap().len(), 1);
     }
     #[test]
     fn chat_pruning_keeps_the_newest_tail_and_anything_acted_on() {

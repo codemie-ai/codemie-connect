@@ -1,7 +1,7 @@
 // Workspace controller: routing, native snapshot rendering and actions. Settings → CodeMie is
 // codemie/controller.js; the legacy installer UI (ui/renderer.js) only serves smoke/probe mode
 // and the storage-recovery page.
-import { createStore, escapeHtml as e } from './store.js';
+import { createStore, escapeHtml as e, refreshDelay } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
@@ -80,7 +80,8 @@ const OPTIMISTIC = {
   meeting_download: previewRun('transcript_download'),
   job_cancel: previewJobCancel,
 };
-const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC }) : null;
+// A read with a snapshot in hand asks only what changed since it (changes.js).
+const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC, deltas: true }) : null;
 
 const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',
@@ -422,8 +423,9 @@ async function render() {
   // A field typed in keeps its caret (and selection) when the render puts focus back on it.
   const caret = refocus && typeof focused.selectionStart === 'number' ? { value: focused.value, range: [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] } : null;
   heldRender = false;
-  // A ⋯ menu the user opened stays open through an update (a minute tick, a new snapshot).
-  const openMenus = [...root.querySelectorAll('details.ws-menu[open][data-menu]')].map(d => d.dataset.menu);
+  // A ⋯ menu or a folding section the user opened stays open through an update (a minute tick,
+  // a new snapshot, a button clicked inside it).
+  const openMenus = [...root.querySelectorAll('details[open][data-menu]')].map(d => d.dataset.menu);
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
@@ -481,7 +483,7 @@ async function render() {
   const freshReply = document.getElementById('reply-body');
   if (freshReply !== keepReply && unsavedReply && freshReply?.closest('form')?.dataset.key === unsavedReply.key) freshReply.value = unsavedReply.text;
   syncReplyBox(freshReply);
-  for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
+  for (const menu of openMenus) root.querySelector(`details[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
   measureToday();
@@ -3033,7 +3035,7 @@ async function boot() {
   if (state.route === 'settings' && state.settingsTab === 'plugins') pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
   const listen = window.__TAURI__.event.listen;
-  // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
+  // A sync round emits one change per Graph request; read what changed about three times a second.
   // Every write announces its own change too: the write's own read, asked after that, brings it.
   let refreshTimer = null;
   let lastRefresh = 0;
@@ -3045,7 +3047,7 @@ async function boot() {
       refreshTimer = null;
       lastRefresh = Date.now();
       store.refreshAfter(heardAt).catch(fail);
-    }, Math.max(150, 1200 - (Date.now() - lastRefresh)));
+    }, refreshDelay(Date.now() - lastRefresh));
   };
   for (const name of ['workspace:changed', 'connection:changed']) await listen(name, scheduleRefresh);
   // The plugin manager finished a reload: what loaded and what didn't (and why) is read again, so

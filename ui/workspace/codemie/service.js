@@ -18,6 +18,8 @@ import { parseProxyStatus, failureMessage } from './parse.js';
 
 const RELOAD_MS = 5000;
 const VERSION = /(\d+\.\d+\.\d+(?:-[\w.]+)?)/;
+/** The first non-empty line a command printed, when it succeeded. */
+const firstLine = (r) => (r.code === 0 ? r.output.split('\n').map((l) => l.trim()).find(Boolean) || null : null);
 
 export function createCodemieService({ invoke, listen, runLog, platform, now = Date.now, setupRunning = () => false }) {
   const cm = emptyCodemie();
@@ -84,8 +86,8 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
    * One operation under `key`: marks it busy, clears and records its error, and holds the quit
    * guard. `busy[key]` is set before the first await, so a second call sees it at once.
    */
-  async function operation(key, fn, { blocksQuit = true } = {}) {
-    cm.busy[key] = true;
+  async function operation(key, fn, { blocksQuit = true, busy = true } = {}) {
+    cm.busy[key] = busy;
     delete cm.errors[key];
     notify();
     if (blocksQuit) await guard(true);
@@ -183,6 +185,7 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
     const r = await run(cmd.version, { check: false });
     const v = r.output.match(VERSION)?.[1];
     if (v) { cm.runtime.version = v; notify(); }
+    return v || null;
   }
 
   function afterReady() {
@@ -383,17 +386,32 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
   }
 
   function updateCli() {
+    const own = !!cm.runtime.ownCli;
     return operation('cli', async () => {
-      if (!cm.runtime.ownCli) {
+      if (!own) {
         const v = await invoke('update_cli');
         if (v) cm.runtime.version = v;
         cm.runtime.checkedAt = now();
       } else {
-        await run(cmd.selfUpdate, { stream: true, verb: 'Updating CodeMie' });
-        await readVersion();
+        const target = cm.runtime.latest;
+        const r = await run(cmd.selfUpdate, { stream: true, verb: 'Updating CodeMie' });
+        // A copy the CLI can't update in place (an `npm link`) gets the new version in
+        // ~/.codemie/agents, behind the old one on PATH: installed, yet not what runs.
+        const v = await readVersion();
+        if (target && v && v.localeCompare(target, undefined, { numeric: true }) < 0) {
+          const path = firstLine(await run(cmd.commandPath('codemie'), { check: false }));
+          const real = cmd.activePackageDir ? firstLine(await run(cmd.activePackageDir, { check: false })) : null;
+          const link = real && !/[\\/]node_modules[\\/]@codemieai[\\/]code$/.test(real) ? real : null;
+          const message = link
+            ? `CodeMie ${target} was installed, but Connect and Terminal still run ${v} from your npm link to ${link}. Update that checkout (git pull, then npm run build) or run npm unlink -g @codemieai/code, then check again.`
+            : `CodeMie ${target} was installed, but Connect and Terminal still run ${v}${path ? ` from ${path}` : ''}, which comes first on your PATH. Update or remove that copy, then check again.`;
+          cm.runtime.shadowed = { version: v, message, output: r.output };
+          throw Object.assign(new Error(message), { output: r.output });
+        }
+        cm.runtime.shadowed = null;
       }
       await load({ force: true });
-    });
+    }, { busy: own ? 'install' : true });
   }
 
   function checkCli() {
@@ -403,6 +421,9 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
       const versions = r.output.match(new RegExp(VERSION.source, 'g')) || [];
       cm.runtime.latest = versions.at(-1) || null;
       cm.runtime.checkedAt = now();
+      // The copy that runs may have changed since (a checkout rebuilt, a link removed).
+      const v = await readVersion();
+      if (cm.runtime.shadowed && v && v !== cm.runtime.shadowed.version) cm.runtime.shadowed = null;
     }, { blocksQuit: false });
   }
 

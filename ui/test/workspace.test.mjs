@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, escapeHtml, REBASE_SAFE } from '../workspace/store.js';
+import { createStore, escapeHtml, REBASE_SAFE, refreshDelay } from '../workspace/store.js';
 import { runReadOnlyProbe } from '../workspace/safe-probe.js';
 import {
   calendarDays, calendarWindow, calendarCoverage, calendarIds, calendarColor, eventSpan, eventsOnDay,
@@ -113,6 +113,30 @@ test('a write settles on its own read, not on a background read asked after it',
   await background;
   assert.equal(store.get().snapshot.value, 1);
   assert.deepEqual(shown, [1, 1]);
+});
+
+test('changes heard while a read is on its way ask one more read after it, not one each', async () => {
+  let clock = 0;
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { now: () => clock });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  clock = 10;
+  const first = store.refreshAfter(10);
+  assert.equal(bridge.reads.length, 2);
+  // A sync round announces each Graph request: three more while that read is on its way.
+  const later = [20, 30, 40].map(at => { clock = at; return store.refreshAfter(at); });
+  assert.equal(bridge.reads.length, 2, 'one read on its way; the rest wait for it');
+  bridge.value = 7;
+  bridge.reads[1].go();
+  await first;
+  await tick();
+  assert.equal(bridge.reads.length, 3, 'one more, for everything heard meanwhile');
+  bridge.reads[2].go();
+  const answers = await Promise.all(later);
+  assert.ok(answers.every(a => a.snapshot.value === 7));
+  assert.equal(bridge.reads.length, 3);
 });
 
 test('a read that lands after a newer one is dropped: the view never goes back', async () => {
@@ -394,6 +418,69 @@ test('a workspace:changed heard while writes are queued reads nothing: the queue
   await store.refreshAfter(Infinity);
   await Promise.all(writes);
   assert.equal(bridge.ops.filter(op => op === 'snapshot').length, 1);
+});
+
+/** A native stand-in that answers `changes_since` with a delta of what `value` became (or a
+ *  reset when told to), and counts its requests. */
+function deltaNative() {
+  const bridge = { revision: 1, value: 0, scope: 's1', ops: [], reset: false, fail: false };
+  const answer = () => ({ snapshot: { revision: bridge.revision, records: [{ kind: 'v', id: 'v', connectionId: null, workspaceId: 'personal', data: { value: bridge.value } }], jobs: [], settings: { activeWorkspace: 'personal' } }, scope: bridge.scope, authPending: false, authError: null });
+  bridge.invoke = async (_, { request: r }) => {
+    bridge.ops.push(r.op);
+    if (r.op === 'snapshot') return answer();
+    if (r.op === 'revision') return { revision: bridge.revision };
+    if (r.op === 'changes_since') {
+      if (bridge.fail) throw { code: 'storage', message: 'boom' };
+      if (bridge.reset || r.data.scope !== bridge.scope) return { reset: true };
+      const a = answer();
+      return { reset: false, revision: bridge.revision, scope: bridge.scope, records: a.snapshot.records, removed: [], replace: [], jobs: [], removedJobs: [], jobsAll: false, settings: a.snapshot.settings, workspaces: [], connection: null, available: true, meetingsRoot: null, noteTemplates: [], authPending: false, authError: null };
+    }
+    if (r.expectedRevision !== bridge.revision) throw { code: 'stale_view' };
+    bridge.revision += 2;
+    bridge.value = r.data.value;
+    return { saved: true };
+  };
+  return bridge;
+}
+const valueOf = store => store.get().snapshot.records.find(r => r.kind === 'v').data.value;
+
+test('with a snapshot in hand a read asks changes_since and applies it; a reset or an error reads the snapshot', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true });
+  await store.refresh();
+  bridge.value = 3;
+  bridge.revision = 4;
+  await store.refresh();
+  assert.deepEqual(bridge.ops, ['snapshot', 'changes_since']);
+  assert.equal(valueOf(store), 3);
+  assert.equal(store.get().snapshot.revision, 4);
+  bridge.reset = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(2), ['changes_since', 'snapshot']);
+  bridge.reset = false;
+  bridge.fail = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(4), ['changes_since', 'snapshot']);
+});
+
+test('a write with a preview settles on a delta, the preview laid over it until then', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true, optimistic: { task_save: (s, d) => ({ ...s, records: s.records.map(r => (r.kind === 'v' ? { ...r, data: { value: d.value } } : r)) }) } });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [5, 6].map(value => store.mutate('task_save', { value }));
+  assert.equal(valueOf(store), 6, 'shown at once');
+  await Promise.all(writes);
+  await store.idle();
+  assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'changes_since']);
+  assert.equal(valueOf(store), 6);
+});
+
+test('a change is read again 300 ms after the last read at most, and never sooner than 150 ms', () => {
+  assert.equal(refreshDelay(0), 300);
+  assert.equal(refreshDelay(100), 200);
+  assert.equal(refreshDelay(250), 150);
+  assert.equal(refreshDelay(60_000), 150);
 });
 
 test('sending rebases; native guards the review itself', async () => {

@@ -20,7 +20,14 @@
 // person reviews what will go out; `action_confirm` sends only that reviewed action and refuses
 // (`conflict`) when it was used, expired or its source changed since (actions.rs `confirm_action`).
 // Sync now, Retry, a calendar range and a test notification act on things as they are when they run.
+import { applyChanges } from './changes.js';
+
 export const REBASE_SAFE = new Set(['action_prepare', 'action_confirm', 'sync_request', 'job_retry', 'calendar_window', 'notification_test', 'settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
+
+/** How long after a workspace:changed the window reads again, `elapsed` ms after its last read:
+ *  at most 300 ms after it (a sync round announces each Graph request; a delta costs
+ *  milliseconds, so about three reads a second), never sooner than 150 ms (changes come in bursts). */
+export const refreshDelay = elapsed => Math.max(150, 300 - elapsed);
 
 /** How many times a rebase-safe operation is sent before a stale view is reported. */
 const REBASE_TRIES = 5;
@@ -28,8 +35,10 @@ const REBASE_TRIES = 5;
 /** `now()` is the clock `refreshAfter` compares with (the caller's `performance.now()`);
  *  `optimistic` maps an operation to its preview, `(snapshot, data, { operationId }) => snapshot`
  *  (null: none). The operation id is the one sent, so a record native names by it (a new task)
- *  is shown under its final id. */
-export function createStore(invoke, { now = () => performance.now(), optimistic = {} } = {}) {
+ *  is shown under its final id. With `deltas`, a read with a snapshot in hand asks native what
+ *  changed since it (`changes_since`, changes.js) and reads the whole snapshot only at first, on
+ *  a reset or when that fails. */
+export function createStore(invoke, { now = () => performance.now(), optimistic = {}, deltas = false } = {}) {
   // What native last gave, and what is shown: that with the changes on their way laid over it.
   let state = null;
   let shown = null;
@@ -74,7 +83,15 @@ export function createStore(invoke, { now = () => performance.now(), optimistic 
   function read() {
     const n = ++asked;
     askedAt = now();
-    const landed = invoke('workspace_request', { request: { op: 'snapshot' } }).then(result => {
+    const whole = () => invoke('workspace_request', { request: { op: 'snapshot' } });
+    // A delta is applied to the state this read was asked on: whatever lands meanwhile, the
+    // result is native's state at the delta's revision.
+    const base = deltas && state?.scope ? state : null;
+    const answer = base
+      ? invoke('workspace_request', { request: { op: 'changes_since', data: { revision: base.snapshot.revision, scope: base.scope } } })
+        .then(delta => applyChanges(base, delta) ?? whole(), whole)
+      : whole();
+    const landed = answer.then(result => {
       if (n <= applied) return false;
       applied = n;
       state = result;
@@ -90,12 +107,25 @@ export function createStore(invoke, { now = () => performance.now(), optimistic 
     return shown;
   }
 
+  // The read a workspace:changed asked that is on its way, and the one more asked after it
+  // lands for every change heard meanwhile.
+  let changedRead = null;
+  let followUp = null;
+
   /** A workspace:changed heard at `at` (`now()`): read again, unless a read asked since then
    *  already brings that change (a write's own read brings the change the write announced), or
-   *  writes are on their way (the queue's last read, asked after them, brings it). */
+   *  writes are on their way (the queue's last read, asked after them, brings it). While such a
+   *  read is on its way, the changes heard meanwhile share one more read after it: a sync round
+   *  announces each Graph request, and reads must not pile up behind each other. */
   function refreshAfter(at) {
     if (writing) return drained.then(() => shown);
-    return askedAt >= at ? lastRead : refresh();
+    if (askedAt >= at) return lastRead;
+    if (changedRead) {
+      followUp ??= changedRead.then(() => { followUp = null; return refreshAfter(at); }, () => { followUp = null; return refreshAfter(at); });
+      return followUp;
+    }
+    changedRead = refresh().finally(() => { changedRead = null; });
+    return changedRead;
   }
 
   function mutate(op, data = {}, workspaceId, { retry = REBASE_SAFE.has(op) } = {}) {

@@ -246,9 +246,39 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   }
   const DEFAULT_MEETINGS_ROOT = s.meetingsRoot?.path || '/Users/taylor/CodeMie Connect/Meetings';
   const SCOPES = { calendar: 'Calendars.Read', mail: 'Mail.Read', chats: 'Chat.Read', meetings: 'OnlineMeetings.Read', transcripts: 'OnlineMeetingTranscript.Read.All' };
+  // The snapshot answers handed out, by scope token, for changes_since.
+  const sent = new Map();
+  let sentSeq = 0;
   const ops = {
-    snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
+    // Every answer carries its own scope token: changes_since diffs against exactly the snapshot
+    // the window holds (native's scope hash stands for the visibility scope; the mock's diff
+    // covers everything, so a token per answer is enough).
+    snapshot: () => {
+      const answer = { snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError, scope: `mock:${++sentSeq}` };
+      sent.set(answer.scope, clone(answer));
+      for (const key of [...sent.keys()].slice(0, -40)) sent.delete(key);
+      return answer;
+    },
     revision: () => ({ revision: s.revision }),
+    // changes.rs `changes_since`, by diffing: records by kind|id|scope, jobs by id (the whole list
+    // when one went), the small parts whole; a reset when the base is gone.
+    changes_since: ({ scope }) => {
+      const base = sent.get(scope);
+      if (!base) return { reset: true };
+      const now = ops.snapshot();
+      const key = r => `${r.kind}|${r.id}|${r.connectionId ?? ''}|${r.workspaceId ?? ''}`;
+      const was = new Map(base.snapshot.records.map(r => [key(r), JSON.stringify(r)]));
+      const is = new Set(now.snapshot.records.map(key));
+      const records = now.snapshot.records.filter(r => was.get(key(r)) !== JSON.stringify(r));
+      const removed = base.snapshot.records.filter(r => !is.has(key(r))).map(r => ({ kind: r.kind, id: r.id, connectionId: r.connectionId ?? null, workspaceId: r.workspaceId ?? null }));
+      const jobsWas = new Map((base.snapshot.jobs || []).map(j => [j.id, JSON.stringify(j)]));
+      const jobsIs = new Set((now.snapshot.jobs || []).map(j => j.id));
+      const removedJobs = [...jobsWas.keys()].filter(id => !jobsIs.has(id));
+      const jobsAll = removedJobs.length > 0;
+      const jobs = jobsAll ? now.snapshot.jobs : (now.snapshot.jobs || []).filter(j => jobsWas.get(j.id) !== JSON.stringify(j));
+      const { settings, workspaces, connection, available, meetingsRoot, noteTemplates } = now.snapshot;
+      return { reset: false, revision: now.snapshot.revision, scope: now.scope, records, removed, replace: [], jobs, removedJobs, jobsAll, settings, workspaces, connection, available, meetingsRoot, noteTemplates, authPending: now.authPending, authError: now.authError };
+    },
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
       const rootBefore = s.settings.meetings?.root ?? null;
@@ -1130,13 +1160,14 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (unavailable) throw { code: 'storage_unavailable', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
         if (window.__storageFail) throw { code: 'storage_unavailable', message: 'Connect lost access to its data folder.' };
         const r = args.request;
+        if (window.__recordReads && ['snapshot', 'changes_since'].includes(r.op)) window.__readCalls.push(r.op);
         // Fake background sync: bump the revision once so the next fenced write is stale.
-        if (window.__syncBump && r.op !== 'snapshot') { window.__syncBump = false; s.revision++; }
+        if (window.__syncBump && !['snapshot', 'revision', 'changes_since'].includes(r.op)) { window.__syncBump = false; s.revision++; }
         if (r.op !== 'snapshot' && r.expectedRevision !== undefined && r.expectedRevision !== s.revision) throw { code: 'stale_view', message: 'This view changed.' };
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['revision', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['revision', 'changes_since', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -3127,6 +3158,16 @@ for (const theme of ['dark', 'light']) {
       assert(!(await page.locator('#sidebar-analytics').count()), 'analytics entry exists');
       assert(!(await page.locator('#legacy-host').count()), 'legacy host exists');
       assert(!(await page.locator('.ws-settings-nav :text("CLI usage analytics")').count()), 'analytics tab exists');
+    });
+    if (width === 1440) await check(`${theme} codemie: Check for updates keeps the CodeMie CLI card open`, async () => {
+      const { page } = ready;
+      await page.click('.ws-settings-nav button[data-tab=cm-overview]');
+      const card = page.locator('details[data-menu="codemie-cli"]');
+      await card.locator('summary').click();
+      await page.waitForSelector('details[data-menu="codemie-cli"][open]');
+      await card.locator('button[data-action="cm-cli-check"]').click();
+      await page.waitForSelector('.ws-toast:has-text("CodeMie is up to date.")', { timeout: 6000 });
+      assert(await card.evaluate(d => d.open), 'the CodeMie CLI card folded after Check for updates');
     });
     await check(`${theme} ${width}px codemie: settings no page errors`, async () => assert(ready.errors.length === 0, ready.errors.join(' | ')));
     await ready.context.close().catch(() => {});

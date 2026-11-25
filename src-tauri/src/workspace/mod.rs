@@ -4,6 +4,7 @@ mod ai;
 mod ai_jobs;
 pub(crate) mod analytics;
 mod automations;
+mod changes;
 mod credentials;
 #[cfg(target_os = "macos")]
 mod curl;
@@ -465,6 +466,17 @@ impl Core {
             if let Err(e) = meetings::meetings_round_at(self, now()) {
                 eprintln!("meetings: transcript round failed: {}", e.message);
             }
+            // The change log keeps a day (or 100k revisions) for reads by revision.
+            let pruned = self.repo().and_then(|mut r| {
+                r.prune_changes(
+                    repository::CHANGES_KEEP_REVISIONS,
+                    repository::CHANGES_KEEP_SECS,
+                    now(),
+                )
+            });
+            if let Err(e) = pruned {
+                eprintln!("workspace: the change log was not pruned: {}", e.message);
+            }
         }
         for _ in 0..8 {
             let job = {
@@ -725,21 +737,30 @@ impl Core {
         };
         Ok((w, c))
     }
+    /// The meetings folder as a view shows it: a setting, not account data, so shown whatever
+    /// the account may read.
+    pub(crate) fn shown_meetings_root(
+        &self,
+        settings: &meetings::model::MeetingSettings,
+    ) -> Option<meetings::model::MeetingsRoot> {
+        self.meetings_root(settings)
+            .ok()
+            .map(|(path, is_default)| meetings::model::MeetingsRoot {
+                path: path.to_string_lossy().into_owned(),
+                is_default,
+            })
+    }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
         if req.op == Operation::Snapshot {
-            let mut snapshot = self.repo()?.snapshot()?;
-            // A setting, not account data: shown whatever the account may read.
-            snapshot.meetings_root =
-                self.meetings_root(&snapshot.settings.meetings)
-                    .ok()
-                    .map(|(path, is_default)| meetings::model::MeetingsRoot {
-                        path: path.to_string_lossy().into_owned(),
-                        is_default,
-                    });
+            let (mut snapshot, scope) = self.repo()?.snapshot_scoped()?;
+            snapshot.meetings_root = self.shown_meetings_root(&snapshot.settings.meetings);
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
             return Ok(
-                json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
+                json!({"snapshot":snapshot,"scope":scope,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
+        }
+        if req.op == Operation::ChangesSince {
+            return self.changes_since(&req).await;
         }
         // Read-only: no operation id, no revision bump.
         if req.op == Operation::Revision {

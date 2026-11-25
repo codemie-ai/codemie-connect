@@ -53,6 +53,72 @@ pub fn find_program_in(
     home: &Path,
     extra: &[PathBuf],
 ) -> Option<PathBuf> {
+    program_candidates(name, path_var, home, extra).next()
+}
+
+/// The copy of a CodeMie CLI program (`codemie`, `codemie-claude`) to run: the first one
+/// `find_program_in` finds, unless a later one belongs to a newer `@codemieai/code`. An
+/// `npm link` to an old checkout first on the PATH then no longer hides the update next to it,
+/// and the CodeMie server refuses a CLI older than its minimum (HTTP 426).
+pub fn find_codemie_program_in(
+    name: &str,
+    path_var: &str,
+    home: &Path,
+    extra: &[PathBuf],
+) -> Option<PathBuf> {
+    let mut found = program_candidates(name, path_var, home, extra);
+    let first = found.next()?;
+    // A first copy of unknown version (the bundled launcher) is not known to be old: it runs.
+    let Some(version) = codemie_version(&first) else {
+        return Some(first);
+    };
+    let mut newest = (first, version);
+    for p in found {
+        if let Some(v) = codemie_version(&p) {
+            if v > newest.1 {
+                newest = (p, v);
+            }
+        }
+    }
+    Some(newest.0)
+}
+
+/// The version of the `@codemieai/code` package `program` belongs to, from the package.json
+/// above its real file: npm links a global program to `<package>/bin/…`, and `npm link` points
+/// that package at a checkout. `None` for anything else, such as a shim.
+fn codemie_version(program: &Path) -> Option<(u64, u64, u64)> {
+    let real = std::fs::canonicalize(program).ok()?;
+    let manifest = real
+        .ancestors()
+        .skip(1)
+        .take(3)
+        .map(|d| d.join("package.json"))
+        .find(|p| p.is_file())?;
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    if json["name"] != "@codemieai/code" {
+        return None;
+    }
+    version_key(json["version"].as_str()?)
+}
+
+/// `0.17.2` -> (0, 17, 2); `0.18.0-beta.1` -> (0, 18, 0): a prerelease is not told apart.
+fn version_key(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.split('.').map(|p| {
+        let end = p.find(|c: char| !c.is_ascii_digit()).unwrap_or(p.len());
+        p[..end].parse::<u64>().ok()
+    });
+    let mut next = || parts.next().flatten();
+    Some((next()?, next()?, next()?))
+}
+
+/// Every executable `name` in the order `find_program_in` searches.
+fn program_candidates(
+    name: &str,
+    path_var: &str,
+    home: &Path,
+    extra: &[PathBuf],
+) -> impl Iterator<Item = PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_var)
         .filter(|d| !d.as_os_str().is_empty())
         .collect();
@@ -76,9 +142,13 @@ pub fn find_program_in(
             dirs.push(PathBuf::from(appdata).join("npm"));
         }
     }
+    let names = program_names(name);
     dirs.into_iter()
-        .flat_map(|d| program_names(name).into_iter().map(move |n| d.join(n)))
-        .find(|p| is_executable(p))
+        .flat_map(move |d| {
+            let names = names.clone();
+            names.into_iter().map(move |n| d.join(n))
+        })
+        .filter(|p| is_executable(p))
 }
 
 /// The file names `name` can be installed under: itself, and on Windows with `.exe` or `.cmd`.
@@ -109,7 +179,7 @@ pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -169,5 +239,137 @@ mod tests {
             Some(extra.path().join("claude"))
         );
         assert_eq!(find_program_in("claude", "", empty_home.path(), &[]), None);
+    }
+
+    /// A CodeMie package at `root` with `version`, and `bin_dir/<name>` linked to its program
+    /// the way npm links a global install (or an `npm link` to a checkout).
+    pub(in crate::ai) fn codemie_package(root: &Path, version: &str, bin_dir: &Path, name: &str) {
+        let program = root.join("bin").join(format!("{name}.js"));
+        touch(&program, 0o755);
+        std::fs::write(
+            root.join("package.json"),
+            format!(r#"{{"name":"@codemieai/code","version":"{version}"}}"#),
+        )
+        .unwrap();
+        std::fs::create_dir_all(bin_dir).unwrap();
+        std::os::unix::fs::symlink(&program, bin_dir.join(name)).unwrap();
+    }
+
+    fn path_of(dirs: &[&Path]) -> String {
+        std::env::join_paths(dirs).unwrap().into_string().unwrap()
+    }
+
+    #[test]
+    fn a_newer_codemie_copy_wins_over_an_older_one_found_first() {
+        // An `npm link` to a 0.17.1 checkout comes first on the PATH; the 0.17.2 that
+        // `codemie self-update` put in ~/.codemie/agents is the one the server still takes.
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let checkout = tempfile::tempdir().unwrap();
+        let npm_bin = tempfile::tempdir().unwrap();
+        codemie_package(checkout.path(), "0.17.1", npm_bin.path(), "codemie-claude");
+        let agents = h.join(".codemie/agents");
+        codemie_package(
+            &agents.join("lib/node_modules/@codemieai/code"),
+            "0.17.2",
+            &agents.join("bin"),
+            "codemie-claude",
+        );
+        let path = path_of(&[npm_bin.path()]);
+
+        assert_eq!(
+            find_codemie_program_in("codemie-claude", &path, h, &[]),
+            Some(agents.join("bin/codemie-claude"))
+        );
+        // Other programs still take the first one found.
+        assert_eq!(
+            find_program_in("codemie-claude", &path, h, &[]),
+            Some(npm_bin.path().join("codemie-claude"))
+        );
+    }
+
+    #[test]
+    fn the_first_codemie_copy_stays_unless_another_is_known_newer() {
+        let first = |a: &str, b: &str| {
+            let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (bin1, bin2) = (one.path().join("bin-dir"), two.path().join("bin-dir"));
+            codemie_package(&one.path().join("pkg"), a, &bin1, "codemie");
+            codemie_package(&two.path().join("pkg"), b, &bin2, "codemie");
+            let home = tempfile::tempdir().unwrap();
+            let found =
+                find_codemie_program_in("codemie", &path_of(&[&bin1, &bin2]), home.path(), &[]);
+            found == Some(bin1.join("codemie"))
+        };
+        assert!(
+            first("0.17.2", "0.17.2"),
+            "the same version keeps the PATH order"
+        );
+        assert!(
+            first("0.18.0", "0.17.2"),
+            "a checkout ahead of the release still runs"
+        );
+        assert!(!first("0.17.9", "0.17.10"), "versions compare as numbers");
+        assert!(
+            !first("0.17.2", "0.18.0-beta.1"),
+            "a prerelease of a later version is newer"
+        );
+    }
+
+    #[test]
+    fn a_codemie_copy_without_a_readable_version_is_not_ranked() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let agents = h.join(".codemie/agents");
+        codemie_package(
+            &agents.join("lib/node_modules/@codemieai/code"),
+            "0.17.2",
+            &agents.join("bin"),
+            "codemie-claude",
+        );
+
+        // A shim with no package around it (the bundled launcher) is not known to be old:
+        // it stays first.
+        let shim = tempfile::tempdir().unwrap();
+        touch(&shim.path().join("codemie-claude"), 0o755);
+        assert_eq!(
+            find_codemie_program_in("codemie-claude", &path_of(&[shim.path()]), h, &[]),
+            Some(shim.path().join("codemie-claude"))
+        );
+
+        // A package.json of another package says nothing about CodeMie's version.
+        let other = tempfile::tempdir().unwrap();
+        let other_bin = other.path().join("bin-dir");
+        codemie_package(
+            &other.path().join("pkg"),
+            "0.10.0",
+            &other_bin,
+            "codemie-claude",
+        );
+        std::fs::write(
+            other.path().join("pkg/package.json"),
+            r#"{"name":"something-else","version":"0.10.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            find_codemie_program_in("codemie-claude", &path_of(&[&other_bin]), h, &[]),
+            Some(other_bin.join("codemie-claude"))
+        );
+
+        // A later copy with no readable version never replaces a known one.
+        let known = tempfile::tempdir().unwrap();
+        let known_bin = known.path().join("bin-dir");
+        codemie_package(&known.path().join("pkg"), "0.17.1", &known_bin, "codemie");
+        let later = tempfile::tempdir().unwrap();
+        touch(&later.path().join("codemie"), 0o755);
+        let empty_home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            find_codemie_program_in(
+                "codemie",
+                &path_of(&[&known_bin, later.path()]),
+                empty_home.path(),
+                &[]
+            ),
+            Some(known_bin.join("codemie"))
+        );
     }
 }
