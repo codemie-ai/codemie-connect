@@ -38,6 +38,10 @@ pub use run::*;
 #[cfg(feature = "tour")]
 pub mod quiet;
 
+/// Imports the tour's seed into a fresh `workspace.sqlite` before `Core::open_tour` opens it.
+#[cfg(feature = "tour")]
+pub mod seed;
+
 #[cfg(feature = "tour")]
 mod run {
     use super::{requested, TOUR};

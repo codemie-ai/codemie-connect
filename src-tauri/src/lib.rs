@@ -157,6 +157,21 @@ pub fn run() {
             } else if cfg!(debug_assertions) {
                 std::env::var_os("CODEMIE_WORKSPACE_TEST_DIR").map(std::path::PathBuf::from)
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
+            // The seed goes into a fresh `workspace.sqlite` under `default_root` before anything
+            // opens it (design § 4): a refused import (a path outside the test folder, a
+            // secret) exits 3 naming it, exactly as every other tour refusal does.
+            #[cfg(feature = "tour")]
+            let tour_tasks = if tour {
+                match commands::tour::seed::import(&default_root) {
+                    Ok((_counts, provider)) => Some(provider),
+                    Err(e) => {
+                        eprintln!("{}", e.message);
+                        std::process::exit(3);
+                    }
+                }
+            } else {
+                None
+            };
             commands::plugin_smoke::arm_watchdog(app.handle());
             let handle = app.handle().clone();
             let terminals = app.state::<commands::terminal::Terminals>().inner().clone();
@@ -185,16 +200,10 @@ pub fn run() {
                 #[cfg(feature = "tour")]
                 if tour {
                     // Seeded before the plugin manager starts, so its own `set_task_providers`
-                    // finds one set already and does nothing (design § 2). Task 3 gives this its
-                    // own seeded builder; until then, one provider, on and ready.
-                    let tasks = workspace::task_provider::fake::FakeProvider::new();
-                    tasks.set_available(vec![workspace::task_provider::ProviderInfo {
-                        id: "plugin:todoist".into(),
-                        name: "Todoist".into(),
-                        on: true,
-                        ready: true,
-                    }]);
-                    core.set_task_providers(std::sync::Arc::new(tasks));
+                    // finds one set already and does nothing (design § 2). The seed's own
+                    // provider state (Task 3): `tour_tasks` is set whenever `tour` is true.
+                    let tasks = tour_tasks.expect("the seed was imported for this tour");
+                    core.set_task_providers(tasks);
                     app.manage(plugins::manager::PluginManager::start_with_http(
                         app.handle(),
                         core,
