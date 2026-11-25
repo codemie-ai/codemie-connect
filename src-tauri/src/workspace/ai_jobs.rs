@@ -2804,6 +2804,9 @@ mod tests {
             let p = &d.data["provenance"]["voice"];
             assert_eq!(p["from"], "copy");
             assert_eq!(p["factsMissed"], true);
+            // The composer's "Connect's copy from <time> — … didn't answer." line (design §
+            // Copy) needs a time: the copy's own refresh time, from `ready_voice`'s seeding.
+            assert!(p["at"].as_i64().unwrap() > 0, "{p:?}");
         }
 
         #[tokio::test]

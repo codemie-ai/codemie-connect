@@ -670,7 +670,7 @@ pub fn assemble(
         || examples_dropped
         || examples_cut;
 
-    let provenance = json!({
+    let mut provenance = json!({
         "provider": provider_name,
         "style": style_present,
         // Only the name of a person whose profile actually rendered — a matched person with
@@ -685,6 +685,13 @@ pub fn assemble(
             From::Copy => "copy",
         },
     });
+    // The composer's "Connect's copy from <time> — … didn't answer." line (design § Copy) needs
+    // a time only when the draft actually fell back to the copy; omitted for `From::Provider`,
+    // where there is no such line, and when the copy has never been refreshed (`refreshed_at`'s
+    // own "never" sentinel, copy.rs).
+    if from == From::Copy && copy.refreshed_at > 0 {
+        provenance["at"] = copy.refreshed_at.into();
+    }
 
     Some(Assembled { block, provenance })
 }
@@ -980,6 +987,37 @@ mod tests {
                 "from": "copy",
             })
         );
+    }
+
+    /// The composer's "Connect's copy from <time> — … didn't answer." line (design § Copy) needs
+    /// `provenance.at`: present, the copy's `refreshed_at`, only when the draft fell back to the
+    /// copy and that copy was actually refreshed at least once; absent from the provider's own
+    /// answer and from a never-refreshed copy (refreshed_at's own "never" sentinel).
+    #[test]
+    fn provenance_at_is_the_copys_refresh_time_only_when_falling_back_to_it() {
+        let mut c = empty_copy();
+        c.rules.push(rule(
+            "everyone",
+            applies(K::Everyone, None, None),
+            "Never promise a date.",
+        ));
+        c.refreshed_at = 1_764_000_000;
+        let t = target(Channel::Mail);
+
+        let from_copy = assemble(&c, "Knowledge", &t, &[], From::Copy).unwrap();
+        assert_eq!(from_copy.provenance["at"], 1_764_000_000);
+
+        let from_provider = assemble(&c, "Knowledge", &t, &[], From::Provider).unwrap();
+        assert!(
+            from_provider.provenance.get("at").is_none(),
+            "{:?}",
+            from_provider.provenance
+        );
+
+        let mut never_refreshed = c.clone();
+        never_refreshed.refreshed_at = 0;
+        let a = assemble(&never_refreshed, "Knowledge", &t, &[], From::Copy).unwrap();
+        assert!(a.provenance.get("at").is_none(), "{:?}", a.provenance);
     }
 
     #[test]

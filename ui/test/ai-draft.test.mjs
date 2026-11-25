@@ -12,7 +12,7 @@ import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../w
 import { REBASE_SAFE } from '../workspace/store.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { today } from '../workspace/view-today.js';
-import { formatDateTime } from '../workspace/format.js';
+import { formatDateTime, formatTime } from '../workspace/format.js';
 import { buildSnapshot, aiStatus, contractFixtures } from './fixtures/workspace-fixture.mjs';
 
 const contract = name => JSON.parse(readFileSync(new URL(`./fixtures/contract/${name}.json`, import.meta.url), 'utf8'));
@@ -223,6 +223,17 @@ test('Context lists the voice parts, the facts and what was missed', () => {
   );
   // No provenance at all.
   assert.deepEqual(voiceContextLines(undefined, zone), []);
+});
+
+test("the copy line reads the time of day when the copy is from today, else the date and time", () => {
+  const zone = 'UTC';
+  const now = Date.parse('2026-11-25T10:00:00Z');
+  const today = Date.parse('2026-11-25T07:40:00Z');
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'copy', at: today }, zone, now),
+    ['Your voice (Knowledge): 1 instruction', `Connect's copy from ${formatTime(today, zone)} — Knowledge didn't answer.`],
+  );
+  assert.doesNotMatch(formatTime(today, zone), /\d{4}|Nov/, 'a same-day time has no date in it');
 });
 
 test("the provenance row escapes the person name and fact titles", () => {

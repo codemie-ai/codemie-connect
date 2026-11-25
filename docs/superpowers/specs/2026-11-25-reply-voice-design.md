@@ -214,7 +214,7 @@ and, when facts were found, `"facts"` (§ 10). Each text is sanitized like `<mes
 
 `AUTOMATION_SYSTEM` gains the same lines for its `draft` field, and an automation that drafts (`deliver.draftReply` with a message) gets the same `voice` and `facts` fields in its input. Its own default lines ("open with a greeting … sign-off" for mail, "without greeting or sign-off" for Teams) stay; the precedence line covers them (ruling 30).
 
-**Provenance.** The draft record's `provenance` gains `voice: {provider, style, person, rules, examples, cut, from, facts, factsMissed}` (`style` a bool, `person` the profile's name or `null`, `rules` and `examples` counts, `from` `"provider"` or `"copy"`, `facts` a list of `{id, title}`, `factsMissed` true when the facts ask got no answer in time), or no `voice` when none was added. A Regenerate or a change rebuilds it. The ledger (`ai_run`) stores no voice or fact text.
+**Provenance.** The draft record's `provenance` gains `voice: {provider, style, person, rules, examples, cut, from, facts, factsMissed, at}` (`style` a bool, `person` the profile's name or `null`, `rules` and `examples` counts, `from` `"provider"` or `"copy"`, `facts` a list of `{id, title}`, `factsMissed` true when the facts ask got no answer in time, `at` the copy's own refresh time, present only when `from` is `"copy"` and that copy has been refreshed at least once — it grounds the composer's "Connect's copy from <time> — … didn't answer." line), or no `voice` when none was added. A Regenerate or a change rebuilds it. The ledger (`ai_run`) stores no voice or fact text.
 
 ### 5. Settings › Your voice
 

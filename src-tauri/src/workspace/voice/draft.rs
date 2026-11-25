@@ -253,10 +253,19 @@ impl Core {
         };
         let mut provenance = match &assembled {
             Some(a) => a.provenance.clone(),
-            None if facts_block.is_some() || facts_missed => json!({
-                "provider": p.name, "style": false, "person": null, "rules": 0, "examples": 0,
-                "cut": false, "from": from_name,
-            }),
+            None if facts_block.is_some() || facts_missed => {
+                let mut prov = json!({
+                    "provider": p.name, "style": false, "person": null, "rules": 0, "examples": 0,
+                    "cut": false, "from": from_name,
+                });
+                // Same "at" rule as assemble::assemble: a time only when the draft fell back to
+                // the copy (design § Copy's "Connect's copy from <time> — … didn't answer.") and
+                // the copy has actually been refreshed at least once.
+                if from == From::Copy && copy.refreshed_at > 0 {
+                    prov["at"] = copy.refreshed_at.into();
+                }
+                prov
+            }
             None => return VoiceForDraft::default(),
         };
         provenance["facts"] = facts::sources(&kept);
@@ -871,6 +880,7 @@ pub(crate) mod tests {
         use std::sync::atomic::Ordering;
         let (_dir, core) = core();
         let (w, c) = seed(&core);
+        let before = now();
         let fake = ready_voice(&core, "");
         put(
             &core,
@@ -897,7 +907,14 @@ pub(crate) mod tests {
         assert!(voice.contains("Never promise a date."), "{voice}");
         assert!(voice.contains("Short sentences; no small talk."), "{voice}");
         assert!(!voice.contains("From the provider"), "{voice}");
-        assert_eq!(v.provenance.unwrap()["from"], "copy");
+        let provenance = v.provenance.unwrap();
+        assert_eq!(provenance["from"], "copy");
+        // The composer's "Connect's copy from <time> — … didn't answer." line needs a time
+        // (design § Copy): the copy's own refresh time, from `ready_voice`'s `copy::replace`.
+        assert!(
+            provenance["at"].as_i64().unwrap() >= before,
+            "{provenance:?}"
+        );
     }
 
     /// A stopped draft abandons the asks at once and drafts from the copy.
@@ -921,6 +938,8 @@ pub(crate) mod tests {
         let started = std::time::Instant::now();
         let v = core.voice_for_draft(&w, &c, &source, &cancel).await;
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(v.provenance.unwrap()["from"], "copy");
+        let provenance = v.provenance.unwrap();
+        assert_eq!(provenance["from"], "copy");
+        assert!(provenance["at"].as_i64().unwrap() > 0, "{provenance:?}");
     }
 }
