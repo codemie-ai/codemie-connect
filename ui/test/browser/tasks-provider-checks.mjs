@@ -22,8 +22,9 @@ const DAY = 86_400_000;
 const taskProvider = (name, overrides = {}) => ({ ...STATES[name], ...overrides });
 
 /** Every commitment in the fixture stamped as Todoist's, state `ready` (the same base shape
- *  tasks-dates-checks.mjs's own `todoist()` helper uses, so the two files' fixtures agree). */
-function allTodoist(snapshot) {
+ *  tasks-dates-checks.mjs's own `todoist()` helper uses, so the two files' fixtures agree).
+ *  Exported for the tour seed builder (`scripts/tour/seed.mjs`, Task 4), which reuses it as-is. */
+export function allTodoist(snapshot) {
   snapshot.taskProvider = taskProvider('ready', { lastSync: Math.floor(FIXED_NOW / 1000) - 60 });
   for (const r of snapshot.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
 }
@@ -50,8 +51,8 @@ function lateThree(snapshot) {
 
 /** A new check-in task owned by someone the fixture doesn't otherwise use (Marek Novak), due
  *  yesterday (Late, visible without unfolding anything), its source a synced mail thread so Nudge
- *  can open it. */
-function marekCheckIn(snapshot) {
+ *  can open it. Exported for the tour seed builder (`scripts/tour/seed.mjs`, Task 4). */
+export function marekCheckIn(snapshot) {
   allTodoist(snapshot);
   const now = Math.floor(FIXED_NOW / 1000);
   const yesterday = new Date(FIXED_NOW - DAY).toLocaleDateString('sv', { timeZone: snapshot.settings.timeZone });
@@ -67,8 +68,9 @@ function marekCheckIn(snapshot) {
 }
 
 /** task-demo (due today) looks handled: the same evidence tasks-dates-checks.mjs uses for its
- *  "Done" path, so P5 can prove the other button, "Keep open". */
-function demoHandled(snapshot) {
+ *  "Done" path, so P5 can prove the other button, "Keep open". Exported for the tour seed
+ *  builder (`scripts/tour/seed.mjs`, Task 4). */
+export function demoHandled(snapshot) {
   allTodoist(snapshot);
   const task = snapshot.records.find(r => r.id === 'task-demo').data;
   task.handled = { evidence: 'you replied in Teams 17:32', at: 0, auto: false };
