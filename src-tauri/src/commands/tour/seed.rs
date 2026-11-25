@@ -22,6 +22,8 @@ const SEED_FILE: &str = "tour-seed.json";
 const SEEN_KIND: &str = "menu_bar_seen";
 const SEEN_ID: &str = "personal";
 const PERSONAL: &str = "personal";
+/// The largest file a seeded plugin may carry (the fixtures are a few KB).
+const PLUGIN_FILE_MAX: usize = 256 * 1024;
 
 /// `tour-seed.json`'s shape, camelCase on the wire like the rest of the native contract. Task 4's
 /// Node builder writes exactly this: the native records a snapshot would hold, the
@@ -356,6 +358,36 @@ fn check_plugins(plugins: &[PluginSeed]) -> Result<()> {
                 format!("plugins[{i}].files"),
             ));
         }
+        if p.files.values().any(|text| text.len() > PLUGIN_FILE_MAX) {
+            return Err(refused(
+                "A seeded plugin's file is too large.",
+                format!("plugins[{i}].files"),
+            ));
+        }
+        // An agreement only to what its manifest asks for: its `uses` keys and its roles.
+        let manifest: Value = p
+            .files
+            .get("echo-plugin.json")
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or(Value::Null);
+        let mut asked: Vec<String> = manifest["uses"]
+            .as_object()
+            .map(|u| u.keys().cloned().collect())
+            .unwrap_or_default();
+        asked.extend(
+            manifest["provides"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(crate::plugins::capabilities::role_key),
+        );
+        if p.agreed.iter().any(|a| !asked.contains(a)) {
+            return Err(refused(
+                "A seeded plugin may agree only to what its manifest asks for.",
+                format!("plugins[{i}].agreed"),
+            ));
+        }
     }
     Ok(())
 }
@@ -565,7 +597,7 @@ mod tests {
         seed.plugins = vec![hello(&[
             (
                 "echo-plugin.json",
-                r#"{"id":"hello","version":"1.0.0","main":"main.js"}"#,
+                r#"{"id":"hello","version":"1.0.0","main":"main.js","uses":{"network":{}}}"#,
             ),
             ("main.js", "export function apply(ctx) {}"),
         ])];
@@ -601,6 +633,39 @@ mod tests {
                 "{name}: nothing written"
             );
         }
+    }
+
+    #[test]
+    fn import_refuses_an_agreement_the_manifest_never_asks_for_and_a_huge_file() {
+        let manifest = r#"{"id":"hello","version":"1.0.0","main":"main.js","uses":{"network":{}},"provides":["tasks"]}"#;
+        let ok = |agreed: &[&str]| {
+            let dir = tempfile::tempdir().unwrap();
+            let mut seed = seed_with(vec![]);
+            let mut p = hello(&[("echo-plugin.json", manifest), ("main.js", "x")]);
+            p.agreed = agreed.iter().map(|a| a.to_string()).collect();
+            seed.plugins = vec![p];
+            write_seed(dir.path(), &seed);
+            match import(dir.path()) {
+                Ok(_) => None,
+                Err(e) => Some(e.field),
+            }
+        };
+        assert_eq!(ok(&["network", "provides_tasks"]), None);
+        assert_eq!(ok(&["claude"]), Some(Some("plugins[0].agreed".into())));
+        assert_eq!(
+            ok(&["provides_mail"]),
+            Some(Some("plugins[0].agreed".into()))
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        let big = "x".repeat(300 * 1024);
+        seed.plugins = vec![hello(&[("main.js", &big)])];
+        write_seed(dir.path(), &seed);
+        assert_eq!(
+            expect_refusal(dir.path()).field.as_deref(),
+            Some("plugins[0].files")
+        );
     }
 
     #[test]

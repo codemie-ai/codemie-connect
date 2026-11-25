@@ -1,0 +1,16 @@
+{
+  "id": "todoist",
+  "name": "Todoist",
+  "version": "1.0.0",
+  "summary": "Keeps Connect's tasks in your Todoist",
+  "main": "main.js",
+  "provides": ["tasks"],
+  "uses": {
+    "network": { "hosts": ["api.todoist.com"] }
+  },
+  "settings": [
+    { "key": "token", "label": "API token", "type": "secret", "help": "Todoist › Settings › Integrations › Developer" },
+    { "key": "project", "label": "Project", "type": "string" },
+    { "key": "label", "label": "App label", "type": "string" }
+  ]
+}

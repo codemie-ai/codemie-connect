@@ -49,6 +49,331 @@ const TODAY_MORE = '.ws-today-actions details[data-menu="today-more"]';
 const MEETING_MORE = '.ws-mtg-strip > .ws-menu';
 const TASK = id => `.ws-tdate-row[data-task="${id}"]`;
 
+/** The AI settings the chooser stop saves back: the seed's (scripts/tour/seed.mjs), except that
+ *  Commitments has no fallback of its own, as a save requires (the seed stores one equal to its
+ *  profile, which only an import can). Only the plugin-removal stop runs after it. */
+const SEED_AI = {
+  defaultProfile: 'claude', defaultModel: null, defaultFallback: 'codemie:prod',
+  routes: {
+    triage: { profile: 'codemie:local-ollama', model: null, fallback: 'claude' },
+    commitments: { profile: 'codemie:local-ollama', model: null, fallback: null },
+  },
+  plugins: {},
+};
+const SEED_PINS = ['formal-summary', 'short-summary'];
+const NAV_IDS = ['today', 'inbox', 'calendar', 'meetings', 'tasks', 'automations', 'analytics'];
+const SHOW_ALL = { name: 'mutate', arg: { op: 'settings_update', data: { hiddenPages: [] } } };
+const click = arg => ({ name: 'click', arg });
+const menu = arg => ({ name: 'menu', arg });
+const until = arg => ({ name: 'until', arg });
+const settings = data => ({ name: 'mutate', arg: { op: 'settings_update', data } });
+
+/** Stops added after spec § 6's first table (fix round 1 of Task 6): every built feature of steps
+ *  0–7 that T01–T31 didn't check. They change state only through in-app clicks and store actions,
+ *  and each puts back what it changed (`after`); T61, which removes the Todoist plugin, runs last. */
+const MORE = [
+  // ---------------------------------------------------------------- step 0 (marketplace plan, plugins-checks.mjs)
+  {
+    id: 'T32', step: [0], title: 'Add marketplace refuses a built-in’s name', route: '#/settings/plugins',
+    view: 'default', theme: 'dark', width: 1440,
+    // "codemie" is the built-in's own source, refused as already added before anything is fetched
+    // (plugins/market.rs `add`: `already_added` comes before `fetch`).
+    action: [click('[data-action="market-add"]'), until('.ws-modal[open] #market-source'), { name: 'type', arg: { selector: '.ws-modal[open] #market-source', text: 'codemie' } },
+      click('.ws-modal[open] button[type="submit"]'), { name: 'wait', arg: 400 }],
+    after: click('.ws-modal[open] .ws-modal-footer [data-modal-close]'),
+    checks: [
+      { name: 'refused: "That marketplace is already added, as “codemie”."', selector: '.ws-modal[open], .ws-toast', text: 'already added, as “codemie”' },
+    ],
+    covers: ['m0.already-added'],
+  },
+
+  // ---------------------------------------------------------------- step 1 (compact-checks.mjs C5)
+  {
+    id: 'T33', step: [1], title: 'A hidden page still opens by its route, greyed in the menu', route: '#/settings/layout',
+    view: 'compact', theme: 'light', width: 1440,
+    action: [settings({ hiddenPages: ['calendar'] }), { name: 'go', arg: '#/calendar' }], after: SHOW_ALL,
+    checks: [
+      { name: 'Calendar opened', selector: '.ws-page-calendar', count: 1 },
+      { name: 'greyed in the menu while open', selector: '[data-route="calendar"].ws-nav-hidden', count: 1 },
+    ],
+    covers: ['c1.hidden-route'],
+  },
+  {
+    id: 'T34', step: [1], title: 'The last page in the menu can’t be hidden', route: '#/settings/layout',
+    view: 'default', theme: 'dark', width: 1440, scroll: '.ws-card:has(input[data-action="menu-page"])',
+    action: settings({ hiddenPages: NAV_IDS.filter(id => id !== 'inbox') }), after: SHOW_ALL,
+    checks: [
+      { name: 'the Inbox switch is disabled', selector: 'input[data-action="menu-page"][data-page="inbox"]', disabled: true },
+      { name: '"Keep one page in the menu."', selector: 'span[title="Keep one page in the menu."]', count: 1 },
+    ],
+    covers: ['c1.last-switch'],
+  },
+
+  // ---------------------------------------------------------------- step 2 (reply-checks.mjs)
+  {
+    id: 'T35', step: [2], title: 'Teams sending off: "Copy reply"', route: '#/inbox',
+    view: 'default', theme: 'dark', width: 1440,
+    action: [settings({ capabilities: ['calendar', 'mail', 'chats', 'meetings', 'transcripts', 'mail_send'] }), { name: 'selectRow', arg: SEED_IDS.teams1to1 }],
+    after: settings({ capabilities: ['calendar', 'mail', 'chats', 'meetings', 'transcripts', 'mail_send', 'chat_send'] }),
+    checks: [
+      { name: 'primary "Copy reply"', selector: `${bar(read(SEED_IDS.teams1to1))} [data-action="reply-copy"]`, exact: 'Copy reply' },
+      { name: 'no Send', selector: `${read(SEED_IDS.teams1to1)} [data-action="reply-send"]`, absent: true },
+    ],
+    covers: ['r2.copy-reply'],
+  },
+  {
+    id: 'T36', step: [2], title: 'Your own Outlook message: no reply box, Done', route: '#/inbox',
+    view: 'default', theme: 'light', width: 1440, action: { name: 'selectRow', arg: 'm-thread-mine' },
+    checks: [
+      { name: 'it is in the reading pane', selector: read('m-thread-mine'), count: 1 },
+      { name: 'no reply box', selector: `${read('m-thread-mine')} #reply-body`, absent: true },
+      { name: 'Done is the primary', selector: `${read('m-thread-mine')} .ws-btn-primary`, text: 'Done' },
+    ],
+    covers: ['r2.own-mail'],
+  },
+  {
+    id: 'T37', step: [2], title: 'A group chat: "Send to Release crew"', route: '#/inbox',
+    view: 'compact', theme: 'light', width: 1440, action: { name: 'openRow', arg: SEED_IDS.groupChat },
+    checks: [
+      { name: 'primary "Send to Release crew"', selector: `${bar(crow(SEED_IDS.groupChat))} [data-action="reply-send"]`, exact: 'Send to Release crew' },
+    ],
+    covers: ['r2.group-label'],
+  },
+  {
+    id: 'T38', step: [2], title: 'The critical message’s ⋯ holds Snooze', route: '#/inbox',
+    view: 'default', theme: 'light', width: 1440, action: { name: 'openMore', arg: `reply:${SEED_IDS.critical}` },
+    checks: [
+      { name: 'Snooze and its four choices under ⋯', selector: `${read(SEED_IDS.critical)} details[data-menu="reply-more"] [data-action="message-snooze"]`, count: 4 },
+    ],
+    covers: ['r2.snooze-under-more'],
+  },
+  {
+    id: 'T39', step: [2], title: 'Draft options… opens its popover', route: '#/inbox',
+    view: 'default', theme: 'dark', width: 1680,
+    action: [{ name: 'openMore', arg: `reply:${SEED_IDS.teams1to1}` }, click(`${read(SEED_IDS.teams1to1)} [data-action="ai-draft-options"]`), until('#draft-options'), { name: 'wait', arg: 400 }],
+    after: click('#draft-options [data-action="ai-draft-cancel"]'),
+    checks: [
+      { name: 'the Draft with AI popover', selector: '#draft-options', text: 'Draft with AI' },
+      { name: 'its tones', selector: '#draft-options [data-draft-tone]', min: 2 },
+    ],
+    covers: ['r2.draft-options'],
+  },
+  {
+    id: 'T40', step: [2], title: 'Settings › Microsoft 365: Allow actions', route: '#/settings/microsoft',
+    view: 'default', theme: 'light', width: 1440, scroll: '.ws-card:has([data-action="graph-permission"])',
+    checks: [
+      { name: 'the Allow actions copy', selector: '.ws-card:has([data-action="graph-permission"])', text: ['Allow actions', 'Nothing is sent without your click.'], order: true },
+      { name: 'a switch per action', selector: 'input[data-action="graph-permission"]', min: 2 },
+    ],
+    covers: ['r2.allow-actions'],
+  },
+
+  // ---------------------------------------------------------------- step 3 (meetings-view-checks.mjs, meetings-settings-checks.mjs)
+  {
+    id: 'T41', step: [3], title: 'A meeting’s "with …" and its people', route: MTG,
+    view: 'default', theme: 'light', width: 1440, action: menu(`details[data-menu="people-${SEED_IDS.readyMeeting}"]`),
+    checks: [
+      { name: 'the header’s "with …"', selector: '.ws-mtg-with', text: 'with' },
+      { name: 'the people popover', selector: '.ws-mtg-people-pop .ws-mtg-people' },
+    ],
+    covers: ['mv3.with-header'],
+  },
+  {
+    id: 'T42', step: [3], title: 'A pinned tab with no document: "Make Formal summary"', route: MTG,
+    view: 'default', theme: 'dark', width: 1440, action: click('.ws-mtg-tabs [data-action="meeting-summary-tab"][data-key="tpl:formal-summary"]'),
+    checks: [
+      { name: '"No Formal summary yet."', selector: '.ws-mtg-nosummary', text: 'No Formal summary yet.' },
+      { name: 'the primary "Make Formal summary"', selector: '.ws-mtg-strip [data-action="meeting-make-tab"]', text: 'Make Formal summary' },
+    ],
+    covers: ['mv3.make-tab'],
+  },
+  {
+    id: 'T43', step: [3], title: 'Action items off: "Review 2 tasks" and ⋯ › Action items', route: MTG,
+    view: 'default', theme: 'light', width: 1440,
+    action: [settings({ meetings: { actionItems: false } }), menu('.ws-mtg-strip > .ws-menu')], after: settings({ meetings: { actionItems: true } }),
+    checks: [
+      { name: 'no column', selector: '.ws-mtg-items:not(.ws-mtg-items-pane)', absent: true },
+      { name: '"Review N tasks"', selector: '.ws-btn[data-action="meeting-pane"][data-pane="tasks"]', text: ['Review', 'task'], order: true },
+      { name: '⋯ › Action items', selector: '.ws-mtg-strip > .ws-menu [data-action="meeting-pane"][data-pane="tasks"]', text: 'Action items' },
+    ],
+    covers: ['mv3.review-tasks'],
+  },
+  {
+    id: 'T44', step: [3, 4], title: 'Adding a meeting’s task to Todoist, and Undo', route: MTG,
+    view: 'default', theme: 'dark', width: 1680, action: [click('[data-action="meeting-items-add"]'), until('.ws-mtg-items-foot [data-action="meeting-items-undo"]')],
+    after: click('.ws-mtg-items-foot [data-action="meeting-items-undo"]'),
+    checks: [
+      { name: '"Added 1 to Todoist · Undo"', selector: '.ws-mtg-items-foot', text: ['Added 1 to Todoist', 'Undo'], order: true },
+    ],
+    covers: ['mv3.added-undo'],
+  },
+  {
+    id: 'T45', step: [3], title: 'At 1000 the action items drop below the summary', route: MTG,
+    view: 'default', theme: 'light', width: 1000,
+    checks: [
+      { name: 'the column is below the pane', selector: '.ws-mtg-items:not(.ws-mtg-items-pane)', below: '.ws-mtg-detail' },
+    ],
+    covers: ['mv3.column-below'],
+  },
+  {
+    id: 'T46', step: [3], title: 'Pin a summary ▾ and a template’s "Pin as a summary tab"', route: '#/settings/meetings-templates',
+    view: 'compact', theme: 'dark', width: 1440, scroll: '.ws-card:has([data-menu="ms-pin-add"])',
+    action: menu('details[data-menu="ms-pin-add"]'),
+    checks: [
+      { name: 'Pin a summary ▾ offers the other templates', selector: 'details[data-menu="ms-pin-add"]', text: ['Pin a summary', 'Meeting notes'], order: true },
+      { name: 'a template card offers "Pin as a summary tab"', selector: '.ws-ms-tpl-card[data-template="meeting-notes"] [data-action="meetings-settings-pin"]', any: true, text: 'Pin as a summary tab' },
+    ],
+    covers: ['mv3.pin-menus'],
+  },
+  {
+    id: 'T47', step: [3], title: 'A plugin’s minutes as a pinned tab', route: MTG,
+    view: 'default', theme: 'light', width: 1440,
+    action: [settings({ meetings: { summaryTabs: ['plugin:digest', ...SEED_PINS] } }), { name: 'go', arg: MTG }, until('.ws-mtg-tabs [role="tab"][data-key="plugin:digest"]'),
+      click('.ws-mtg-tabs [role="tab"][data-key="plugin:digest"]'), { name: 'untilText', arg: { selector: '.ws-mtg-summary', text: 'three decisions' } }],
+    after: settings({ meetings: { summaryTabs: SEED_PINS } }),
+    checks: [
+      { name: 'the Digest tab, first', selector: '.ws-mtg-tabs [role="tab"]', text: ['Digest', 'Formal summary'], order: true },
+      { name: 'its minutes, as text', selector: '.ws-mtg-summary', text: 'three decisions and two follow-ups' },
+    ],
+    covers: ['mv3.plugin-minutes'],
+  },
+  {
+    id: 'T48', step: [3], title: 'An old link: /notes opens Notes', route: `#/meetings/${SEED_IDS.readyMeeting}/notes`,
+    view: 'default', theme: 'dark', width: 1440,
+    checks: [
+      { name: 'the Notes pane with its document picker', selector: '.ws-mtg-doc-pick-sum', text: 'of 2' },
+    ],
+    covers: ['mv3.deep-links'],
+  },
+  {
+    id: 'T49', step: [3], title: 'An old link: /tasks shows the summary with its column', route: `#/meetings/${SEED_IDS.readyMeeting}/tasks`,
+    view: 'compact', theme: 'light', width: 1440,
+    checks: [
+      { name: 'the summary pane', selector: '.ws-mtg-detail[data-panel="summary"]', count: 1 },
+      { name: 'the action items column', selector: '.ws-mtg-items:not(.ws-mtg-items-pane)' },
+    ],
+    covers: ['mv3.deep-links'],
+  },
+
+  // ---------------------------------------------------------------- step 4 (tasks-provider-checks.mjs, tasks-dates-checks.mjs, settings-tasks-checks.mjs)
+  {
+    id: 'T50', step: [4], title: 'Accept all moves the tasks to review onto the board', route: '#/tasks',
+    view: 'default', theme: 'dark', width: 1440, action: [click('[data-action="task-accept-all"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'accepted' } }],
+    checks: [
+      { name: 'To review is cleared', selector: 'section.ws-tdate-review', absent: true },
+      { name: '"N tasks accepted. They’re on your board."', selector: '.ws-toast', text: 'tasks accepted. They’re on your board.' },
+    ],
+    covers: ['tp4.accept-all'],
+  },
+  {
+    id: 'T51', step: [4], title: 'Late ⋯: Move all to…, Done all', route: '#/tasks',
+    view: 'compact', theme: 'dark', width: 1000, action: menu('details[data-menu="tasks-late"]'),
+    checks: [
+      { name: 'Move all to Tomorrow, Move all to Monday, Pick date…, Done all', selector: 'details[data-menu="tasks-late"] .ws-menu-panel', text: ['Move all to Tomorrow', 'Move all to Monday', 'Pick date…', 'Done all'], order: true },
+    ],
+    covers: ['tp4.late-menu'],
+  },
+  {
+    id: 'T52', step: [4], title: 'A task done: "Marked 1 done · Undo"', route: '#/tasks',
+    view: 'default', theme: 'light', width: 1680, action: [click('input[data-action="task-done"][data-id="task-legal"]'), until('.ws-tdate-foot [data-action="tasks-undo"]')],
+    after: click('.ws-tdate-foot [data-action="tasks-undo"]'),
+    checks: [
+      { name: '"Marked 1 done · Undo"', selector: '.ws-tdate-foot', text: ['Marked 1 done', 'Undo'], order: true },
+    ],
+    covers: ['tp4.done-undo'],
+  },
+  {
+    id: 'T53', step: [4], title: 'Tasks’ status line and ⋯ › Sync now', route: '#/tasks',
+    view: 'default', theme: 'light', width: 1440, action: menu('details[data-menu="tasks-more"]'),
+    checks: [
+      { name: 'the status line names Todoist', selector: '.ws-tasks-line', text: 'Todoist' },
+      { name: '⋯ › Sync now and Settings › Tasks', selector: 'details[data-menu="tasks-more"] .ws-menu-panel', text: ['Sync now', 'Settings › Tasks'], order: true },
+    ],
+    covers: ['tp4.header-sync'],
+  },
+  {
+    id: 'T54', step: [4], title: 'Inbox ⋯ › Add a task lands in Todoist', route: '#/inbox',
+    view: 'default', theme: 'light', width: 1440,
+    action: [{ name: 'openMore', arg: `reply:${SEED_IDS.priyaMail}` }, click(`${read(SEED_IDS.priyaMail)} [data-action="commitment"]`), until('.ws-modal[open] textarea[name="text"]'),
+      click('.ws-modal[open] button[type="submit"]'), until('.ws-toast')],
+    checks: [
+      { name: 'the toast says it is in Todoist', selector: '.ws-toast', text: 'Todoist' },
+    ],
+    covers: ['tp4.inbox-added'],
+  },
+  {
+    id: 'T55', step: [4], title: 'Nudge Marek fills the reply, sends nothing', route: '#/tasks',
+    view: 'default', theme: 'dark', width: 1440,
+    action: [{ name: 'unfoldTask', arg: SEED_IDS.checkWithTask }, click(`${TASK(SEED_IDS.checkWithTask)} [data-action="task-nudge"]`), until('#reply-body')],
+    checks: [
+      { name: 'the reply box holds the nudge', selector: '#reply-body', valueStarts: 'Hi Marek, any news on' },
+    ],
+    covers: ['tp4.nudge'],
+  },
+
+  // ---------------------------------------------------------------- step 5 (automations-checks.mjs)
+  {
+    id: 'T56', step: [5], title: 'The Formal summary automation’s editor: Make and Wishes', route: '#/automations/templates',
+    view: 'compact', theme: 'dark', width: 1440, action: { name: 'useTemplate', arg: 'formal-summary' }, after: { name: 'cancelModal' },
+    checks: [
+      { name: 'Make is Formal summary', selector: '.ws-modal[open] #auto-summary', value: 'formal-summary' },
+      { name: '"Wishes (optional)"', selector: '.ws-modal[open] label[for="auto-prompt"]', exact: 'Wishes (optional)' },
+      { name: 'no Read box', selector: '.ws-modal[open] #auto-read', absent: true },
+    ],
+    covers: ['ct5.summary-editor'],
+  },
+  {
+    id: 'T57', step: [5], title: 'The automations list: where each one delivers', route: '#/automations/automations',
+    view: 'default', theme: 'light', width: 1440,
+    checks: [
+      { name: 'Inbox triage delivers to Today and Tasks', selector: '.ws-auto-row[data-automation="auto-triage"] .ws-auto-deliver', text: 'Tasks' },
+    ],
+    covers: ['ct5.deliver-chips'],
+  },
+  {
+    id: 'T58', step: [5], title: 'Run log: the summary run’s meeting', route: '#/automations/runs',
+    view: 'default', theme: 'light', width: 1440, action: { name: 'unfoldRun', arg: 'run-summary' }, scroll: '#run-run-summary',
+    checks: [
+      { name: '"Formal summary queued for …"', selector: '#run-run-summary', text: 'Formal summary queued for' },
+      { name: 'Open meeting', selector: '#run-run-summary a.ws-run-task', text: 'Open meeting' },
+    ],
+    covers: ['ct5.run-log-details'],
+  },
+
+  // ---------------------------------------------------------------- step 7 (ai-routes-checks.mjs R5)
+  {
+    id: 'T59', step: [7], title: 'The first-use chooser offers the ready profiles', route: '#/inbox',
+    view: 'default', theme: 'dark', width: 1440,
+    action: [{ name: 'mutate', arg: { op: 'ai_settings_save', data: { ...SEED_AI, defaultProfile: null, defaultFallback: null } } }, { name: 'selectRow', arg: SEED_IDS.teams1to1 },
+      click(`${read(SEED_IDS.teams1to1)} [data-action="ai-draft-quick"]`), until('.ws-modal[open] [data-action="ai-choose"]'), { name: 'wait', arg: 400 }],
+    after: [click('.ws-modal[open] [data-modal-close]'), { name: 'mutate', arg: { op: 'ai_settings_save', data: SEED_AI } }],
+    checks: [
+      { name: '"Choose which AI writes for you"', selector: '.ws-modal[open] .ws-modal-header h2', exact: 'Choose which AI writes for you' },
+      { name: 'Claude Code and CodeMie · prod, the ready profiles', selector: '.ws-modal[open] .ws-ai-choices', text: ['Claude Code', 'CodeMie · prod'], order: true },
+      // ai-chooser.js offers only ready profiles; the seed's Ollama is not running (spec § 4).
+      { name: 'the not-running Ollama profile is not offered', selector: '.ws-modal[open] [data-profile="codemie:local-ollama"]', absent: true },
+    ],
+    covers: ['pm7.chooser'],
+  },
+
+  // ---------------------------------------------------------------- step 4, last: removing the plugin (settings-tasks-checks.mjs)
+  {
+    id: 'T60', step: [4], title: 'Removing the Todoist plugin puts tasks back in Connect', route: '#/settings/plugins/todoist',
+    view: 'default', theme: 'light', width: 1440,
+    // Removing deletes the plugin's files, all inside the tour's own test folder; this one stop
+    // allows that control and that request, and runs last.
+    allow: ['plugin-remove', 'plugins_request:remove'],
+    // The dialog ignores a submit in its first moments (ui.js `COMMIT_GUARD_MS`), as a person's
+    // double click would be; the click comes after it.
+    action: [click('[data-action="plugin-remove"][data-plugin-id="todoist"]'), until('.ws-modal[open] button[type="submit"]'), { name: 'wait', arg: 900 },
+      click('.ws-modal[open] button[type="submit"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'back in Connect' } }],
+    checks: [
+      { name: '"Todoist was removed, so tasks are back in Connect."', selector: '.ws-toast', text: 'Todoist was removed, so tasks are back in Connect.' },
+    ],
+    covers: ['tp4.removed-local'],
+  },
+];
+
 export const STOPS = [
   // ---------------------------------------------------------------- step 0 (plugins-checks.mjs)
   {
@@ -61,8 +386,9 @@ export const STOPS = [
       { name: 'codemie has no remove button', selector: '[data-action="market-remove"][data-market="codemie"]', absent: true },
       { name: 'onetest has no remove button', selector: '[data-action="market-remove"][data-market="onetest"]', absent: true },
       { name: 'codemie says Not fetched yet', selector: '.ws-market-row[data-market="codemie"]', text: 'Not fetched yet' },
+      { name: 'Todoist is installed and provides tasks', selector: '#workspace-main', text: ['Todoist', 'Provides tasks'], order: true },
     ],
-    covers: ['m0.builtin-first', 'm0.not-fetched'],
+    covers: ['m0.builtin-first', 'm0.not-fetched', 'tp4.provides-tasks'],
   },
 
   // ---------------------------------------------------------------- step 1 (compact-checks.mjs)
@@ -134,7 +460,7 @@ export const STOPS = [
     id: 'T07', step: [2], title: 'Compact Inbox: a typed reply, the change line and autosave', route: '#/inbox',
     view: 'compact', theme: 'dark', width: 1440, action: { name: 'typeReply', arg: `${SEED_IDS.teams1to1}:Sure, at 14:30.` },
     checks: [
-      { name: 'the box holds the text', selector: `${crow(SEED_IDS.teams1to1)} #reply-body` },
+      { name: 'the box holds the typed text', selector: `${crow(SEED_IDS.teams1to1)} #reply-body`, value: 'Sure, at 14:30.' },
       { name: 'the "✦ Tell AI what to change" line', selector: `${crow(SEED_IDS.teams1to1)} #reply-change` },
       { name: '"Saved on this device" after autosave', selector: `${crow(SEED_IDS.teams1to1)} .ws-reply-status`, exact: 'Saved on this device' },
     ],
@@ -313,17 +639,31 @@ export const STOPS = [
       { name: '"Where your tasks live"', selector: '.ws-tasks-provider-list[role="radiogroup"]', count: 1 },
       { name: 'Connect is offered', selector: 'input[name="tasks-provider"][value="local"]', count: 1 },
       { name: 'Todoist is chosen', selector: 'input[name="tasks-provider"][value="plugin:todoist"]:checked', count: 1 },
+      { name: 'the API token field (a password box)', selector: '[data-provider-secret="token"] input[type=password]', count: 1 },
+      { name: 'the Project field', selector: '[data-change="tasks-provider-setting"][data-key="project"]', count: 1 },
+      { name: 'the App label field', selector: '[data-change="tasks-provider-setting"][data-key="label"]', count: 1 },
     ],
-    covers: ['tp4.settings-radio'],
+    covers: ['tp4.settings-radio', 'tp4.token-fields'],
   },
   {
     id: 'T23', step: [4], title: 'Compact Tasks on Connect: the Board', route: '#/tasks',
-    view: 'compact', theme: 'light', width: 1440, action: { name: 'setProvider', arg: 'local' }, after: { name: 'setProvider', arg: 'plugin:todoist' },
+    view: 'compact', theme: 'light', width: 1440, action: { name: 'setProvider', arg: 'local' },
+    // Back to Todoist the way the user goes: Settings › Tasks, Todoist. The seed has not offered
+    // the copy yet, so Connect asks first (`T23-next`); "Not now" switches without copying.
+    next: {
+      title: 'Choosing Todoist again: "Copy your open tasks to Todoist?"',
+      action: [{ name: 'go', arg: '#/settings/meetings-tasks' }, { name: 'click', arg: 'input[name="tasks-provider"][value="plugin:todoist"]' }, { name: 'until', arg: '.ws-modal[open]' }, { name: 'wait', arg: 400 }],
+      checks: [
+        { name: '"Copy your open tasks to Todoist?"', selector: '.ws-modal[open]', text: 'Copy your open tasks to Todoist?' },
+        { name: 'Not now and Copy', selector: '.ws-modal[open] button[name="decision"]', count: 2 },
+      ],
+    },
+    after: [{ name: 'click', arg: '.ws-modal[open] button[value="skip"]' }, { name: 'until', arg: 'input[name="tasks-provider"][value="plugin:todoist"]:checked' }],
     checks: [
       { name: 'Board, List and By date', selector: '.ws-tasks-heading [data-action="tasks-view"]', text: ['Board', 'List', 'By date'], order: true },
       { name: 'the board', selector: '.ws-task-board' },
     ],
-    covers: ['tp4.local-board'],
+    covers: ['tp4.local-board', 'tp4.copy-dialog'],
   },
 
   // ---------------------------------------------------------------- step 5 (automations-checks.mjs), step 7 (ai-routes-checks.mjs)
@@ -335,8 +675,9 @@ export const STOPS = [
         name: 'Morning briefing, Inbox triage, Commitments, Budget request reply, Formal meeting summary, in that order',
         selector: '.ws-auto-template [data-action="automation-template"]', ids: ['morning-brief', 'inbox-triage', 'commitments', 'budget-reply', 'formal-summary'],
       },
+      { name: 'Inbox triage’s card: "Delivers to Today and tasks in Todoist."', selector: '.ws-auto-template:has([data-id="inbox-triage"])', text: 'Delivers to Today and tasks in Todoist.' },
     ],
-    covers: ['ct5.gallery'],
+    covers: ['ct5.gallery', 'ct5.deliver-chips'],
   },
   {
     id: 'T25', step: [5], title: 'Automations: Inbox triage from its template', route: '#/automations/templates',
@@ -346,8 +687,10 @@ export const STOPS = [
       { name: 'the editor is open', selector: '.ws-modal[open] #automation-editor', count: 1 },
       { name: '"Tasks in Todoist" in Deliver', selector: '.ws-auto-switch:has([data-deliver="createTasks"]) .ws-switch-label', exact: 'Tasks in Todoist' },
       { name: 'it is on', selector: '[data-deliver="createTasks"]:checked', count: 1 },
+      { name: 'the Read box offers "Messages since the last run"', selector: '#auto-read', text: 'Messages since the last run', any: true },
+      { name: 'the profile’s Default line names the row', selector: '#auto-profile option', any: true, text: 'Default · Inbox triage (' },
     ],
-    covers: ['ct5.editor-tasks'],
+    covers: ['ct5.editor-tasks', 'ct5.read-box', 'pm7.editor-default'],
   },
   {
     id: 'T26', step: [5, 7], title: 'Compact Run log: the triage run unfolded', route: '#/automations/runs',
@@ -355,8 +698,10 @@ export const STOPS = [
     checks: [
       { name: '"Tasks: 2 made in Todoist, 1 already there"', selector: `#run-${SEED_IDS.triageRun}`, text: 'Tasks: 2 made in Todoist, 1 already there' },
       { name: 'the fallback line', selector: `#run-${SEED_IDS.fallbackRun}`, text: 'Ran on' },
+      { name: 'a link per task it made', selector: `#run-${SEED_IDS.triageRun} .ws-run-made a.ws-run-task`, count: 2 },
+      { name: '"Looks handled: 1 task flagged"', selector: `#run-${SEED_IDS.triageRun}`, text: 'Looks handled: 1 task flagged' },
     ],
-    covers: ['ct5.run-log-tasks', 'pm7.run-fallback'],
+    covers: ['ct5.run-log-tasks', 'pm7.run-fallback', 'ct5.run-log-details'],
   },
 
   // ---------------------------------------------------------------- step 6 (menu-bar-checks.mjs)
@@ -381,8 +726,9 @@ export const STOPS = [
       { name: 'the applied view equals the recount', fact: 'appliedEqualsComputed', equals: true },
       { name: 'amber', fact: 'computed.amber', equals: true },
       { name: 'count > 0', fact: 'computed.count', min: 1 },
+      { name: 'the menu’s row texts', fact: 'rowTexts.length', min: 1 },
     ],
-    covers: ['mb6.tray-state'],
+    covers: ['mb6.tray-state', 'mb6.row-texts'],
   },
 
   // ---------------------------------------------------------------- step 7 (ai-routes-checks.mjs)
@@ -400,8 +746,12 @@ export const STOPS = [
       { name: 'chip Not working', selector: '[data-ai-route-state="broken"]', min: 1 },
       { name: 'the Ollama card: Engine Ollama', selector: '[data-ai-profile="codemie:local-ollama"]', text: ['Engine', 'Ollama'] },
       { name: 'the Ollama card: Not running', selector: '[data-ai-profile="codemie:local-ollama"]', text: 'Not running' },
+      { name: 'group Plugins', selector: 'th[scope=rowgroup]', text: 'Plugins' },
+      { name: 'Digest’s own row (it agreed to Claude)', selector: '[data-ai-route-row="plugin:digest"]', count: 1, text: 'Digest' },
+      { name: 'the CodeMie profile card’s Provider fact', selector: '[data-ai-profile="codemie:prod"]', text: 'Provider' },
+      { name: '"Same as Default (…)" in a row’s Profile', selector: '[data-ai-route-row="mail_draft"] select[data-field="profile"] option', any: true, text: 'Same as Default (' },
     ],
-    covers: ['pm7.ai-label', 'pm7.groups', 'pm7.fallback', 'pm7.status-chips', 'pm7.ollama'],
+    covers: ['pm7.ai-label', 'pm7.groups', 'pm7.fallback', 'pm7.status-chips', 'pm7.ollama', 'pm7.plugin-rows', 'pm7.provider-fact', 'pm7.same-as'],
   },
   {
     id: 'T30', step: [7], title: 'Settings › AI in Compact at 1000', route: '#/settings/ai',
@@ -409,6 +759,7 @@ export const STOPS = [
     checks: [
       { name: 'the routes card', selector: '.ws-ai-routes' },
       { name: 'rows', selector: '[data-ai-route-row]', min: 3 },
+      { name: 'two-line rows: the job above its selects', selector: '[data-ai-route-row="mail_draft"]', stacked: ['th.ws-ai-job', 'td.ws-ai-cell-profile'] },
     ],
     covers: ['pm7.narrow'],
   },
@@ -418,11 +769,14 @@ export const STOPS = [
   // capture proves WebKit's snapshot composites plugin frames (Ruling 5; Task 5 review M5).
   {
     id: 'T31', step: [0], title: 'A plugin’s page in its frame', route: '#/p/hello/home',
-    view: 'default', theme: 'dark', width: 1440,
+    view: 'default', theme: 'dark', width: 1440, frame: 'iframe[data-plugin-frame="hello"]',
+    action: { name: 'until', arg: 'iframe[data-plugin-frame="hello"][data-plugin-ready]' },
     checks: [
-      { name: 'its frame over the content area', selector: 'iframe[data-plugin-frame="hello"]', count: 1 },
+      { name: 'its frame told the window it is ready', selector: 'iframe[data-plugin-frame="hello"][data-plugin-ready]', count: 1 },
+      { name: 'its frame lies over its slot (plugins-checks.mjs `framed`)', selector: 'iframe[data-plugin-frame="hello"]', over: '[data-plugin-slot="hello"]' },
       { name: 'its sidebar entry is current', selector: '.ws-plugin-nav [aria-current=page][data-plugin-id="hello"]', count: 1 },
     ],
     covers: ['m0.plugin-frame'],
   },
+  ...MORE,
 ];

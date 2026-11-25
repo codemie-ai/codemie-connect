@@ -70,14 +70,17 @@ try { firstView = readViewMirror(localStorage); } catch { /* default */ }
 root.dataset.view = firstView;
 document.documentElement.dataset.view = firstView;
 const rawInvoke = window.__TAURI__?.core?.invoke;
-const invoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
-// A tour build (CODEMIE_TOUR) puts the tour's gate in front of the workspace calls: every op is
-// recorded, and one the tour's deny-list names is refused before it is sent (tour/runner.js).
+const appInvoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
+// A tour build (CODEMIE_TOUR) puts the tour's gate in front of every call the window makes to
+// native: each workspace op is recorded, and one the tour's deny-list names (a send, a fetch, an
+// install, anything that opens Finder, Terminal, a browser or a picker) is refused before it is
+// sent (tour/runner.js).
 let tourGated = null;
+const invoke = appInvoke && ((cmd, args, options) => (tourGated || appInvoke)(cmd, args, options));
 // Any workspace call that finds the data folder unusable switches to the recovery page.
 const watched = invoke && (async (cmd, args) => {
   try {
-    return await (tourGated || invoke)(cmd, args);
+    return await invoke(cmd, args);
   } catch (err) {
     if (err?.code === 'storage_unavailable') showRecovery(err);
     throw err;
@@ -178,8 +181,6 @@ function claudeProfileReady() {
 }
 let legacyModule;
 let ready = false;
-/** A tour build walking its stops (CODEMIE_TOUR). */
-let touring = false;
 let deferredNotification;
 let calendarScrollKey = '';
 let noteTimer;
@@ -885,8 +886,7 @@ const pluginsUi = createPluginsController({
     state.installedPlugins = list;
     state.pluginsKnown = true;
     pluginHost?.sync(list);
-    // A tour's task provider is the test double, with no plugin behind it: nothing was removed.
-    if (active?.startsWith('plugin:') && !stillIs && !touring) {
+    if (active?.startsWith('plugin:') && !stillIs) {
       mutate('task_provider_set', { provider: 'local' })
         .then(() => toast(`${removedName || 'That plugin'} was removed, so tasks are back in Connect.`, 'info'))
         .catch(fail);
@@ -3507,11 +3507,11 @@ async function boot() {
   const flags = await invoke('smoke_mode');
   // CODEMIE_TOUR (a tour build only): the app boots on the tour's seeded folder, without the
   // CodeMie CLI, the setup sheet or the update check, then walks the tour's stops and reports.
-  touring = !!flags.tour;
-  const tour = touring ? await import('./tour/runner.js') : null;
+  const tour = flags.tour ? await import('./tour/runner.js') : null;
   const tourOps = [];
   const tourRefused = [];
-  if (tour) tourGated = tour.gate(invoke, { ops: tourOps, refused: tourRefused });
+  const tourAllow = new Set();
+  if (tour) tourGated = tour.gate(appInvoke, { ops: tourOps, refused: tourRefused, allow: tourAllow });
   if (flags.plugin === 'isolation') {
     const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
     return runIsolationSmoke(invoke, { runId: flags.plugin_run_id });
@@ -3710,7 +3710,7 @@ async function boot() {
   if (tour) {
     const report = await tour.runTour({
       invoke, goHash, store, mutate, doc: document, raf: fn => requestAnimationFrame(fn),
-      only: flags.tour, runId: flags.tour_run_id, ops: tourOps, refused: tourRefused,
+      only: flags.tour, runId: flags.tour_run_id, ops: tourOps, refused: tourRefused, allow: tourAllow,
     });
     // Rust adds its view, writes the verdict and quits.
     return invoke('tour_report', { report });

@@ -138,12 +138,12 @@ It answers `{path, width, height, blank}`. `blank` is true when 1,024 sampled pi
 | Inbox | the fixture's messages and chats: needs-reply mail from Priya, a Teams 1:1 with Jordan, the Release crew group chat, one unacknowledged critical message, FYI and low; summaries and an AI draft record | `buildSnapshot`, `draft-ai.json`, `summary.json` |
 | Meetings | ready, downloaded, pending and failed meetings; the ready one with two documents (Meeting notes, Short summary), a transcript and `tasks.json`; its folder under `<test dir>/Meetings` | `withMeetings`, `meetingFolders` (paths moved from `/Users/taylor/...` to the test folder) |
 | Settings › Meetings | `openOn: "summary"`, action items on, pinned summaries `formal-summary` and `short-summary` | `meeting-view-settings.json` |
-| Tasks | Todoist active (`tasks.provider = "plugin:todoist"`, `copyOffered` set): late, today, next 7 days, no date, a `waiting` "Check with Marek" task with a synced thread, a looks-handled reply task, one pending, one parked; Local tasks for the Board stop | `withTasks`, `task-sync-cases.json` and the `allTodoist` and `marekCheckIn` transforms, exported from `ui/test/browser/tasks-provider-checks.mjs` and not copied |
+| Tasks | Todoist active (`tasks.provider = "plugin:todoist"`, `copyOffered` empty, so choosing Todoist again asks to copy): late, today, a task due in 20 days, next 7 days, no date, a `waiting` "Check with Marek" task with a synced thread, a looks-handled reply task, one pending, one parked; Local tasks for the Board stop | `withTasks`, `task-sync-cases.json` and the `allTodoist` and `marekCheckIn` transforms, exported from `ui/test/browser/tasks-provider-checks.mjs` and not copied |
 | Task provider | `FakeProvider` with `available = [{id: "plugin:todoist", name: "Todoist", on: true, ready: true}]` and the same tasks in its remote store | `task-provider-states.json` (`ready`) |
 | Automations | the habit automations (Inbox triage, Commitments, Morning briefing, Formal meeting summary) and their runs: a triage run that made 2 tasks in Todoist with 1 already there, a summary run, and a failed Commitments run (amber); one run with `fallbackFrom` | `withAutomations(s, now, {habits: true})`, `automation-run-*.json` |
 | Menu bar | `menuBar` settings all four on; a `menu_bar_seen` record with `since` one day before the run, so the seeded notes and runs count as new; count above 0 and amber (the failed run and the parked task) | `menu-bar-states.json` (`amberWithCount`) for the expected shape |
 | AI | profiles "Claude Code" (ready), "CodeMie · prod" (ready) and "CodeMie · local-ollama" (engine Ollama, `not_running`); default Claude Code with fallback CodeMie · prod; Inbox triage on local-ollama with fallback Claude Code (Using fallback); one job on local-ollama with no fallback (Not working); Ask hidden | `ai-status.json`, `ai-route-cases.json` |
-| Plugins | an empty registry; Registry::load adds the built-ins `codemie`, then `onetest`, "Not fetched yet" | step 0 |
+| Plugins | the built-ins `codemie`, then `onetest`, "Not fetched yet"; installed and on: the browser run's `hello` (its page draws in its frame), an offline Todoist stand-in that provides tasks (`scripts/tour/plugins/todoist`, no token), and `digest`, which agreed to Claude and has `call.minutes` (`scripts/tour/plugins/digest`) | step 0 |
 | Window | `theme: "light"`, `view: "default"`, `hiddenPages: []` | |
 
 The seed holds no secret. Every e-mail address is `@example.test`. No path in it points outside the test folder; the import refuses one that does (`validation`, naming the field).
@@ -176,8 +176,13 @@ The seed holds no secret. Every e-mail address is `@example.test`. No path in it
 A stop that throws is failed, with the error as its detail, and the tour goes on.
 
 **Deny-list.** Before any action, the runner refuses (fails the stop, sends nothing):
-- an op or `data-action` matching `/send|confirm|prepare|fetch|install|update|remove|delete|sign|login|test/`;
+- an op or `data-action` matching `/send|confirm|prepare|fetch|install|update|remove|delete|sign|login|test|refresh/` (`refresh`: a marketplace's Fetch is `market-refresh`), except `settings_update`, and any `settings_update` of `launchAtLogin`;
+- a `data-action` matching `/open|reveal|pick|link|terminal|download/` (Finder, Terminal, a browser, a picker, a download), except in-window folds named one by one (`task-row-open`);
 - `invoke` of anything but `workspace_request`, `plugins_request` with `markets` or `installed`, `smoke_mode`, `get_app_version` and the `tour_*` commands.
+
+The window's own `invoke` goes through the same gate (`gate` in `runner.js`), for every call it makes to native: a send word, or `/open|reveal|pick|link|download|relaunch|restart/` in the command (or `plugins_request:<op>`), is refused before it is sent and recorded. A stop may lift one named control or request with `allow` (T60 removes the Todoist plugin); `allow` never lifts a send. Rust refuses every desktop opener in tour mode with "The tour opens nothing." (`commands::tour::opens_nothing`, called by the folder pickers, Finder reveals, `open` launches, a relaunch and every external link), so the window's gate is the first guard and Rust the second.
+
+Each captured stop also checks `noClip` (the browser run's: nothing the user sees overflows its box, or is cut off without an ellipsis). A stop with `frame` also judges the capture's area under that element on its own (`tour_capture {region}` answers `regionBlank`). A stop with `next` takes a second picture (`<id>-next`) after a second action.
 
 Every `workspace_request` op is recorded (`recordOps` from `status-smoke.js`), and the report lists them.
 
@@ -185,7 +190,7 @@ Every `workspace_request` op is recorded (`recordOps` from `status-smoke.js`), a
 
 ### 6. The stops for steps 0–7
 
-Seed ids are named in the plan. Each stop is captured.
+Seed ids are named in the plan. 60 stops: every stop but T28 is captured, and T23 also takes `T23-next`, so a full tour writes 60 screenshots. T01–T30 are the first table's; T31–T60 were added in Task 6 (T31 the plugin frame, Ruling 5; T32–T60 every built feature T01–T30 didn't check). The real app's answers changed four rows of the first table: T06's ⋯ has no Summarize (offered only on a long conversation), T14 reads "Add 1 to Todoist" (the seed ticks only the user's own item), T17 goes back to the summary after its capture, and T23 returns to Todoist through the Copy dialog (`copyOffered` starts empty).
 
 | Stop | Step | Route | View · theme · width | Action | Must be visible |
 |---|---|---|---|---|---|
@@ -211,7 +216,7 @@ Seed ids are named in the plan. Each stop is captured.
 | T20 | 4 | tasks | default · light · 1440 | none | By date and List, no Board; To review; Late, Today; folds Next 7 days, No date, Later than that; "Check with Marek"; Looks handled; the "Not in Todoist yet" dot; the parked row's sentence |
 | T21 | 4 | tasks | default · light · 1440 | unfold the Check with row | Nudge Marek, Snooze ▾, ⋯ |
 | T22 | 4 | settings/meetings-tasks | default · dark · 1440 | none | "Where your tasks live": Connect, Todoist chosen |
-| T23 | 4 | tasks | compact · light · 1440 | `task_provider_set {provider: "local"}`, then back to `plugin:todoist` after capture | Board, List and By date; the board |
+| T23 | 4 | tasks | compact · light · 1440 | `task_provider_set {provider: "local"}`; then (`T23-next`) Settings › Tasks › Todoist, and "Not now" after capture | Board, List and By date; the board; next: "Copy your open tasks to Todoist?" with Not now and Copy |
 | T24 | 5 | automations/templates | default · light · 1440 | none | Morning briefing, Inbox triage, Commitments, Budget request reply, Formal meeting summary, in that order |
 | T25 | 5 | automations/templates | default · light · 1440 | Use template on Inbox triage, then Cancel after capture | "Tasks in Todoist" in Deliver |
 | T26 | 5, 7 | automations/runs | compact · dark · 1440 | unfold the triage run | "Tasks: 2 made in Todoist, 1 already there"; the fallback line on the run with `fallbackFrom` |
@@ -219,6 +224,36 @@ Seed ids are named in the plan. Each stop is captured.
 | T28 | 6 | (none) | · | `tour_menu_bar` | evidence: tray exists, applied equals recount, amber, count > 0 (no screenshot) |
 | T29 | 7 | settings/ai | default · light · 1440 | none | tab label "AI"; groups Replies, Summaries and notes, Automations, Plugins; a Fallback select per row; chips Working, Using fallback, Not working; the Ollama card with Engine Ollama and Not running |
 | T30 | 7 | settings/ai | compact · dark · 1000 | none | two-line rows, no overflow |
+| T31 | 0 | p/hello/home | default · dark · 1440 | none | its frame told the window it is ready; its frame lies over its slot (plugins-checks.mjs `framed`); its sidebar entry is current |
+| T32 | 0 | settings/plugins | default · dark · 1440 | click, type, click; after: click | refused: "That marketplace is already added, as “codemie”." |
+| T33 | 1 | settings/layout | compact · light · 1440 | `settings_update`, go #/calendar; after: `settings_update` | Calendar opened; greyed in the menu while open |
+| T34 | 1 | settings/layout | default · dark · 1440 | `settings_update`; after: `settings_update` | the Inbox switch is disabled; "Keep one page in the menu." |
+| T35 | 2 | inbox | default · dark · 1440 | `settings_update`, selectRow; after: `settings_update` | primary "Copy reply"; no Send |
+| T36 | 2 | inbox | default · light · 1440 | selectRow | it is in the reading pane; no reply box; Done is the primary |
+| T37 | 2 | inbox | compact · light · 1440 | openRow | primary "Send to Release crew" |
+| T38 | 2 | inbox | default · light · 1440 | openMore | Snooze and its four choices under ⋯ |
+| T39 | 2 | inbox | default · dark · 1680 | openMore, click; after: click | the Draft with AI popover; its tones |
+| T40 | 2 | settings/microsoft | default · light · 1440 | none | the Allow actions copy; a switch per action |
+| T41 | 3 | meetings/<ready>/summary | default · light · 1440 | menu | the header’s "with …"; the people popover |
+| T42 | 3 | meetings/<ready>/summary | default · dark · 1440 | click | "No Formal summary yet."; the primary "Make Formal summary" |
+| T43 | 3 | meetings/<ready>/summary | default · light · 1440 | `settings_update`, menu; after: `settings_update` | no column; "Review N tasks"; ⋯ › Action items |
+| T44 | 3, 4 | meetings/<ready>/summary | default · dark · 1680 | click; after: click | "Added 1 to Todoist · Undo" |
+| T45 | 3 | meetings/<ready>/summary | default · light · 1000 | none | the column is below the pane |
+| T46 | 3 | settings/meetings-templates | compact · dark · 1440 | menu | Pin a summary ▾ offers the other templates; a template card offers "Pin as a summary tab" |
+| T47 | 3 | meetings/<ready>/summary | default · light · 1440 | `settings_update`, go #/meetings/mtg-philips/summary, click; after: `settings_update` | the Digest tab, first; its minutes, as text |
+| T48 | 3 | meetings/<ready>/notes | default · dark · 1440 | none | the Notes pane with its document picker |
+| T49 | 3 | meetings/<ready>/tasks | compact · light · 1440 | none | the summary pane; the action items column |
+| T50 | 4 | tasks | default · dark · 1440 | click | To review is cleared; "N tasks accepted. They’re on your board." |
+| T51 | 4 | tasks | compact · dark · 1000 | menu | Move all to Tomorrow, Move all to Monday, Pick date…, Done all |
+| T52 | 4 | tasks | default · light · 1680 | click; after: click | "Marked 1 done · Undo" |
+| T53 | 4 | tasks | default · light · 1440 | menu | the status line names Todoist; ⋯ › Sync now and Settings › Tasks |
+| T54 | 4 | inbox | default · light · 1440 | openMore, click, click | the toast says it is in Todoist |
+| T55 | 4 | tasks | default · dark · 1440 | unfoldTask, click | the reply box holds the nudge |
+| T56 | 5 | automations/templates | compact · dark · 1440 | useTemplate; after: cancelModal | Make is Formal summary; "Wishes (optional)"; no Read box |
+| T57 | 5 | automations/automations | default · light · 1440 | none | Inbox triage delivers to Today and Tasks |
+| T58 | 5 | automations/runs | default · light · 1440 | unfoldRun | "Formal summary queued for …"; Open meeting |
+| T59 | 7 | inbox | default · dark · 1440 | `ai_settings_save`, selectRow, click; after: click, `ai_settings_save` | "Choose which AI writes for you"; Claude Code and CodeMie · prod, the ready profiles; the not-running Ollama profile is not offered |
+| T60 | 4 | settings/plugins/todoist | default · light · 1440 | click, click | "Todoist was removed, so tasks are back in Connect." |
 
 ### 7. The coverage matrix
 
@@ -232,10 +267,15 @@ Each stop's `covers` names feature ids. The report's table has one row per featu
 - **amber**: `browser`, shown with its reason and the browser set that covers it;
 - **grey**: `planned`.
 
-`browser` is only for what the real app can't show without sending or without the desktop. There are three today:
-- the mail confirm dialog (it needs `action_prepare`, which reads Microsoft): `reply` set;
-- the task-provider banners for `needs_token`, `off` and `failed` (the seed has one provider state): `tasks-provider` set;
-- one Settings › AI row per plugin with `claude` agreed (that needs an installed plugin): `settings-ai` checks in `compact` and `workspace.test.mjs`.
+`browser` is only for what the real app can't show without sending or without the desktop, or a state the seed doesn't hold. There are eight today:
+- the mail confirm dialog (it needs `action_prepare`, which reads Microsoft): `reply` R6;
+- a Teams send on click, and ⌘↩ (real sends): `reply` R4 and R7;
+- the task-provider banners for `needs_token`, `off` and `failed` (the seed has one provider state): `tasks-provider` P8;
+- "Delete … in Todoist too?" (its yes deletes in Todoist): `tasks-dates` provider check;
+- a tray row's click and seen marks (the macOS menu bar; marks need window focus): `menu-bar` M6 and M5;
+- the chooser's line for a running Ollama (the seed's Ollama is `not_running`): `ai-routes` R5.
+
+One Settings › AI row per plugin with `claude` agreed is `built`: the seed installs `digest`, which agreed to Claude.
 
 Steps 8 (reply in your voice) and 9 (Ask inline) are listed `planned`. Each later step changes them to `built` and adds its stops in the same change as its code.
 

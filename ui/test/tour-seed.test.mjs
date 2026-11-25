@@ -112,10 +112,15 @@ test('the CLI refuses a non-empty folder', () => {
   assert.equal(result.status, 1);
 });
 
-test('the seed installs the synthetic hello plugin, its sheet agreed to, and a task due in 20 days', () => {
+test('the seed installs hello, the Todoist stand-in and Digest, their sheets agreed to, and a task due in 20 days', () => {
   const { seed } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
-  assert.equal(seed.plugins.length, 1);
-  const [hello] = seed.plugins;
+  assert.deepEqual(seed.plugins.map(p => p.id), ['hello', 'todoist', 'digest']);
+  const [hello, todoist, digest] = seed.plugins;
+  assert.deepEqual(todoist.agreed, ['network', 'provides_tasks'], 'Todoist provides tasks');
+  const manifest = JSON.parse(todoist.files['echo-plugin.json']);
+  assert.deepEqual(manifest.settings.map(x => [x.key, x.type]), [['token', 'secret'], ['project', 'string'], ['label', 'string']]);
+  assert.ok(!JSON.stringify(todoist).includes('tk_'), 'no token value in the seed');
+  assert.deepEqual(digest.agreed, ['claude'], 'Digest agreed to Claude');
   assert.equal(hello.id, 'hello');
   assert.equal(hello.version, '1.0.0');
   assert.deepEqual(Object.keys(hello.files).sort(), ['client.js', 'echo-plugin.json', 'main.js']);

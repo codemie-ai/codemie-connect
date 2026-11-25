@@ -1689,6 +1689,7 @@ fn teams_app_link(link: &Url) -> Option<String> {
 /// Opens an address with the system's handler (the browser, or the app that owns its scheme).
 /// The address goes to it as one argument, never through a shell; callers check it first.
 pub fn launch_url(url: &str) -> Result<()> {
+    crate::commands::tour::opens_nothing().map_err(|m| WorkspaceError::new("tour", m))?;
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("/usr/bin/open")
         .arg(url)

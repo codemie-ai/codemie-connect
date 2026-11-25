@@ -1,0 +1,11 @@
+{
+  "id": "digest",
+  "name": "Digest",
+  "version": "1.0.0",
+  "summary": "Writes a short digest of your day with Claude",
+  "main": "main.js",
+  "uses": {
+    "claude": {}
+  },
+  "client": "client.js"
+}

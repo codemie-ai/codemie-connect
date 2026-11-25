@@ -23,12 +23,60 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Whether a 4-bytes-per-pixel bitmap is one colour: the centres of a 32x32 grid of cells all
 /// hold the same pixel. A blank capture fails its stop (design § 3).
 pub fn is_blank(rgba: &[u8], width: usize, height: usize, stride: usize) -> bool {
+    is_blank_in(rgba, width, height, stride, (0, 0, width, height))
+}
+
+/// [`is_blank`] over the pixel rectangle `(x, y, w, h)` alone (a plugin frame's area), clamped to
+/// the bitmap. A rectangle with no pixels in the bitmap counts as blank: nothing is drawn there.
+pub fn is_blank_in(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    (x, y, w, h): (usize, usize, usize, usize),
+) -> bool {
+    let (x0, y0) = (x.min(width), y.min(height));
+    let (w, h) = (
+        x.saturating_add(w).min(width) - x0,
+        y.saturating_add(h).min(height) - y0,
+    );
+    if w == 0 || h == 0 {
+        return true;
+    }
     let pixel = |x: usize, y: usize| rgba.get(y * stride + x * 4..y * stride + x * 4 + 4);
-    let first = pixel(width / (2 * GRID), height / (2 * GRID));
+    let at = |i: usize, n: usize, len: usize| (2 * i + 1) * len / (2 * n);
+    let first = pixel(x0 + at(0, GRID, w), y0 + at(0, GRID, h));
     (0..GRID).all(|j| {
-        let y = (2 * j + 1) * height / (2 * GRID);
-        (0..GRID).all(|i| pixel((2 * i + 1) * width / (2 * GRID), y) == first)
+        let py = y0 + at(j, GRID, h);
+        (0..GRID).all(|i| pixel(x0 + at(i, GRID, w), py) == first)
     })
+}
+
+/// A rectangle in CSS px (`x, y, width, height`) as bitmap px, for a snapshot `pixels_wide`
+/// wide of a view `view_width` CSS px wide.
+pub fn scaled(
+    (x, y, w, h): (f64, f64, f64, f64),
+    pixels_wide: usize,
+    view_width: f64,
+) -> (usize, usize, usize, usize) {
+    let k = if view_width > 0.0 {
+        pixels_wide as f64 / view_width
+    } else {
+        1.0
+    };
+    let px = |v: f64| (v.max(0.0) * k).round() as usize;
+    (px(x), px(y), px(w), px(h))
+}
+
+/// The part of the page a capture also judges on its own (a plugin frame's box), in CSS px.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Region {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub view_width: f64,
 }
 
 /// Where a window's origin goes so it sits in the bottom-left corner of a screen's visible frame
@@ -143,10 +191,11 @@ struct Shot {
     width: usize,
     height: usize,
     blank: bool,
+    region_blank: Option<bool>,
 }
 
 /// Encodes WebKit's snapshot as PNG and judges it blank from its own pixels (main thread).
-fn encode(image: &NSImage) -> Result<Shot, String> {
+fn encode(image: &NSImage, region: Option<Region>) -> Result<Shot, String> {
     let tiff = image
         .TIFFRepresentation()
         .ok_or("The snapshot has no bitmap.")?;
@@ -168,6 +217,10 @@ fn encode(image: &NSImage) -> Result<Shot, String> {
     // there, alive as long as `rep`, which outlives this slice.
     let pixels = unsafe { std::slice::from_raw_parts(data, stride * height) };
     let blank = is_blank(pixels, width, height, stride);
+    let region_blank = region.map(|r| {
+        let rect = scaled((r.x, r.y, r.width, r.height), width, r.view_width);
+        is_blank_in(pixels, width, height, stride, rect)
+    });
     let props = NSDictionary::new();
     // SAFETY: an empty property dictionary is valid for every file type.
     let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }
@@ -177,17 +230,20 @@ fn encode(image: &NSImage) -> Result<Shot, String> {
         width,
         height,
         blank,
+        region_blank,
     })
 }
 
 /// Snapshots the window's own web content in-process (`WKWebView takeSnapshot`): no Screen
 /// Recording, nothing on the real screen is read. Writes `<test dir>/tour/shots/<id>.png` and
-/// answers `{path, width, height, blank, sha256}`.
+/// answers `{path, width, height, blank, sha256}`, plus `regionBlank` when `region` names a part
+/// of the page to judge on its own (a plugin frame's box).
 #[tauri::command]
 pub async fn tour_capture(
     app: AppHandle,
     call: tauri::ipc::Request<'_>,
     id: String,
+    region: Option<Region>,
 ) -> CmdResult<Value> {
     require_main_frame(&call)?;
     if !capture_id_ok(&id) {
@@ -216,7 +272,7 @@ pub async fn tour_capture(
             };
             // SAFETY: WebKit passes either a live image or a live error for this call.
             let shot = match unsafe { (image.as_ref(), error.as_ref()) } {
-                (Some(image), _) => encode(image),
+                (Some(image), _) => encode(image, region),
                 (None, Some(error)) => Err(error.localizedDescription().to_string()),
                 (None, None) => Err("WebKit returned no snapshot.".into()),
             };
@@ -245,6 +301,7 @@ pub async fn tour_capture(
         "width": shot.width,
         "height": shot.height,
         "blank": shot.blank,
+        "regionBlank": shot.region_blank,
         "sha256": sha256,
     }))
 }
@@ -288,6 +345,30 @@ mod tests {
 
     fn bitmap(width: usize, height: usize) -> Vec<u8> {
         [255u8; 4].repeat(width * height)
+    }
+
+    #[test]
+    fn a_region_is_judged_on_its_own_pixels() {
+        let (w, h) = (400, 300);
+        let mut rgba = bitmap(w, h);
+        // A dark block inside the region (100..300, 100..200), around a sample point.
+        for y in 140..160 {
+            for x in 190..210 {
+                rgba[y * w * 4 + x * 4..y * w * 4 + x * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+        assert!(!is_blank_in(&rgba, w, h, w * 4, (100, 100, 200, 100)));
+        // The same block lies outside this region: blank there.
+        assert!(is_blank_in(&rgba, w, h, w * 4, (0, 0, 100, 100)));
+        // A region past the bitmap's edge is clamped, never read out of bounds.
+        assert!(is_blank_in(&rgba, w, h, w * 4, (350, 250, 500, 500)));
+        // An empty region (no pixels) counts as blank: there is nothing drawn.
+        assert!(is_blank_in(&rgba, w, h, w * 4, (500, 500, 10, 10)));
+        // CSS px to bitmap px at the snapshot's scale.
+        assert_eq!(
+            scaled((10.0, 20.0, 30.0, 40.0), 2880, 1440.0),
+            (20, 40, 60, 80)
+        );
     }
 
     #[test]

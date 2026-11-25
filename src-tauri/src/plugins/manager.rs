@@ -583,6 +583,9 @@ impl FolderPicker for NativePicker {
     #[cfg(any(target_os = "macos", windows))]
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>> {
         use tauri::Manager;
+        if crate::commands::tour::opens_nothing().is_err() {
+            return Box::pin(async { None });
+        }
         let app = self.0.clone();
         Box::pin(async move {
             let window = app.get_webview_window("main")?;
@@ -646,6 +649,9 @@ impl FolderPicker for NativePicker {
         exts: Vec<String>,
     ) -> BoxFuture<'static, Vec<PathBuf>> {
         use tauri::Manager;
+        if crate::commands::tour::opens_nothing().is_err() {
+            return Box::pin(async { Vec::new() });
+        }
         let app = self.0.clone();
         Box::pin(async move {
             let Some(window) = app.get_webview_window("main") else {

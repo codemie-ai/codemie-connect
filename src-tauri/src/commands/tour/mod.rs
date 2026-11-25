@@ -46,6 +46,25 @@ pub fn running() -> bool {
     false
 }
 
+/// What every path that would open something on the user's desktop (Finder, Terminal, a
+/// browser, a file picker, another app, a relaunch) answers while a tour runs: the tour runs
+/// beside the user's own windows and must put nothing on their screen.
+pub const OPENS_NOTHING: &str = "The tour opens nothing.";
+
+/// [`OPENS_NOTHING`] while this launch runs a tour; every desktop opener calls it first.
+pub fn opens_nothing() -> Result<(), &'static str> {
+    open_refused(running())
+}
+
+/// The refusal for a launch that is (`tour`) or isn't touring.
+pub fn open_refused(tour: bool) -> Result<(), &'static str> {
+    if tour {
+        Err(OPENS_NOTHING)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(feature = "tour")]
 pub use run::*;
 
@@ -472,5 +491,54 @@ mod lifecycle_tests {
         assert!(!quit_blocked(false, false));
         assert!(!quit_blocked(true, true));
         assert!(!quit_blocked(true, false));
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    #[test]
+    fn a_tour_opens_nothing() {
+        assert_eq!(open_refused(true), Err("The tour opens nothing."));
+        assert_eq!(open_refused(false), Ok(()));
+    }
+
+    /// Each low-level function that opens something on the desktop calls `tour::opens_nothing()`
+    /// before it does: the window's commands (`data_location_reveal`, `data_location_pick`,
+    /// `meetings_root_pick`, `plugins_request` `open_link`/`pick_folder`/`reveal`,
+    /// `terminal_open_link`, `open_agent_in_terminal`, `open_app_download`, the folder pickers,
+    /// the log viewer, a relaunch, a Microsoft sign-in or a source link) all go through one.
+    #[test]
+    fn every_desktop_opener_refuses_in_a_tour() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let openers = [
+            ("workspace/graph.rs", "pub fn launch_url("),
+            ("storage/commands.rs", "pub(crate) async fn pick_folder("),
+            ("storage/commands.rs", "pub(crate) fn reveal("),
+            ("storage/commands.rs", "async fn relaunch("),
+            ("commands/terminal_launch.rs", "fn spawn(program"),
+            ("commands/logger.rs", "pub(crate) fn spawn_open("),
+            ("plugins/services/window.rs", "pub fn open_in_finder("),
+            ("plugins/manager.rs", "fn pick(&self, title: String)"),
+            ("plugins/manager.rs", "fn pick_files("),
+        ];
+        for (file, signature) in openers {
+            let text = std::fs::read_to_string(src.join(file)).unwrap();
+            let starts: Vec<usize> = text.match_indices(signature).map(|(i, _)| i).collect();
+            assert!(!starts.is_empty(), "{file}: no `{signature}`");
+            for start in starts {
+                // The body ends at the closing brace at the signature's own indent.
+                let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+                let indent = &text[line..start];
+                let indent = &indent[..indent.len() - indent.trim_start().len()];
+                let body = &text[start..];
+                let end = body.find(&format!("\n{indent}}}\n")).unwrap_or(body.len());
+                assert!(
+                    body[..end].contains("tour::opens_nothing()"),
+                    "{file}: `{signature}` opens without asking `tour::opens_nothing()` first"
+                );
+            }
+        }
     }
 }

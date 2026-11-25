@@ -14,9 +14,13 @@ const repo = new URL('../../', import.meta.url);
 // ---------------------------------------------------------------- fakes
 
 /** A node the fake document hands out: its text, attributes and whether it was clicked. */
-function node({ text = '', attrs = {}, visible = true, order = 0, onClick } = {}) {
+function node({ text = '', attrs = {}, visible = true, order = 0, onClick, rect, value, disabled, children = {}, scrollW, clientW, scrollH, clientH, cs = {} } = {}) {
   const n = {
-    textContent: text, clicked: 0, order, attrs: { ...attrs },
+    textContent: text, clicked: 0, order, attrs: { ...attrs }, value, disabled,
+    scrollWidth: scrollW ?? 10, clientWidth: clientW ?? 10, scrollHeight: scrollH ?? 10, clientHeight: clientH ?? 10, cs,
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, ...rect }),
+    querySelector: sel => children[sel] || null,
+    matches: sel => sel in (attrs.matches || {}),
     get dataset() { return Object.fromEntries(Object.entries(n.attrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase()), v])); },
     getAttribute: name => (name in n.attrs ? n.attrs[name] : null),
     hasAttribute: name => name in n.attrs,
@@ -34,7 +38,7 @@ function fakeDoc(nodes = {}, { scrollWidth = 1440, clientWidth = 1440, innerHeig
   const doc = {
     nodes,
     documentElement: { scrollWidth, clientWidth },
-    defaultView: { innerWidth: clientWidth, innerHeight, getComputedStyle: () => ({ getPropertyValue: () => '' }) },
+    defaultView: { innerWidth: clientWidth, innerHeight, getComputedStyle: el => ({ getPropertyValue: () => '', textOverflow: '', ...(el?.cs || {}) }) },
     querySelectorAll: sel => {
       const got = typeof nodes[sel] === 'function' ? nodes[sel](doc) : nodes[sel];
       return got || [];
@@ -51,9 +55,9 @@ function fakeInvoke({ capture = () => ({ blank: false, sha256: String(Math.rando
   const invoke = async (cmd, args) => {
     calls.push([cmd, args]);
     if (cmd === 'tour_window') return { width: args.width, height: args.height };
-    if (cmd === 'tour_capture') return { path: `/x/${args.id}.png`, width: 2880, height: 1800, ...capture(args.id) };
+    if (cmd === 'tour_capture') return { path: `/x/${args.id}.png`, width: 2880, height: 1800, ...capture(args.id, args) };
     if (cmd === 'tour_focus') return focus();
-    if (cmd === 'tour_menu_bar') return menuBar ? menuBar() : { tray: false, applied: { title: '3', amber: true }, computed: { count: 3, label: '3', amber: true } };
+    if (cmd === 'tour_menu_bar') return menuBar ? menuBar() : { tray: false, applied: { title: '3', amber: true }, computed: { count: 3, label: '3', amber: true }, rowTexts: ['3 messages need a reply'] };
     throw new Error(`unexpected ${cmd}`);
   };
   invoke.calls = calls;
@@ -103,7 +107,9 @@ test('every built feature has a stop, and every stop covers a known feature', ()
 
 test('every browser feature names a check file that exists', () => {
   const browser = FEATURES.filter(f => f.status === 'browser');
-  assert.deepEqual(browser.map(f => f.id).sort(), ['pm7.plugin-rows', 'r2.mail-confirm', 'tp4.banners']);
+  // Ruling 12: amber only for what needs a real send or the desktop (or a provider state the seed
+  // doesn't hold), each naming its browser check.
+  assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners', 'tp4.delete-ask']);
   for (const f of browser) {
     const file = new URL(f.browserCheck.file, repo);
     assert.ok(existsSync(file), `${f.id}: ${f.browserCheck.file} is missing`);
@@ -112,8 +118,8 @@ test('every browser feature names a check file that exists', () => {
   }
 });
 
-test('stops are T01..T31 in order (T31 the plugin frame), widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7', () => {
-  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 31 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
+test('stops are T01..T60 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7', () => {
+  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 60 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
   for (const s of STOPS) {
     assert.ok(s.checks.length > 0, `${s.id} has no checks`);
     if (s.capture === false) continue;
@@ -244,7 +250,7 @@ test('checks: text, order, exact, count, absent, before, notText and ids', async
   assert.deepEqual(passed, {
     text: true, order: true, 'order wrong': false, exact: true, count: true, 'count wrong': false,
     absent: true, 'absent wrong': false, before: true, 'before wrong': false, missing: false,
-    notText: true, ids: true, 'ids wrong': false, noOverflow: true, focus: true, capture: true,
+    notText: true, ids: true, 'ids wrong': false, noOverflow: true, noClip: true, focus: true, capture: true,
   });
 });
 
@@ -317,7 +323,7 @@ test('the menu bar stop checks the computed facts and takes no picture', async (
   assert.ok(!h.invoke.calls.some(([cmd]) => cmd === 'tour_capture' || cmd === 'tour_window'));
   assert.equal(result.menuBar.tray, false);
 
-  const mismatch = harness({ stops: [t28], invoke: fakeInvoke({ menuBar: () => ({ tray: false, applied: { title: '2', amber: true }, computed: { count: 3, label: '3', amber: true } }) }) });
+  const mismatch = harness({ stops: [t28], invoke: fakeInvoke({ menuBar: () => ({ tray: false, applied: { title: '2', amber: true }, computed: { count: 3, label: '3', amber: true }, rowTexts: ['x'] }) }) });
   const [bad] = (await mismatch.run()).stops;
   assert.equal(bad.pass, false);
   assert.equal(checkOf(bad, 'the applied view equals the recount').pass, false);
@@ -384,4 +390,175 @@ test('a stop with `scroll` brings that part into view before the capture', async
   const [result] = (await h.run()).stops;
   assert.equal(result.pass, true);
   assert.deepEqual(order, [['scroll', { block: 'start' }], ['capture']]);
+});
+
+
+// ---------------------------------------------------------------- fix round 1
+
+test('the deny-list refuses what opens Finder, Terminal, a browser, a picker or a download', () => {
+  for (const name of ['data-reveal', 'open-external', 'plugin-open-link', 'meetings-settings-root-pick', 'cm-open-terminal', 'cm-open-download', 'tasks-provider-token-link', 'terminal-toggle', 'meeting-download', 'market-pick']) {
+    assert.equal(denied('action', name), true, name);
+  }
+  for (const name of ['task-row-open', 'select-message', 'meeting-summary-tab', 'meeting-pane']) assert.equal(denied('action', name), false, name);
+  for (const name of ['data_location_reveal', 'plugins_request:open_link', 'terminal_open_link', 'open_agent_in_terminal', 'open_app_download', 'meetings_root_pick', 'data_location_pick', 'pick_project_folder', 'plugins_request:pick_folder', 'plugins_request:frame_reveal', 'app_relaunch', 'check_for_update', 'update_cli']) {
+    assert.equal(denied('window', name), true, name);
+  }
+  for (const name of ['workspace_request', 'plugin_call', 'plugins_request:installed', 'plugins_request:frame_session', 'plugins_request:host_phrases', 'plugins_request:client_storage', 'terminal_list', 'terminal_resize', 'get_app_version', 'smoke_mode', 'data_location_get', 'tour_capture']) {
+    assert.equal(denied('window', name), false, name);
+  }
+});
+
+test('the window gate refuses an opening command before it reaches native, and records it', async () => {
+  const ops = [];
+  const refused = [];
+  const sent = [];
+  const guarded = gate(async (cmd, args) => { sent.push(cmd); return 'ok'; }, { ops, refused });
+  for (const [cmd, args] of [['data_location_reveal', { which: 'data' }], ['plugins_request', { op: 'open_link', data: {} }], ['open_app_download', { appId: 'x' }], ['meetings_root_pick', {}], ['terminal_open_link', { url: 'https://x' }]]) {
+    await assert.rejects(guarded(cmd, args), /The tour opens nothing/, cmd);
+  }
+  assert.equal(await guarded('terminal_list', {}), 'ok');
+  assert.equal(await guarded('plugins_request', { op: 'installed' }), 'ok');
+  assert.deepEqual(sent, ['terminal_list', 'plugins_request']);
+  assert.deepEqual(refused.map(r => r.name), ['data_location_reveal', 'plugins_request:open_link', 'open_app_download', 'meetings_root_pick', 'terminal_open_link']);
+});
+
+test('a stop may allow a named control, never a send', async () => {
+  const allow = new Set();
+  const refused = [];
+  const guarded = gate(async () => 'ok', { ops: [], refused, allow });
+  allow.add('plugins_request:remove');
+  allow.add('action_confirm');
+  assert.equal(await guarded('plugins_request', { op: 'remove', data: { id: 'todoist' } }), 'ok');
+  await assert.rejects(guarded('workspace_request', { request: { op: 'action_confirm', data: {} } }), /sends nothing/);
+
+  const removeBtn = node({ attrs: { 'data-action': 'plugin-remove' } });
+  const sendBtn = node({ attrs: { 'data-action': 'reply-send' } });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '.remove': [removeBtn], '.send': [sendBtn] });
+  const h = harness({ doc, stops: [
+    stop('T60', { allow: ['plugin-remove'], action: [{ name: 'click', arg: '.remove' }] }),
+    stop('T61', { action: [{ name: 'click', arg: '.remove' }] }),
+    stop('T62', { allow: ['reply-send'], action: [{ name: 'click', arg: '.send' }] }),
+  ] });
+  const out = await h.run();
+  assert.equal(removeBtn.clicked, 1, 'allowed in T60 only');
+  assert.equal(out.stops[0].pass, true, JSON.stringify(out.stops[0]));
+  assert.equal(out.stops[1].pass, false);
+  assert.equal(out.stops[2].pass, false, 'a send is never allowed');
+  assert.equal(sendBtn.clicked, 0);
+});
+
+test('a stop runs a list of actions in order, and a generic click, mutate and go', async () => {
+  const order = [];
+  const a = node({ attrs: { 'data-action': 'meeting-pane' }, onClick: () => order.push('click') });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '.a': [a] });
+  const h = harness({ doc, stops: [stop('T40', { action: [{ name: 'mutate', arg: { op: 'settings_update', data: { hiddenPages: ['calendar'] } } }, { name: 'go', arg: '#/calendar' }, { name: 'click', arg: '.a' }], after: [{ name: 'mutate', arg: { op: 'settings_update', data: { hiddenPages: [] } } }] })] });
+  const [result] = (await h.run()).stops;
+  assert.equal(result.pass, true, JSON.stringify(result));
+  assert.deepEqual(h.mutations, [['settings_update', { hiddenPages: ['calendar'] }], ['settings_update', { hiddenPages: [] }]]);
+  assert.deepEqual(h.routes, ['#/inbox', '#/calendar']);
+  assert.deepEqual(order, ['click']);
+});
+
+test('a frame stop fails when the frame’s own area of the capture is blank', async () => {
+  const frame = node({ rect: { x: 300, y: 60, width: 900, height: 700 } });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], 'iframe.f': [frame] });
+  const regions = [];
+  let blank = true;
+  const invoke = fakeInvoke({ capture: (id, args) => { regions.push(args.region); return { blank: false, sha256: id, regionBlank: blank }; } });
+  const h = harness({ doc, invoke, stops: [stop('T31', { frame: 'iframe.f' })] });
+  const [bad] = (await h.run()).stops;
+  assert.deepEqual(regions[0], { x: 300, y: 60, width: 900, height: 700, viewWidth: 1440 });
+  assert.equal(bad.pass, false);
+  assert.match(checkOf(bad, 'frame area').detail, /blank/);
+  blank = false;
+  const [good] = (await harness({ doc, invoke, stops: [stop('T31', { frame: 'iframe.f' })] }).run()).stops;
+  assert.equal(checkOf(good, 'frame area').pass, true);
+});
+
+test('every captured stop checks that nothing the user sees is clipped', async () => {
+  const clipped = node({ text: 'Send to Jordan Lee and a very long name', scrollW: 140, clientW: 100, attrs: { matches: { '.ws-btn': 1 } } });
+  const ellipsis = node({ text: 'ok', scrollW: 140, clientW: 100, cs: { textOverflow: 'ellipsis' }, attrs: { matches: { '.ws-btn': 1 } } });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()] });
+  const clip = 'CLIP';
+  doc.nodes[clip] = [clipped, ellipsis];
+  const { CLIP_SELECTORS } = await import('../workspace/tour/runner.js');
+  doc.nodes[CLIP_SELECTORS.join(',')] = [clipped, ellipsis];
+  const [result] = (await harness({ doc, stops: [stop('T30')] }).run()).stops;
+  assert.equal(checkOf(result, 'noClip').pass, false);
+  assert.match(checkOf(result, 'noClip').detail, /Send to Jordan/);
+  assert.doesNotMatch(checkOf(result, 'noClip').detail, /"ok"/);
+});
+
+test('checks: value, valueStarts, any (hidden too), disabled, attr, below, over and stacked', async () => {
+  const box = node({ value: 'Sure, at 14:30.' });
+  const hidden = node({ text: 'Default · Inbox triage (Claude Code)', visible: false });
+  const off = node({ disabled: true, attrs: { title: 'Keep one page in the menu.' } });
+  const pane = node({ rect: { top: 100, bottom: 400, left: 0, right: 600, x: 0, y: 100, width: 600, height: 300 } });
+  const items = node({ rect: { top: 410, bottom: 600, left: 0, right: 600, x: 0, y: 410, width: 600, height: 190 } });
+  const frame = node({ rect: { x: 300, y: 60, width: 900, height: 700 } });
+  const slot = node({ rect: { x: 300.4, y: 60, width: 900, height: 700 } });
+  const row = node({ children: { th: node({ rect: { top: 0, bottom: 30 } }), td: node({ rect: { top: 34, bottom: 60 } }) } });
+  const flat = node({ children: { th: node({ rect: { top: 0, bottom: 30 } }), td: node({ rect: { top: 0, bottom: 30 } }) } });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '#box': [box], '.opt': [hidden], '.off': [off], '.items': [items], '.pane': [pane], '.frame': [frame], '.slot': [slot], '.row': [row], '.flat': [flat] });
+  const checks = [
+    { name: 'value', selector: '#box', value: 'Sure, at 14:30.' },
+    { name: 'value wrong', selector: '#box', value: 'x' },
+    { name: 'valueStarts', selector: '#box', valueStarts: 'Sure' },
+    { name: 'hidden unseen', selector: '.opt', text: 'Default' },
+    { name: 'any', selector: '.opt', any: true, text: 'Default · Inbox triage (' },
+    { name: 'disabled', selector: '.off', disabled: true },
+    { name: 'attr', selector: '.off', attr: ['title', 'Keep one page in the menu.'] },
+    { name: 'below', selector: '.items', below: '.pane' },
+    { name: 'below wrong', selector: '.pane', below: '.items' },
+    { name: 'over', selector: '.frame', over: '.slot' },
+    { name: 'stacked', selector: '.row', stacked: ['th', 'td'] },
+    { name: 'stacked wrong', selector: '.flat', stacked: ['th', 'td'] },
+  ];
+  const [result] = (await harness({ doc, stops: [stop('T01', { checks })] }).run()).stops;
+  const got = Object.fromEntries(result.checks.filter(c => checks.some(k => k.name === c.name)).map(c => [c.name, c.pass]));
+  assert.deepEqual(got, { value: true, 'value wrong': false, valueStarts: true, 'hidden unseen': false, any: true, disabled: true, attr: true, below: true, 'below wrong': false, over: true, stacked: true, 'stacked wrong': false });
+});
+
+test('an open menu’s panel is not a clip, and old toasts are cleared before a stop', async () => {
+  const barWithMenu = node({ text: 'Send to Jordan Snooze', scrollH: 300, clientH: 40, attrs: { matches: { '.ws-reply-bar': 1 } }, children: { 'details[open]': node() } });
+  const toastEl = node({ text: 'Added to Todoist' });
+  toastEl.remove = () => { toastEl.gone = true; };
+  const { CLIP_SELECTORS } = await import('../workspace/tour/runner.js');
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], [CLIP_SELECTORS.join(',')]: [barWithMenu], '.ws-toast': () => (toastEl.gone ? [] : [toastEl]) });
+  const [result] = (await harness({ doc, stops: [stop('T06')] }).run()).stops;
+  assert.equal(checkOf(result, 'noClip').pass, true, checkOf(result, 'noClip').detail);
+  assert.equal(toastEl.gone, true);
+});
+
+test('unfoldTask leaves an open row open, and untilText waits for the words', async () => {
+  const main = node({ attrs: { 'data-action': 'task-row-open' } });
+  const toastEl = node({ text: '' });
+  let n = 0;
+  const doc = fakeDoc({
+    '.ws-inbox-row': [node()],
+    '.ws-tdate-row[data-task="t"].ws-tdate-open': [node()],
+    '.ws-tdate-row[data-task="t"] .ws-tdate-main': [main],
+    '.t': () => { n += 1; toastEl.textContent = n > 2 ? 'Todoist was removed' : 'Added'; return [toastEl]; },
+  });
+  const h = harness({ doc, stops: [stop('T56', { action: [{ name: 'unfoldTask', arg: 't' }, { name: 'untilText', arg: { selector: '.t', text: 'was removed' } }] })] });
+  const [result] = (await h.run()).stops;
+  assert.equal(result.error, null);
+  assert.equal(main.clicked, 0, 'already open');
+  assert.ok(n >= 3);
+});
+
+test('a stop’s `next` phase is checked and captured on its own, before the after action', async () => {
+  const order = [];
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '.dialog': [node({ text: 'Copy your open tasks to Todoist?' })] });
+  const invoke = fakeInvoke({ capture: id => { order.push(`capture ${id}`); return { blank: false, sha256: id }; } });
+  const h = harness({ doc, invoke, stops: [stop('T23', {
+    next: { title: 'the copy dialog', action: { name: 'wait', arg: 1 }, checks: [{ name: 'the dialog', selector: '.dialog', text: 'Copy your open tasks' }] },
+    after: { name: 'mutate', arg: { op: 'task_provider_set', data: { provider: 'plugin:todoist' } } },
+  })] });
+  const [result] = (await h.run()).stops;
+  assert.equal(result.pass, true, JSON.stringify(result));
+  assert.deepEqual(order, ['capture T23', 'capture T23-next']);
+  assert.equal(result.next.capture.path, '/x/T23-next.png');
+  assert.ok(result.checks.some(c => c.name === 'next: the dialog' && c.pass));
+  assert.deepEqual(h.mutations.at(-1), ['task_provider_set', { provider: 'plugin:todoist' }]);
 });

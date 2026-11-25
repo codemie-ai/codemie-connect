@@ -23,13 +23,28 @@ function contract(name) {
   return JSON.parse(readFileSync(url, 'utf8'));
 }
 
-/** The synthetic `hello` plugin of the browser run (`ui/test/fixtures/plugins/hello`), as a seeded
- *  install: its files, and its permission sheet's `uses` keys agreed to. */
-function helloPlugin() {
-  const dir = new URL('../../ui/test/fixtures/plugins/hello/', import.meta.url);
+/** A plugin folder as a seeded install: its files, and its permission sheet agreed to (each
+ *  `uses` key, and `provides_<role>` for each role it provides). */
+function seededPlugin(dir) {
   const files = Object.fromEntries(readdirSync(dir).sort().map(name => [name, readFileSync(new URL(name, dir), 'utf8')]));
   const manifest = JSON.parse(files['echo-plugin.json']);
-  return { id: manifest.id, version: manifest.version, files, agreed: Object.keys(manifest.uses || {}).sort() };
+  const agreed = [...Object.keys(manifest.uses || {}), ...(manifest.provides || []).map(role => `provides_${role}`)].sort();
+  return { id: manifest.id, version: manifest.version, files, agreed };
+}
+
+/** The seeded plugins:
+ *  - the browser run's synthetic `hello` (`ui/test/fixtures/plugins/hello`): its page draws in
+ *    its sandboxed frame, so a capture proves frames are composited (Ruling 5);
+ *  - the tour's offline Todoist stand-in (`scripts/tour/plugins/todoist`): Todoist is installed,
+ *    as it is whenever a user has it active, so the real boot keeps it and Settings shows the
+ *    real Todoist card; it holds no token;
+ *  - `digest` (`scripts/tour/plugins/digest`), which agreed to Claude: Settings › AI's plugin row. */
+function seededPlugins() {
+  return [
+    new URL('../../ui/test/fixtures/plugins/hello/', import.meta.url),
+    new URL('./plugins/todoist/', import.meta.url),
+    new URL('./plugins/digest/', import.meta.url),
+  ].map(seededPlugin);
 }
 
 /**
@@ -137,8 +152,10 @@ export function buildSeed(testDir, nowMs) {
   s.settings.meetings.root = meetingsRoot;
   s.settings.meetings.summaryTabs = ['formal-summary', 'short-summary'];
 
-  // Tasks: Todoist active (spec § 4 "Tasks").
-  s.settings.tasks = { provider: 'plugin:todoist', copyOffered: ['plugin:todoist'] };
+  // Tasks: Todoist active (spec § 4 "Tasks"). The copy of Connect's open tasks has not been
+  // offered yet, so the tour can show "Copy your open tasks to Todoist?" when Todoist is chosen
+  // again from Connect (its "Not now" then records the offer, as the user's answer would).
+  s.settings.tasks = { provider: 'plugin:todoist', copyOffered: [] };
 
   // Menu bar: every source counted (spec § 4 "Menu bar").
   s.settings.menuBar = { replies: true, tasks: true, meetings: true, automations: true };
@@ -182,9 +199,7 @@ export function buildSeed(testDir, nowMs) {
           done: r.data.status === 'done', kind: 'task', owner: null, labels: [],
         })),
     },
-    // The browser run's synthetic `hello` plugin, installed and on, so a stop shows a plugin's
-    // page in its sandboxed frame and the capture proves frames are composited (Ruling 5).
-    plugins: [helloPlugin()],
+    plugins: seededPlugins(),
   };
 
   return { seed, folders };

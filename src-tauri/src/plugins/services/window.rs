@@ -141,6 +141,7 @@ pub fn session(
 
 /// Finder, selecting `path`.
 pub fn open_in_finder(path: &Path) -> std::io::Result<()> {
+    crate::commands::tour::opens_nothing().map_err(std::io::Error::other)?;
     let status = std::process::Command::new("/usr/bin/open")
         .arg("-R")
         .arg(path)

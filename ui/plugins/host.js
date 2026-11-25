@@ -167,6 +167,7 @@ export function createPluginHost({
     closePort(rec);
     rec.contrib = EMPTY;
     rec.ready = false;
+    rec.el?.removeAttribute?.('data-plugin-ready');
     rec.error = '';
     rec.slots = null;
     rec.sheet = false;
@@ -286,7 +287,12 @@ export function createPluginHost({
 
   function event(rec, m) {
     switch (m.type) {
-      case 'ready': rec.ready = true; rec.error = ''; return onChange();
+      case 'ready':
+        rec.ready = true;
+        rec.error = '';
+        // On the element too, so a page check (the real-app tour's) can see the frame is up.
+        rec.el?.setAttribute?.('data-plugin-ready', '');
+        return onChange();
       case 'error':
         rec.error = m.message;
         if (rec.errors.length < MAX_ERRORS && !rec.errors.includes(m.message)) rec.errors.push(m.message);
