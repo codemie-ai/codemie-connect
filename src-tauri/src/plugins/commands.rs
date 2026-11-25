@@ -135,10 +135,16 @@ pub async fn plugins_request(
         "install" | "update" | "set_enabled" | "remove" | "registry_reset"
     );
     let listing = op == "installed";
+    let core = core.clone();
     // The count ends with the work itself, even if this future is dropped first.
     let answer = blocking(move || {
         let _running = running;
-        dispatch(&paths, &CliGit::default(), &op, data.unwrap_or(Value::Null))
+        let data = data.unwrap_or(Value::Null);
+        if op == "remove" {
+            remove_then_forget(&core, &paths, &CliGit::default(), data)
+        } else {
+            dispatch(&paths, &CliGit::default(), &op, data)
+        }
     })
     .await?;
     if changes && answer.is_ok() {
@@ -553,6 +559,25 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
     }
 }
 
+/// The window's `remove`: removes the plugin and, when it is the chosen voice provider or Connect's
+/// copy of the voice came from it, deletes the copy and sets the voice Off (reply-voice design
+/// §6).
+fn remove_then_forget(
+    core: &crate::workspace::Core,
+    paths: &PluginPaths,
+    git: &dyn Git,
+    data: Value,
+) -> Result<Value> {
+    let a: RemoveArg = arg(data.clone())?;
+    let answer = dispatch(paths, git, "remove", data)?;
+    // The plugin is gone either way: a storage failure here must not report the removal as
+    // failed (the plugins would not reload).
+    if let Err(e) = core.voice_plugin_removed(&a.id) {
+        log::warn!("voice: the copy wasn't deleted with its plugin: {}", e.code);
+    }
+    Ok(answer)
+}
+
 /// `set_setting`: sets a plugin's setting; answers its `installed` view and, when it was a task
 /// provider's setting, the plugin's id and which setting (the core is told).
 fn set_setting(
@@ -946,6 +971,75 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["status"], "installed");
+    }
+
+    /// Removing the chosen voice provider through the window's `remove` deletes Connect's copy and
+    /// sets the voice Off; removing another plugin keeps both (reply-voice design §6).
+    #[test]
+    fn removing_the_voice_provider_plugin_deletes_the_copy() {
+        use crate::workspace::voice::copy;
+        let env = testkit::env();
+        let mut knowledge = manifest("knowledge", "1.0.0");
+        knowledge.as_object_mut().unwrap().remove("client");
+        let mut other = manifest("other", "1.0.0");
+        other.as_object_mut().unwrap().remove("client");
+        testkit::local_market(&env, &[knowledge, other]);
+        for id in ["knowledge", "other"] {
+            let shown = dispatch(
+                &env.paths,
+                &testkit::NoGit,
+                "inspect",
+                json!({"market": "local", "id": id}),
+            )
+            .unwrap();
+            let keys: Vec<Value> = shown["sheet"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["key"].clone())
+                .collect();
+            dispatch(
+                &env.paths,
+                &testkit::NoGit,
+                "install",
+                json!({"market": "local", "id": id, "agreed": keys, "sheetHash": shown["sheetHash"]}),
+            )
+            .unwrap();
+        }
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.voice.provider = "plugin:knowledge".into();
+            r.settings_update(&s).unwrap();
+            let c = copy::from_export(&json!({"style": {"text": "Short."}}));
+            copy::replace(&mut r, "plugin:knowledge", &c, 1).unwrap();
+        }
+        let provider = || core.repo().unwrap().settings().unwrap().voice.provider;
+        let kept = || copy::read_copy(&core.repo().unwrap()).unwrap().is_some();
+        remove_then_forget(
+            &core,
+            &env.paths,
+            &testkit::NoGit,
+            json!({"id": "other", "deleteData": false}),
+        )
+        .unwrap();
+        assert_eq!(provider(), "plugin:knowledge");
+        assert!(kept());
+        let gone = remove_then_forget(
+            &core,
+            &env.paths,
+            &testkit::NoGit,
+            json!({"id": "knowledge", "deleteData": false}),
+        )
+        .unwrap();
+        assert_eq!(gone, json!({"removed": "knowledge", "deletedData": false}));
+        assert_eq!(provider(), "off");
+        assert!(!kept());
     }
 
     /// Saving the provider's token through the window's `set_setting` lifts `needs_token` and

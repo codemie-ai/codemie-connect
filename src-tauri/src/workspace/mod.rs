@@ -609,6 +609,10 @@ impl Core {
         if let Err(e) = self.task_sync_round(now()) {
             eprintln!("tasks: sync round failed: {}", e.code);
         }
+        // The chosen voice provider's copy is refreshed every 30 minutes, window open or closed.
+        if let Err(e) = self.voice_refresh_round(now()) {
+            log::warn!("voice: refresh round failed: {}", e.code);
+        }
         if ticks.is_multiple_of(30) {
             self.announce_meetings(now());
         }
@@ -813,6 +817,10 @@ impl Core {
             "transcript_check" => self.run_transcript_check(job).await,
             "transcript_download" => self.run_transcript_download(job).await,
             "meeting_notes" => self.run_meeting_notes(job).await,
+            voice::refresh::JOB_KIND => {
+                let provider = job.payload["provider"].as_str().unwrap_or_default();
+                voice::refresh::run(self, provider, now()).await
+            }
             "task_sync" => {
                 let provider = job.payload["provider"].as_str().unwrap_or_default();
                 Ok(task_provider::sync::run(self, provider, now())
@@ -921,6 +929,14 @@ impl Core {
         if req.op == Operation::TaskProviderCheck {
             return self.task_provider_check().await;
         }
+        // Read-style: Refresh now queues a voice refresh at most once in 30 s; no operation id.
+        if req.op == Operation::VoiceRefresh {
+            return self.voice_refresh_now();
+        }
+        // Read-only: one person's profile from Connect's copy of the voice.
+        if req.op == Operation::VoiceRead {
+            return self.voice_read(&req);
+        }
         // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
         if matches!(
             req.op,
@@ -1011,6 +1027,13 @@ impl Core {
             self.profiles.profiles().await
         } else {
             Vec::new()
+        };
+        // A voice edit goes through the provider (up to 10 s), also before the lock; the locked
+        // part writes its answer into Connect's copy.
+        let asked = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
+            Some(self.voice_ask(&req).await?)
+        } else {
+            None
         };
         let synchronous = !matches!(
             req.op,
@@ -1462,6 +1485,10 @@ impl Core {
             | Operation::TaskHandled
             | Operation::TaskParked => self.task_provider_op(&req)?,
             Operation::MenuBarSeen => self.menu_bar_seen(&req)?,
+            Operation::VoiceSet
+            | Operation::VoiceSave
+            | Operation::VoiceDelete
+            | Operation::VoiceForget => self.voice_op(&req, asked)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?

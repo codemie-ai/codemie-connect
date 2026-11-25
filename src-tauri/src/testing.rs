@@ -662,6 +662,41 @@ impl FakeTodoist {
     }
 }
 
+/// Every log line of the test process, kept once `capture_logs` installed the logger. The
+/// process has one logger, so every test that reads log lines shares this one.
+struct Capture;
+static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        LOGGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+/// Installs the capturing logger (once per process) at `Info`.
+pub fn capture_logs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = log::set_logger(&Capture);
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+/// Every log line captured so far, in every test of the process.
+pub fn logged_lines() -> Vec<String> {
+    LOGGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

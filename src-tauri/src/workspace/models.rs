@@ -156,6 +156,12 @@ pub enum Operation {
     AnalyticsReport,
     AnalyticsApp,
     MenuBarSeen,
+    VoiceSet,
+    VoiceSave,
+    VoiceDelete,
+    VoiceForget,
+    VoiceRefresh,
+    VoiceRead,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

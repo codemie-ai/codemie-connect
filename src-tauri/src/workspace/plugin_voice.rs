@@ -73,12 +73,24 @@ impl Core {
         Ok(json!({ "messages": messages }))
     }
 
-    /// The plugin manager loaded the chosen voice provider again: its copy is refreshed (Task 5
-    /// queues the `voice_refresh` job here).
+    /// The plugin manager (re)loaded the chosen voice provider, including its first load at
+    /// startup: a `voice_refresh` is queued (reply-voice design §2). Nothing is queued with Off.
     pub(crate) fn voice_reloaded(&self) {
         #[cfg(test)]
         self.voice_reloads
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let queued = self.repo().and_then(|mut r| {
+            let provider = r.settings()?.voice.provider;
+            if provider == "off" {
+                return Ok(false);
+            }
+            super::voice::refresh::queue(&mut r, &provider, now())
+        });
+        match queued {
+            Ok(true) => self.emit("workspace:changed"),
+            Ok(false) => {}
+            Err(e) => log::warn!("voice: no refresh queued after a reload: {}", e.code),
+        }
     }
 }
 

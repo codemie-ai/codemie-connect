@@ -18,6 +18,8 @@ pub mod facts;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a voice provider yet
 pub mod fake;
+pub mod ops;
+pub mod refresh;
 pub mod sent;
 pub mod terms;
 

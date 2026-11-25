@@ -1386,34 +1386,14 @@ mod tests {
             .expect("the host answered within 15 s")
     }
 
-    /// Every log line of the test process; each test looks for its own plugin's.
-    struct Capture;
-    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    use crate::testing::capture_logs;
 
-    impl log::Log for Capture {
-        fn enabled(&self, _: &log::Metadata) -> bool {
-            true
-        }
-        fn log(&self, record: &log::Record) {
-            LOGGED.lock().unwrap().push(record.args().to_string());
-        }
-        fn flush(&self) {}
-    }
-
-    fn capture_logs() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            let _ = log::set_logger(&Capture);
-            log::set_max_level(log::LevelFilter::Info);
-        });
-    }
-
+    /// Every log line of the test process (`crate::testing::capture_logs`); each test looks for
+    /// its own plugin's.
     fn logged(prefix: &str) -> Vec<String> {
-        let lines = LOGGED.lock().unwrap();
-        lines
-            .iter()
+        crate::testing::logged_lines()
+            .into_iter()
             .filter(|l| l.starts_with(prefix))
-            .cloned()
             .collect()
     }
 

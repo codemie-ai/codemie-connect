@@ -388,6 +388,38 @@ pub fn merge_context(r: &mut Repository, provider: &str, answer: &Value, at: i64
     r.put_global_records(&upserts)
 }
 
+/// Writes what a provider's `save` answered (design §7's `voice_save`: "writes the answer into
+/// the copy") — a `style` or one `rule`, cut to the copy's limits like an `export` — and answers
+/// the item as the copy keeps it, or `null` when the answer holds no usable item (the queued
+/// refresh brings it then).
+pub fn put_saved(
+    r: &mut Repository,
+    provider: &str,
+    kind: &str,
+    answer: &Value,
+    at: i64,
+) -> Result<Value> {
+    let record = match kind {
+        "style" => parse_style(answer).map(|s| item_record(KIND_STYLE, "style", &s, provider, at)),
+        "rule" => {
+            parse_rule(answer).map(|rule| item_record(KIND_RULE, &rule.id, &rule, provider, at))
+        }
+        _ => None,
+    };
+    let Some(record) = record else {
+        return Ok(Value::Null);
+    };
+    let item = record.data.clone();
+    r.put_global_records(&[record])?;
+    Ok(item)
+}
+
+/// Removes one instruction from the copy (design §7's `voice_delete`, after the provider's
+/// `remove` answered); answers whether it was there.
+pub fn remove_rule(r: &mut Repository, id: &str) -> Result<bool> {
+    r.delete_record(KIND_RULE, id, "", "")
+}
+
 /// Records the copy's state after a refresh attempt that didn't replace it (design §2: "A
 /// refresh that fails keeps the copy and records the state ... and the time"), unconditionally
 /// — including a provider's first failed refresh, before any `export` has ever succeeded, when
