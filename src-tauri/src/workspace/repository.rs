@@ -34,6 +34,43 @@ const AUTOMATION_RUN_RETENTION_DAYS: i64 = 90;
 const AUTOMATION_RUNS_KEPT: i64 = 200;
 /// The database `user_version` this build writes; a newer one is refused, never downgraded.
 pub const SCHEMA_VERSION: i64 = 1;
+/// The change log keeps the last this many revisions…
+pub const CHANGES_KEEP_REVISIONS: i64 = 100_000;
+/// …or the last this many seconds, whichever keeps more.
+pub const CHANGES_KEEP_SECS: i64 = 86_400;
+
+/// One line of the change log (`changes`): a record or job written or deleted on top of
+/// `revision` (meta's revision before the write's bump). A job has no kind or scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeRow {
+    pub revision: i64,
+    pub tbl: String,
+    pub kind: String,
+    pub id: String,
+    pub connection_id: String,
+    pub workspace_id: String,
+    pub deleted: bool,
+}
+
+/// The change log and its triggers: every write to `records` and `jobs` leaves a row, however
+/// it is made. Added beside the schema (no version bump: an older Connect still opens the data
+/// folder; its writes are logged by the triggers too).
+const CHANGE_LOG: &str = "
+    CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
+    CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS records_logged_update AFTER UPDATE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS records_logged_delete AFTER DELETE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_insert AFTER INSERT ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_update AFTER UPDATE ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
+    CREATE TRIGGER IF NOT EXISTS jobs_logged_delete AFTER DELETE ON jobs BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',OLD.id,'','',1,CAST(strftime('%s','now') AS INTEGER)); END;
+";
 
 impl Repository {
     pub fn open(path: &Path) -> Result<Self> {
@@ -67,10 +104,24 @@ impl Repository {
             CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result TEXT);
             CREATE TABLE IF NOT EXISTS reservation_scopes (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, scope TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cursors (connection_id TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(connection_id,resource));
+            {CHANGE_LOG}
             PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"))?;
+        // The revision the change log is complete from (`changes_since`).
+        let has_from: i64 = db.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('meta') WHERE name='changes_from'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_from == 0 {
+            db.execute("ALTER TABLE meta ADD COLUMN changes_from INTEGER", [])?;
+        }
         db.execute(
-            "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
+            "INSERT OR IGNORE INTO meta(id,revision,settings) VALUES(1,0,?1)",
             [encode(&Settings::default())?],
+        )?;
+        db.execute(
+            "UPDATE meta SET changes_from=revision WHERE id=1 AND changes_from IS NULL",
+            [],
         )?;
         let personal = Workspace {
             id: "personal".into(),
@@ -128,6 +179,7 @@ impl Repository {
         )?;
         prune_automation_runs(&db, None)?;
         let mut repo = Self { db };
+        let _ = repo.prune_changes(CHANGES_KEEP_REVISIONS, CHANGES_KEEP_SECS, now());
         // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
         let _ = repo.bind_default_to_active();
         // Earlier builds kept every Teams message in the window; keep each chat's newest tail.
@@ -294,6 +346,65 @@ impl Repository {
         bump(&tx)?;
         tx.commit()?;
         Ok(n > 0)
+    }
+    /// The revision the change log is complete from: changes since an older one may be gone.
+    pub fn changes_from(&self) -> Result<i64> {
+        Ok(self.db.query_row(
+            "SELECT COALESCE(changes_from,revision) FROM meta WHERE id=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    /// What was written on top of `revision` or later: the newest line of each record and job,
+    /// oldest first. A snapshot read at `revision` was taken before those writes committed.
+    pub fn changes_since_rows(&self, revision: i64) -> Result<Vec<ChangeRow>> {
+        let mut stmt = self.db.prepare(
+            "SELECT revision,tbl,kind,id,connection_id,workspace_id,deleted FROM changes WHERE seq IN (SELECT MAX(seq) FROM changes WHERE revision>=?1 GROUP BY tbl,kind,id,connection_id,workspace_id) ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map([revision], |r| {
+                Ok(ChangeRow {
+                    revision: r.get(0)?,
+                    tbl: r.get(1)?,
+                    kind: r.get(2)?,
+                    id: r.get(3)?,
+                    connection_id: r.get(4)?,
+                    workspace_id: r.get(5)?,
+                    deleted: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    /// Forgets log lines older than the last `keep_revisions` revisions and `keep_secs`
+    /// seconds, and moves `changes_from` past the newest one forgotten. Returns how many went.
+    pub fn prune_changes(
+        &mut self,
+        keep_revisions: i64,
+        keep_secs: i64,
+        now: i64,
+    ) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let current: i64 =
+            tx.query_row("SELECT revision FROM meta WHERE id=1", [], |r| r.get(0))?;
+        let cond = "revision<?1 AND at<?2";
+        let newest_gone: Option<i64> = tx.query_row(
+            &format!("SELECT MAX(revision) FROM changes WHERE {cond}"),
+            params![current - keep_revisions, now - keep_secs],
+            |r| r.get(0),
+        )?;
+        let gone = tx.execute(
+            &format!("DELETE FROM changes WHERE {cond}"),
+            params![current - keep_revisions, now - keep_secs],
+        )?;
+        if let Some(newest) = newest_gone {
+            tx.execute(
+                "UPDATE meta SET changes_from=MAX(COALESCE(changes_from,0),?1) WHERE id=1",
+                [newest + 1],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone)
     }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
@@ -1932,6 +2043,154 @@ mod tests {
             updated_at: now(),
             data,
         }
+    }
+    fn local_note(id: &str) -> Record {
+        let mut note = item("", id, "note", "local", json!({"text": id}));
+        note.connection_id = None;
+        note.workspace_id = Some("personal".into());
+        note
+    }
+    fn test_job(id: &str) -> Job {
+        Job {
+            id: id.into(),
+            kind: "sync".into(),
+            key: id.into(),
+            state: "queued".into(),
+            workspace_id: None,
+            connection_id: None,
+            due_at: now(),
+            lease_until: None,
+            attempts: 0,
+            policy: json!({}),
+            payload: json!({}),
+            result: None,
+            error_class: None,
+            error_code: None,
+        }
+    }
+    #[test]
+    fn writes_log_one_row_per_record_with_the_revision_before_their_bump() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let before = r.revision().unwrap();
+        r.put_record(&local_note("n1")).unwrap();
+        assert_eq!(r.revision().unwrap(), before + 1);
+        assert_eq!(
+            r.changes_since_rows(before).unwrap(),
+            vec![ChangeRow {
+                revision: before,
+                tbl: "record".into(),
+                kind: "note".into(),
+                id: "n1".into(),
+                connection_id: "".into(),
+                workspace_id: "personal".into(),
+                deleted: false,
+            }]
+        );
+    }
+    #[test]
+    fn deletes_and_job_changes_are_logged() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        r.put_record(&local_note("n1")).unwrap();
+        r.delete_local("note", "n1", "personal").unwrap();
+        let rows = r.changes_since_rows(0).unwrap();
+        assert_eq!(rows.len(), 1, "the newest row of a key: {rows:?}");
+        assert!(rows[0].deleted && rows[0].id == "n1");
+        let mut job = test_job("j1");
+        r.enqueue(&job).unwrap();
+        job.state = "succeeded".into();
+        r.save_job(&job).unwrap();
+        let jobs: Vec<ChangeRow> = r
+            .changes_since_rows(0)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.tbl == "job")
+            .collect();
+        assert_eq!(jobs.len(), 1);
+        assert!(!jobs[0].deleted && jobs[0].id == "j1" && jobs[0].kind.is_empty());
+        r.db.execute("DELETE FROM jobs WHERE id='j1'", []).unwrap();
+        assert!(r
+            .changes_since_rows(0)
+            .unwrap()
+            .iter()
+            .any(|c| c.tbl == "job" && c.id == "j1" && c.deleted));
+    }
+    #[test]
+    fn changes_since_a_snapshot_are_the_writes_after_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        r.put_record(&local_note("n0")).unwrap();
+        let at = r.snapshot().unwrap().revision;
+        r.put_record(&local_note("n1")).unwrap();
+        r.put_record(&local_note("n2")).unwrap();
+        let ids: Vec<String> = r
+            .changes_since_rows(at)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, ["n1", "n2"]);
+        assert!(r.changes_since_rows(at + 4).unwrap().is_empty());
+    }
+    #[test]
+    fn pruning_keeps_the_newest_and_raises_changes_from() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        for i in 0..10 {
+            r.put_record(&local_note(&format!("n{i}"))).unwrap();
+        }
+        let current = r.revision().unwrap();
+        assert_eq!(r.prune_changes(3, 0, now() + 1).unwrap(), 7);
+        let kept: Vec<i64> = r
+            .changes_since_rows(0)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.revision)
+            .collect();
+        assert_eq!(kept, [current - 3, current - 2, current - 1]);
+        assert_eq!(r.changes_from().unwrap(), current - 3);
+        // Recent rows stay whatever their revision.
+        r.put_record(&local_note("n10")).unwrap();
+        assert_eq!(r.prune_changes(0, 3600, now()).unwrap(), 0);
+    }
+    #[test]
+    fn an_existing_data_folder_gets_the_log_without_a_schema_bump() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        {
+            // A data folder from before the change log.
+            let db = Sqlite::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, settings TEXT NOT NULL);
+                CREATE TABLE records (id TEXT NOT NULL, kind TEXT NOT NULL, connection_id TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, revision TEXT NOT NULL, updated_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(id,kind,connection_id,workspace_id));
+                CREATE TABLE jobs (id TEXT PRIMARY KEY, execution_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, due_at INTEGER NOT NULL, lease_until INTEGER, body TEXT NOT NULL);
+                PRAGMA user_version=1;").unwrap();
+            db.execute(
+                "INSERT INTO meta VALUES(1,7,?1)",
+                [encode(&Settings::default()).unwrap()],
+            )
+            .unwrap();
+        }
+        let mut r = Repository::open(&path).unwrap();
+        let version: i64 =
+            r.db.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(
+            version, 1,
+            "no schema bump: an older Connect still opens it"
+        );
+        let triggers: i64 = r
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('records','jobs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 6);
+        assert_eq!(r.changes_from().unwrap(), 7);
+        r.put_record(&local_note("n1")).unwrap();
+        assert_eq!(r.changes_since_rows(7).unwrap().len(), 1);
     }
     #[test]
     fn chat_pruning_keeps_the_newest_tail_and_anything_acted_on() {

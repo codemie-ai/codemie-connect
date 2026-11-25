@@ -465,6 +465,17 @@ impl Core {
             if let Err(e) = meetings::meetings_round_at(self, now()) {
                 eprintln!("meetings: transcript round failed: {}", e.message);
             }
+            // The change log keeps a day (or 100k revisions) for reads by revision.
+            let pruned = self.repo().and_then(|mut r| {
+                r.prune_changes(
+                    repository::CHANGES_KEEP_REVISIONS,
+                    repository::CHANGES_KEEP_SECS,
+                    now(),
+                )
+            });
+            if let Err(e) = pruned {
+                eprintln!("workspace: the change log was not pruned: {}", e.message);
+            }
         }
         for _ in 0..8 {
             let job = {
