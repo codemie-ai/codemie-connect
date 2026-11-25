@@ -3,7 +3,7 @@
 //! when a meeting stops waiting.
 use super::model::*;
 use super::notes_job::AutoNotes;
-use super::record::{has_link, parse, slot, store};
+use super::record::{has_link, parse, saved, slot, store};
 use super::transcripts;
 use crate::workspace::{
     graph,
@@ -21,8 +21,9 @@ const PERSONAL: &str = "personal";
 /// transcript leaves up to 144 a day), then the round deletes them.
 const JOBS_KEPT: i64 = 48 * 3600;
 
-/// Checks start this long after a meeting ends.
-pub(super) const CHECK_AFTER: i64 = 10 * 60;
+/// Checks start this long after a meeting starts, so one that ends early is found within a
+/// slot of its end; the look for a later transcript waits this long after the scheduled end.
+pub(super) const CHECK_AFTER: i64 = 5 * 60;
 
 /// The most checks, and the most saves, one round queues.
 pub(super) const ROUND_LIMIT: usize = 25;
@@ -36,19 +37,35 @@ pub(super) const RETRYABLE: [&str; 4] = ["throttled", "offline", "provider", "ne
 /// How long after a meeting ended the round still tries a failed save of a found transcript.
 pub(super) const RETRY_FOR: i64 = 24 * 3600;
 
-/// An ended Teams meeting worth asking Teams about: not declined, cancelled or all-day, with a
-/// join link, ended at least 10 minutes and less than two hours ago.
+/// A Teams meeting worth asking Teams about: not declined, cancelled or all-day, with a join
+/// link, started at least 5 minutes ago and ended less than two hours ago. It is asked while it
+/// is still on too: Teams lists a transcript once the meeting ends, which may be early.
 pub(super) fn checkable(event: &Record, now: i64) -> bool {
     let d = &event.data;
     let declined = d["response"]
         .as_str()
         .is_some_and(|r| r.eq_ignore_ascii_case("declined"));
+    let start = graph::timestamp(d["start"].as_str().unwrap_or(""));
     let end = graph::timestamp(d["end"].as_str().unwrap_or(""));
     has_link(event)
         && d["allDay"] != true
         && d["cancelled"] != true
         && !declined
+        && start > 0
         && end > 0
+        && start + CHECK_AFTER <= now
+        && now - end < transcripts::STOP_AFTER
+}
+
+/// A transcript saved before the meeting's scheduled end is looked at once more after it: Teams
+/// writes another one when transcription starts again or the meeting goes on. Due from 5
+/// minutes after the end, within the check window, unless the transcript was imported.
+pub(super) fn late_look_due(m: &MeetingRecord, now: i64) -> bool {
+    let end = graph::timestamp(&m.end);
+    saved(m.state)
+        && m.imported.is_none()
+        && end > 0
+        && m.checked_at.is_some_and(|at| at < end)
         && end + CHECK_AFTER <= now
         && now - end < transcripts::STOP_AFTER
 }
@@ -64,8 +81,9 @@ pub(super) fn retry_due(m: &MeetingRecord, now: i64) -> bool {
     RETRYABLE.contains(&e.code.as_str()) && end > 0 && now - end < RETRY_FOR
 }
 
-/// The background look at meetings, every 15 seconds: queues a check for every ended Teams
-/// meeting still waiting for its transcript (once per slot, at most 25 a round), queues a save
+/// The background look at meetings, every 15 seconds: queues a check for every Teams meeting
+/// on or ended still waiting for its transcript (once per slot, at most 25 a round), and one
+/// late look at each transcript saved before its meeting's scheduled end ([`late_look_due`]); queues a save
 /// for every transcript found but not saved (a failed one again only while [`retry_due`], and
 /// not while notes for it are saving it), queues automatic notes for saved transcripts that ask
 /// for them (see `notes_job::auto_due`), and gives up on meetings that waited two hours. Finished
@@ -160,6 +178,32 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
             json!({"meetingId": e.id, "title": e.data["title"], "slot": slot}),
         ))?;
         queued += 1;
+    }
+    let mut late: Vec<(&String, &MeetingRecord)> = meetings
+        .iter()
+        .filter(|(id, (_, m))| {
+            late_look_due(m, now)
+                && !busy("transcript_check", id)
+                && !busy("transcript_download", id)
+                && !busy("meeting_notes", id)
+        })
+        .map(|(id, (_, m))| (id, m))
+        .collect();
+    late.sort_by(|a, b| b.1.end.cmp(&a.1.end).then_with(|| a.0.cmp(b.0)));
+    for (id, m) in late.into_iter().take(ROUND_LIMIT) {
+        let key = format!("transcript_check:late:{id}");
+        if keys.contains(key.as_str()) {
+            continue;
+        }
+        r.enqueue(&new_job(
+            "transcript_check",
+            key,
+            Some(PERSONAL.into()),
+            Some(c.id.clone()),
+            now,
+            policy.clone(),
+            json!({"meetingId": id, "title": m.title, "late": true}),
+        ))?;
     }
     let mut found: Vec<(&String, &MeetingRecord)> = meetings
         .iter()

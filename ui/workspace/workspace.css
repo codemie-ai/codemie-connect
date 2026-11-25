@@ -2387,17 +2387,21 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 /* make notes */
 .ws-mtg-make .ws-card-header{min-height:0}
-.ws-mtg-make-foot{padding:12px 18px}
+.ws-mtg-make-foot{flex-wrap:nowrap;gap:16px;padding:10px 18px}
+.ws-mtg-make-foot .ws-mtg-privacy{flex:1}
 .ws-mtg-form-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:20px}
 .ws-tpl-options{border:0;margin:0;padding:0;display:grid;gap:6px;align-content:start;min-width:0}
 .ws-tpl-options legend{margin-bottom:6px;padding:0}
-.ws-tpl-option{position:relative;display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:pointer;transition:border-color .12s ease,background .12s ease}
+.ws-tpl-option{position:relative;display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:pointer;transition:border-color .12s ease,background .12s ease}
 .ws-tpl-option:hover{border-color:var(--ws-border-strong)}
 .ws-tpl-option input{position:absolute;opacity:0;pointer-events:none}
-.ws-tpl-option:has(input:checked){border-color:var(--tpl);background:color-mix(in srgb,var(--tpl) 10%,var(--ws-card));box-shadow:0 0 0 1px var(--tpl)}
+.ws-tpl-option:has(input:checked){border-color:var(--tpl);background:color-mix(in srgb,var(--tpl) 8%,var(--ws-card))}
+/* Only the chosen template says what it makes; the others are a name (the rest is in their tooltip). */
+.ws-tpl-option:not(:has(input:checked)){align-items:center}
+.ws-tpl-option:not(:has(input:checked)) .ws-tpl-copy small{display:none}
 .ws-tpl-option:has(input:focus-visible){outline:2px solid var(--ws-focus);outline-offset:2px}
-.ws-tpl-icon{display:grid;place-items:center;flex:0 0 28px;height:28px;border-radius:8px;background:color-mix(in srgb,var(--tpl,var(--ws-accent)) 18%,transparent);color:var(--tpl,var(--ws-accent))}
-.ws-tpl-icon .ws-icon{width:15px;height:15px}
+.ws-tpl-icon{display:grid;place-items:center;flex:0 0 24px;height:24px;border-radius:8px;background:color-mix(in srgb,var(--tpl,var(--ws-accent)) 18%,transparent);color:var(--tpl,var(--ws-accent))}
+.ws-tpl-icon .ws-icon{width:14px;height:14px}
 .ws-tpl-copy{display:grid;gap:2px;min-width:0}
 .ws-tpl-copy strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px;font-weight:600}
 .ws-tpl-copy small{font-size:12px;line-height:17px;color:var(--ws-muted)}
@@ -2407,7 +2411,8 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-form-side{display:grid;gap:16px;align-content:start;min-width:0}
 .ws-mtg-form-checks{display:grid;gap:12px}
 .ws-mtg-form-checks .ws-check{font-size:13px}
-.ws-mtg-privacy{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:17px;color:var(--ws-muted);padding:10px 12px;border-radius:8px;background:var(--ws-card-2)}
+.ws-mtg-form-side .ws-textarea{min-height:60px}
+.ws-mtg-privacy{display:flex;gap:8px;align-items:flex-start;min-width:0;margin:0;font-size:12px;line-height:17px;color:var(--ws-muted)}
 .ws-mtg-privacy>.ws-icon{color:var(--ws-green);margin-top:1px}
 .ws-mtg-privacy code{font-size:11px;word-break:break-all}
 .ws-mtg-keep{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border-radius:8px;background:var(--ws-green-bg);font-size:12px;line-height:18px;color:var(--ws-text-2)}

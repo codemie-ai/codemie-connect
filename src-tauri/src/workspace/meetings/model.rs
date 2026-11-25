@@ -279,7 +279,7 @@ impl Default for MeetingSettings {
         Self {
             root: None,
             folder_pattern: "echo".into(),
-            check_every_min: 10,
+            check_every_min: 5,
             auto_notes: "rules".into(),
             wait_min: 15,
             skip_short: true,
@@ -480,7 +480,7 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(
             v,
-            json!({"root": null, "folderPattern": "echo", "checkEveryMin": 10, "autoNotes": "rules",
+            json!({"root": null, "folderPattern": "echo", "checkEveryMin": 5, "autoNotes": "rules",
                 "waitMin": 15, "skipShort": true, "keepVtt": true, "keepVersions": true, "review": true,
                 "onlyAttendees": true, "weMe": true, "askSpeakers": true, "glossarySource": "connect",
                 "glossaryFile": null, "tagsFile": null, "defaultTemplate": "meeting-notes", "columns": {},

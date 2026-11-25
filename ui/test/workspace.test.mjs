@@ -1355,6 +1355,24 @@ test('an upcoming, blocked, pending or untranscribed meeting shows its explainer
   }
 });
 
+test('a Teams meeting on now by the calendar says so and offers Check now, as it may have ended early', () => {
+  const s = meetingsSnapshot();
+  const next = s.records.find(r => r.kind === 'event' && r.id === 'ev-next');
+  next.data = { ...next.data, start: new Date(MEET_NOW - 10 * 60_000).toISOString(), end: new Date(MEET_NOW + 20 * 60_000).toISOString() };
+  const m = meetingItems(s, MEET_NOW).find(x => x.id === 'ev-next');
+  assert.equal(m.state, 'upcoming');
+  assert.equal(m.live, true);
+  const html = meetings(s, meetingsCtx({ selected: 'ev-next' }));
+  assert.match(rowOf(html, 'ev-next'), /On now/);
+  const d = detailOf(html);
+  assert.match(d, /This meeting is still going[^]*?looks every 5 minutes, so it finds one that ends early too/);
+  assert.match(d, /data-action="meeting-check" data-id="ev-next"|data-id="ev-next"[^>]*data-action="meeting-check"/);
+  // One still to come is neither.
+  const later = meetingItems(meetingsSnapshot(), MEET_NOW).find(x => x.id === 'ev-next');
+  assert.equal(later.live, false);
+  assert.doesNotMatch(detailOf(meetings(meetingsSnapshot(), meetingsCtx({ selected: 'ev-next' }))), /meeting-check|On now/);
+});
+
 test("the meeting's ⋯ menu offers Hide from the list, and a hidden meeting says so", () => {
   const s = meetingsSnapshot();
   let d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));

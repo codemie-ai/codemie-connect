@@ -107,7 +107,7 @@ export function explainer(p, mc) {
   const { m, d } = mc;
   const id = { 'data-id': m.id };
   const box = (iconName, tone, body) => card({ className: 'ws-mtg-explain', body: `<div class="ws-mtg-explain-body"><span class="ws-mtg-explain-icon${tone ? ` ws-mtg-explain-${tone}` : ''}">${icon(iconName)}</span><div>${body}</div></div>` });
-  const every = Number(p.s.settings.meetings?.checkEveryMin) || 10;
+  const every = Number(p.s.settings.meetings?.checkEveryMin) || 5;
   if (m.state === 'pending' && mc.paused) {
     const why = PAUSED[mc.paused];
     return box('info', 'warning', `<h3>${e(why.title)}</h3>
@@ -116,7 +116,7 @@ export function explainer(p, mc) {
   }
   if (m.state === 'pending') {
     return box('clock', '', `<h3>Teams is still preparing the transcript</h3>
-      <p>The meeting ended at ${e(formatTime(d.end, p.zone))}. Teams usually needs 5–15 minutes. Connect checks every ${every} minutes for a day and saves the transcript here as soon as it appears.</p>
+      <p>The meeting ended at ${e(formatTime(d.end, p.zone))}. Teams usually needs 5–15 minutes. Connect checks every ${every} minutes for two hours and saves the transcript here as soon as it appears.</p>
       ${mc.r.error?.message ? `<p class="ws-mtg-err-text">${icon('alert')}<span>The last check didn’t get through: ${e(mc.r.error.message)}</span></p>` : ''}
       <div class="ws-mtg-opts">${tplChip(p, mc, { id: 'tpl-wait' })}${autoSwitch(mc, 'Make notes as soon as it arrives')}</div>
       <div class="ws-actions ws-mtg-explain-actions">${button('Check now', { action: 'meeting-check', variant: 'ghost', iconName: 'refresh', attrs: id })}</div>`);
@@ -140,10 +140,11 @@ export function explainer(p, mc) {
   if (m.state === 'upcoming') {
     const { template, reason, auto } = mc.tpl;
     const lead = reason.charAt(0).toLowerCase() + reason.slice(1);
-    return box('calendar-check', '', `<h3>${m.ended ? 'This meeting is still going' : 'After this meeting'}</h3>
-      <p>${m.online ? `Connect saves the transcript from Teams once it ends. Notes will use <strong>${e(template.name)}</strong> (${e(lead)})${auto ? ' and are made by themselves' : ''}. You can add more summaries with other templates afterwards.` : `This is an in-person meeting${d.location ? ` (${e(d.location)})` : ''}, so there will be no Teams transcript. If you record it elsewhere, import the transcript afterwards.`}</p>
+    return box('calendar-check', '', `<h3>${m.ended || m.live ? 'This meeting is still going' : 'After this meeting'}</h3>
+      <p>${m.online ? `Connect saves the transcript from Teams once it ends${m.live ? ` and looks every ${every} minutes, so it finds one that ends early too` : ''}. Notes will use <strong>${e(template.name)}</strong> (${e(lead)})${auto ? ' and are made by themselves' : ''}. You can add more summaries with other templates afterwards.` : `This is an in-person meeting${d.location ? ` (${e(d.location)})` : ''}, so there will be no Teams transcript. If you record it elsewhere, import the transcript afterwards.`}</p>
       ${m.online ? `<div class="ws-mtg-opts">${tplChip(p, mc, { id: 'tpl-up' })}${autoSwitch(mc, 'Make notes automatically')}</div>` : ''}
-      ${m.online && d.isOrganizer ? `<p class="ws-hint ws-muted">${icon('info')} You organize this one — remember to start transcription in Teams.</p>` : ''}`);
+      ${m.online && d.isOrganizer ? `<p class="ws-hint ws-muted">${icon('info')} You organize this one — remember to start transcription in Teams.</p>` : ''}
+      ${m.live ? `<div class="ws-actions ws-mtg-explain-actions">${button('Check now', { action: 'meeting-check', variant: 'ghost', iconName: 'refresh', attrs: id })}</div>` : ''}`);
   }
   return '';
 }
@@ -170,24 +171,30 @@ export function makeNotesForm(p, mc, { kept = null, tab = false } = {}) {
     const tag = doc ? `<em class="ws-tpl-tag ws-tpl-has-doc">Made · adds version ${Math.max(Number(doc.version) || 1, ...(doc.versions || []).map(v => Number(v.version) || 0)) + 1}</em>`
       : t.id === current.id ? `<em class="ws-tpl-tag">${mc.tpl.why === 'meeting' ? 'Chosen' : mc.tpl.why === 'rule' ? 'From rule' : 'Default'}</em>` : '';
     const kind = t.kind === 'skill' ? badge('Skill', 'purple', 'skill') : t.kind === 'custom' ? badge('Yours', 'info') : '';
-    return `<label class="ws-tpl-option" style="--tpl:${tplColor(t)}"><input type="radio" name="template" value="${e(t.id)}"${t.id === pick.id ? ' checked' : ''}${make}><span class="ws-tpl-icon">${icon(tplIcon(t))}</span><span class="ws-tpl-copy"><strong><span>${e(t.name)}</span>${tag}${kind}</strong>${t.blurb ? `<small>${e(t.blurb)}</small>` : ''}</span></label>`;
+    return `<label class="ws-tpl-option" style="--tpl:${tplColor(t)}"${t.blurb ? ` title="${e(t.blurb)}"` : ''}><input type="radio" name="template" value="${e(t.id)}"${t.id === pick.id ? ' checked' : ''}${make}><span class="ws-tpl-icon">${icon(tplIcon(t))}</span><span class="ws-tpl-copy"><strong><span>${e(t.name)}</span>${tag}${kind}</strong>${t.blurb ? `<small>${e(t.blurb)}</small>` : ''}</span></label>`;
   }).join('');
   const review = p.s.settings.meetings?.review !== false;
   const n = mc.docs.length;
   const keep = n ? `<p class="ws-mtg-keep">${icon('check-circle')}<span>Your ${n > 1 ? `${n} documents stay as they are` : `<strong>${e(mc.docs[0].name)}</strong> stays as it is`}. Another template adds a document next to ${n > 1 ? 'them' : 'it'}; the same template adds a new version.</span></p>` : '';
-  const folder = folderName(mc);
   const remember = n ? '' : `<label class="ws-check"><input type="checkbox" name="remember"${mc.tpl.why === 'rule' ? ' disabled' : remembered ? ' checked' : ''}${make}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Always use this template for “${e(mc.d.title || mc.m.title)}”</span><small>${mc.tpl.why === 'rule' ? e(mc.tpl.reason) : 'Adds a rule to your automatic rules.'}</small></span></label>`;
   return `${keep}<div class="ws-mtg-form-grid">
     <fieldset class="ws-tpl-options"><legend class="ws-field-label">Template</legend>${options}<button type="button" class="ws-link ws-mtg-linkbtn ws-tpl-more" data-action="settings-tab" data-tab="meetings-templates">${icon('plus')}<span>Write your own or add a skill</span></button></fieldset>
     <div class="ws-mtg-form-side">
-      <label class="ws-field"><span class="ws-field-label">Anything to focus on? <small class="ws-muted">optional</small></span><textarea class="ws-textarea" name="wishes" rows="3" maxlength="1000" placeholder="e.g. Focus on the pilot plan. Keep it short."${make}>${e(kept?.wishes || '')}</textarea><small class="ws-field-hint">Added to the template’s instructions for this run only.</small></label>
+      <label class="ws-field"><span class="ws-field-label">Anything to focus on? <small class="ws-muted">optional, this run only</small></span><textarea class="ws-textarea" name="wishes" rows="2" maxlength="1000" placeholder="e.g. Focus on the pilot plan. Keep it short."${make}>${e(kept?.wishes || '')}</textarea></label>
       <div class="ws-mtg-form-checks">
         <label class="ws-check"><input type="checkbox" name="findTasks"${findTasks ? ' checked' : ''}${make}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Find tasks and owners</span><small>${review ? 'New ones land in To review; ones already found are kept.' : 'They go straight to To do; ones already found are kept.'}</small></span></label>
         ${remember}
       </div>
-      <p class="ws-mtg-privacy">${icon('shield')}<span>The transcript goes only to the Claude chosen for Meeting notes in <button type="button" class="ws-link ws-mtg-linkbtn" data-action="ai-open-settings">Settings › Claude</button>.${folder ? ` Everything is saved in <code>${e(folder)}</code>.` : ' Everything is saved in the meeting’s folder.'}</span></p>
+      ${tab ? '' : privacyNote(mc)}
     </div>
   </div>`;
+}
+
+/** Where the transcript goes and where the result is saved: one quiet line (the Notes tab
+ *  puts it in the card's footer, beside Make notes). */
+function privacyNote(mc) {
+  const folder = folderName(mc);
+  return `<p class="ws-mtg-privacy">${icon('shield')}<span>The transcript goes only to the Claude chosen for Meeting notes in <button type="button" class="ws-link ws-mtg-linkbtn" data-action="ai-open-settings">Settings › Claude</button>.${folder ? ` Saved in <code>${e(folder)}</code>.` : ' Saved in the meeting’s folder.'}</span></p>`;
 }
 
 // ---------------------------------------------------------------- notes
@@ -294,7 +301,7 @@ export function notesTab(p, mc) {
     return `${failedBanner}<form class="ws-card ws-mtg-make" data-form="meeting-notes" data-id="${e(m.id)}">
       <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon('sparkles')}</span>Make notes from this transcript</h2><p>${e(intro)}</p></div></header>
       <div class="ws-card-body">${makeNotesForm(p, mc, { kept: p.v.makeForm?.[m.id] || null, tab: true })}</div>
-      <footer class="ws-card-footer ws-mtg-make-foot"><span class="ws-spacer"></span>${button('Make notes', { type: 'submit', variant: 'magic', iconName: 'sparkles', size: 'lg' })}</footer>
+      <footer class="ws-card-footer ws-mtg-make-foot">${privacyNote(mc)}${button('Make notes', { type: 'submit', variant: 'magic', iconName: 'sparkles' })}</footer>
     </form>`;
   }
   const view = docs.find(x => x.id === p.v.docView?.[m.id]) || mc.main || docs[0];

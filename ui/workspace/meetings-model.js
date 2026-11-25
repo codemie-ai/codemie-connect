@@ -262,6 +262,8 @@ export function meetingItems(s, now = Date.now()) {
     const run = runs.get(id) || null;
     return {
       id, ev, rec, title: d.title || r.title || 'Untitled meeting', start, end, ended: Number.isFinite(end) && end <= now,
+      // A Teams meeting on now by its calendar times: Check now may find it ended early.
+      live: start <= now && !(end <= now) && hasLink(d),
       online: ev ? isOnline(d) : r.state !== 'offline', state, run,
       // Found or waiting for Teams, but nothing can get it now: why (`signin` while Microsoft
       // needs the person to sign in again, `off` while reading transcripts is off), else null.
