@@ -444,8 +444,11 @@ fn applies_attr(a: &Applies) -> String {
 /// so voice text can never close `<voice>` or any block inside it, nor the surrounding
 /// `<message>` (design §4: "Each text is sanitized like `<message>` text, with `<` and `>` in
 /// it escaped"). Doing this before sanitizing matters: `sanitize_text` turns a bare `<`/`>`
-/// into `‹`/`›` for `<message>` text, which would leave nothing here to escape.
-fn escape_angles(s: &str) -> String {
+/// into `‹`/`›` for `<message>` text, which would leave nothing here to escape. `pub(super)`,
+/// along with [`clean_text`], [`clean_line`] and [`cut`] below: `facts.rs`'s `<facts>` block
+/// escapes and cuts its text the same way (design §10: "escaped as the voice is"), so the two
+/// modules share one copy rather than each keeping its own.
+pub(super) fn escape_angles(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -456,20 +459,21 @@ fn escape_angles(s: &str) -> String {
     }
     out
 }
-fn clean_text(raw: &str) -> String {
+pub(super) fn clean_text(raw: &str) -> String {
     prompts::sanitize_text(&escape_angles(raw), usize::MAX)
 }
 /// Like [`clean_text`], plus `"` escaped as `&quot;`: every use of `clean_line` fills a
 /// double-quoted attribute value (a person's name, an `applies` attribute, the provider name),
 /// where an unescaped quote would otherwise close it early.
-fn clean_line(raw: &str, cap: usize) -> String {
+pub(super) fn clean_line(raw: &str, cap: usize) -> String {
     prompts::sanitize_line(&escape_angles(raw), cap).replace('"', "&quot;")
 }
 
 /// Cuts `s` to at most `max` characters, at a line end within the budget when there is one,
 /// ending with "…"; answers whether it cut anything (spec §4's budget: "A part over its share
-/// is cut from its end at a line end with '…'").
-fn cut(s: &str, max: usize) -> (String, bool) {
+/// is cut from its end at a line end with '…'"). Shared with `facts.rs`, whose `text`/`title`
+/// cuts follow the same rule (design §10).
+pub(super) fn cut(s: &str, max: usize) -> (String, bool) {
     if s.chars().count() <= max {
         return (s.to_string(), false);
     }

@@ -116,5 +116,75 @@
     "skip": [],
     "subject": "",
     "text": "Atlas Rollout starts Monday. We discussed Atlas Rollout again today."
+  },
+  {
+    "expected": [
+      "EUR"
+    ],
+    "name": "a phone number with a trailing comma before a currency code is still masked",
+    "skip": [],
+    "subject": "",
+    "text": "Call +1 555 0100, EUR is the budget line."
+  },
+  {
+    "expected": [
+      "EUR"
+    ],
+    "name": "the brief's phone sentence stays masked with an inserted currency clause",
+    "skip": [
+      "Priya Nair"
+    ],
+    "subject": "",
+    "text": "Reach Priya at priya.n@example.test or +1 555 0100, EUR is what we discussed, details at https://example.test/x."
+  },
+  {
+    "expected": [],
+    "name": "a parenthesised area code plus a hyphenated local number is masked",
+    "skip": [],
+    "subject": "",
+    "text": "Call (555) 010-0100 for details."
+  },
+  {
+    "expected": [],
+    "name": "a phone number ending a sentence with a period is masked",
+    "skip": [],
+    "subject": "",
+    "text": "Reach us at +44 20 7946 0958. Thanks."
+  },
+  {
+    "expected": [],
+    "name": "a phone number at the very end of a sentence is masked",
+    "skip": [],
+    "subject": "",
+    "text": "Call me at 555 0100."
+  },
+  {
+    "expected": [],
+    "name": "all-caps common words are never acronyms",
+    "skip": [],
+    "subject": "",
+    "text": "OK, THANKS for the update."
+  },
+  {
+    "expected": [
+      "SLA",
+      "KPI",
+      "SOW"
+    ],
+    "name": "real acronyms stay terms",
+    "skip": [],
+    "subject": "",
+    "text": "Let's review the SLA and KPI before the SOW renewal."
+  },
+  {
+    "expected": [
+      "Nair Logistics"
+    ],
+    "name": "a run sharing one word with a skip name survives if the rest doesn't match",
+    "skip": [
+      "Priya Nair"
+    ],
+    "subject": "",
+    "text": "Priya Nair reached out, and Nair Logistics confirmed the deal."
   }
 ]

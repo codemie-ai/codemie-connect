@@ -5,7 +5,7 @@
 //! `sources` is the `{id, title}` pairs a draft's provenance keeps — never a fact's text (design
 //! ruling 35: "Facts are never kept": not in the copy, the snapshot, the ledger or a log).
 //! Pure; nothing here reaches a provider or a repository.
-use crate::workspace::prompts;
+use super::assemble::{clean_line, clean_text, cut};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -41,7 +41,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// Cuts `s` to at most `max` characters (no ellipsis: design §10 cuts a `title` plainly, unlike
-/// a `text`, which gets [`cut_text`]'s line-end-and-"…" treatment).
+/// a `text`, which gets the shared `assemble::cut`'s line-end-and-"…" treatment).
 fn cut_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -50,72 +50,56 @@ fn cut_chars(s: &str, max: usize) -> String {
     }
 }
 
-/// Cuts `s` to at most `max` characters, at a line end within the budget when there is one,
-/// ending with "…" (design §10: "text cut to 500 at a line end with '…'"); answers whether it
-/// cut anything. Same algorithm as `assemble::cut`, kept local since the two modules bound
-/// different data under different rules.
-fn cut_text(s: &str, max: usize) -> (String, bool) {
-    if s.chars().count() <= max {
-        return (s.to_string(), false);
-    }
-    if max == 0 {
-        return (String::new(), true);
-    }
-    let budget = max - 1;
-    let prefix: String = s.chars().take(budget).collect();
-    let mut result = match prefix.rfind('\n') {
-        Some(idx) if idx > 0 => prefix[..idx].to_string(),
-        _ => prefix,
-    };
-    result = result.trim_end().to_string();
-    result.push('…');
-    (result, true)
-}
-
 /// Bounds a provider's `facts` answer (`{facts: [{id, title, text, updatedAt?}]}`) to Connect's
 /// limits (design §10): at most [`MAX_FACTS`] kept, in the provider's own ranked order; a bad or
-/// duplicate `id` drops that fact; `title`/`text` are cut to their own limits; the kept facts'
-/// `text` totals at most [`MAX_FACTS_TOTAL`] characters, reached either at the count or the
-/// total, stopping before the fact that would reach it (never after, so the kept total never
-/// exceeds the budget even where `MAX_FACTS * MAX_FACT == MAX_FACTS_TOTAL` exactly). The second
-/// element says whether anything was cut or dropped. A missing or malformed `facts` array
-/// answers `(vec![], false)`: that is no facts, not a cut one.
+/// duplicate `id`, or an item with no (or empty) `text`, drops that fact — checked before the
+/// `id` is marked seen, so a text-less fact never blocks a later, good duplicate of the same
+/// `id`; `title`/`text` are cut to their own limits; the kept facts' `text` totals at most
+/// [`MAX_FACTS_TOTAL`] characters, reached either at the count or the total, stopping before the
+/// fact that would reach it (never after, so the kept total never exceeds the budget even where
+/// `MAX_FACTS * MAX_FACT == MAX_FACTS_TOTAL` exactly). The second element says whether anything
+/// was cut or dropped. A missing or malformed `facts` array answers `(vec![], false)`: that is
+/// no facts, not a cut one.
 pub fn from_answer(v: &Value) -> (Vec<Fact>, bool) {
     let Some(items) = v.get("facts").and_then(Value::as_array) else {
         return (Vec::new(), false);
     };
-    let mut cut = false;
+    let mut cut_any = false;
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut total = 0usize;
     let mut out = Vec::new();
     for item in items {
         if out.len() >= MAX_FACTS {
-            cut = true;
+            cut_any = true;
             break;
         }
         let Some(id) = item.get("id").and_then(Value::as_str) else {
-            cut = true;
+            cut_any = true;
             continue;
         };
         if !valid_id(id) {
-            cut = true;
+            cut_any = true;
+            continue;
+        }
+        let text_raw = item.get("text").and_then(Value::as_str).unwrap_or("");
+        let (text, text_cut) = cut(text_raw, MAX_FACT);
+        if text.is_empty() {
+            cut_any = true;
             continue;
         }
         if !seen_ids.insert(id.to_string()) {
-            cut = true;
+            cut_any = true;
             continue;
         }
         let title_raw = item.get("title").and_then(Value::as_str).unwrap_or("");
         let title = cut_chars(title_raw, MAX_FACT_TITLE);
         if title.chars().count() < title_raw.chars().count() {
-            cut = true;
+            cut_any = true;
         }
-        let text_raw = item.get("text").and_then(Value::as_str).unwrap_or("");
-        let (text, text_cut) = cut_text(text_raw, MAX_FACT);
-        cut |= text_cut;
+        cut_any |= text_cut;
         let len = text.chars().count();
         if total + len >= MAX_FACTS_TOTAL {
-            cut = true;
+            cut_any = true;
             break;
         }
         total += len;
@@ -125,30 +109,7 @@ pub fn from_answer(v: &Value) -> (Vec<Fact>, bool) {
             text,
         });
     }
-    (out, cut)
-}
-
-/// `<`/`>` escaped as `&lt;`/`&gt;` *before* sanitizing, so a fact's text or title can never
-/// close `<facts>` or the surrounding `<message>` (design §10: "escaped as the voice is"); same
-/// order and reasoning as `assemble::escape_angles`.
-fn escape_angles(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-fn clean_text(raw: &str) -> String {
-    prompts::sanitize_text(&escape_angles(raw), usize::MAX)
-}
-/// Like [`clean_text`], plus `"` escaped as `&quot;`, for a value that fills a double-quoted
-/// attribute (`source`, `title`, `provider`).
-fn clean_line(raw: &str, cap: usize) -> String {
-    prompts::sanitize_line(&escape_angles(raw), cap).replace('"', "&quot;")
+    (out, cut_any)
 }
 
 /// Renders the kept `facts` into their own block (design §10's "The block"); `None` when there
@@ -261,6 +222,34 @@ mod tests {
         assert_eq!(total, 4 * MAX_FACT);
         assert!(total <= MAX_FACTS_TOTAL);
         assert!(cut, "the total budget dropped the fifth fact");
+    }
+
+    /// Minor: a fact with no `text` at all, or an explicitly empty one, is skipped rather than
+    /// kept as an empty fact; a later, good duplicate of the *same* id as a skipped, text-less
+    /// fact is still kept (the id is never marked seen for a fact that never made it in).
+    #[test]
+    fn a_fact_with_no_text_is_skipped() {
+        let (facts, cut) = from_answer(&json!({"facts": [
+            fact("projects/no-text.md", "No text", ""),
+            fact("projects/good.md", "Good", "Some notes."),
+        ]}));
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].id, "projects/good.md");
+        assert!(cut, "the text-less fact was dropped");
+
+        let missing_text = json!({"id": "projects/missing.md", "title": "Missing"});
+        let (facts, cut) = from_answer(&json!({"facts": [missing_text]}));
+        assert!(facts.is_empty());
+        assert!(cut, "a fact with no text field at all was dropped");
+
+        // Same id, first offered with no text (dropped, so never marked seen), then with text.
+        let (facts, cut) = from_answer(&json!({"facts": [
+            fact("projects/p.md", "P", ""),
+            fact("projects/p.md", "P", "Now with notes."),
+        ]}));
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].text, "Now with notes.");
+        assert!(cut, "the first, text-less offering of the id was dropped");
     }
 
     #[test]

@@ -48,6 +48,9 @@ const COMMON_WORDS: &[&str] = &[
     "soon",
     "ok",
     "okay",
+    "fyi",
+    "asap",
+    "pls",
     // English: weekdays, months
     "monday",
     "tuesday",
@@ -184,14 +187,21 @@ fn is_url(tok: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.")
 }
 
-/// A chunk that could be one fragment of a multi-chunk phone number (`+1`, `555`, `0100`): only
-/// digits, `+`, `-`, `(`, `)`, with at least one digit.
+/// Generic sentence punctuation that can trail (or lead) a phone fragment at a clause or
+/// sentence boundary (`"0100,"`, `"0100."`) without being part of the number itself; `(`/`)`/
+/// `+`/`-` are phone-meaningful and are never trimmed here.
+const PHONE_TRIM: [char; 6] = [',', '.', ';', ':', '!', '?'];
+
+/// A chunk that could be one fragment of a multi-chunk phone number (`+1`, `555`, `0100`, or one
+/// of those with trailing sentence punctuation still attached, such as `0100,` or `0100.`): once
+/// that punctuation is trimmed, only digits, `+`, `-`, `(`, `)` remain, with at least one digit.
 fn is_phone_fragment(tok: &str) -> bool {
-    !tok.is_empty()
-        && tok
+    let core = tok.trim_matches(|c: char| PHONE_TRIM.contains(&c));
+    !core.is_empty()
+        && core
             .chars()
             .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '(' | ')'))
-        && tok.chars().any(|c| c.is_ascii_digit())
+        && core.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Masks e-mail addresses, URLs and phone numbers (spec §10's "never", run before any other
@@ -323,15 +333,17 @@ fn is_ticket_or_code(tok: &str) -> bool {
     letters && digits && hyphens <= 1
 }
 
-/// A 2-10 letter, all-uppercase acronym (`QBR`); checked before a word is considered for a name
-/// run, so an acronym is never also read as a one-word name.
-fn is_acronym(tok: &str) -> bool {
-    let len = tok.chars().count();
-    (2..=10).contains(&len) && tok.chars().all(|c| c.is_ascii_uppercase())
-}
-
 fn is_common_word(tok: &str) -> bool {
     COMMON_WORDS.contains(&tok.to_lowercase().as_str())
+}
+
+/// A 2-10 letter, all-uppercase acronym (`QBR`, `SLA`, `KPI`), never a common word written in
+/// capitals (`OK`, `THANKS`, `FYI`, `ASAP`, `PLS` — spec §10's "never" list is unconditional, the
+/// same as for a name); checked before a word is considered for a name run, so a real acronym is
+/// never also read as a one-word name.
+fn is_acronym(tok: &str) -> bool {
+    let len = tok.chars().count();
+    (2..=10).contains(&len) && tok.chars().all(|c| c.is_ascii_uppercase()) && !is_common_word(tok)
 }
 
 /// A capitalised word that could open or continue a name run: its first letter (Latin or
@@ -348,18 +360,24 @@ fn is_capitalized_word(tok: &str) -> bool {
         && !is_common_word(tok)
 }
 
-fn skip_word_set(skip_names: &[&str]) -> HashSet<String> {
+/// Each `skip_names` entry as its own lower-cased word set, kept apart so a run is only ever
+/// matched against one whole name at a time (never a pool of words merged across every name).
+fn skip_word_sets(skip_names: &[&str]) -> Vec<HashSet<String>> {
     skip_names
         .iter()
-        .flat_map(|n| n.split_whitespace())
-        .map(str::to_lowercase)
+        .map(|n| n.split_whitespace().map(str::to_lowercase).collect())
         .collect()
 }
 
-/// Whether any word of a candidate name run is one of `skip`'s words (spec §10: "the user's own
-/// names, and the person's names" — dropped whole, not just the matching word).
-fn run_is_skipped(words: &[String], skip: &HashSet<String>) -> bool {
-    words.iter().any(|w| skip.contains(&w.to_lowercase()))
+/// Whether a candidate name run matches a whole skip name — every one of the run's words
+/// belongs to the *same* skip name's word set (spec §10: "the user's own names, and the
+/// person's names" — dropped whole, not just because one word happens to be shared). "Priya"
+/// alone is dropped against the skip name "Priya Nair" (its one word is in that name); "Nair
+/// Logistics" is not (`"logistics"` is not), even though "Nair" alone would match.
+fn run_is_skipped(words: &[String], skip_sets: &[HashSet<String>]) -> bool {
+    skip_sets
+        .iter()
+        .any(|set| !set.is_empty() && words.iter().all(|w| set.contains(&w.to_lowercase())))
 }
 
 struct Candidate {
@@ -375,7 +393,7 @@ struct Candidate {
 /// case-insensitively, in the order they first appear. An empty result means no `facts` ask
 /// (ruling 34: "No term → no facts ask").
 pub fn terms_of(subject: &str, text: &str, skip_names: &[&str]) -> Vec<String> {
-    let skip = skip_word_set(skip_names);
+    let skip = skip_word_sets(skip_names);
     let mut tokens = tokenize_section(subject);
     tokens.extend(tokenize_section(text));
 
@@ -412,18 +430,20 @@ pub fn terms_of(subject: &str, text: &str, skip_names: &[&str]) -> Vec<String> {
         }
         if is_capitalized_word(tok) {
             let start_sentence = tokens[i].sentence_start;
+            // A name run never swallows an acronym-shaped word (`EUR`, `SLA`): that word is
+            // also `is_capitalized_word` (an all-caps word's first letter is uppercase too),
+            // but it is the more specific category, so it stops the run here — never consumed,
+            // left for the outer loop to classify on its own next iteration.
+            let is_run_word = |t: &str| is_capitalized_word(t) && !is_acronym(t);
             let mut j = i;
             let mut words = Vec::new();
-            while j < tokens.len()
-                && words.len() < NAME_RUN_MAX
-                && is_capitalized_word(&tokens[j].text)
-            {
+            while j < tokens.len() && words.len() < NAME_RUN_MAX && is_run_word(&tokens[j].text) {
                 words.push(tokens[j].text.clone());
                 j += 1;
             }
-            // Any further consecutive capitalised words beyond the run cap are consumed too, so
-            // they never start a second, overlapping run.
-            while j < tokens.len() && is_capitalized_word(&tokens[j].text) {
+            // Any further consecutive capitalised (non-acronym) words beyond the run cap are
+            // consumed too, so they never start a second, overlapping run.
+            while j < tokens.len() && is_run_word(&tokens[j].text) {
                 j += 1;
             }
             if !run_is_skipped(&words, &skip) {
@@ -617,6 +637,81 @@ mod tests {
             "Atlas Rollout starts Monday. We discussed Atlas Rollout again today.",
             &[],
             &["Atlas Rollout"],
+        );
+
+        // C1: a phone number whose last fragment carries trailing sentence punctuation (a
+        // comma, a period) must still be masked whole, even right next to a currency-code-
+        // shaped token — the brief's own case for "an address, a phone number and a URL are
+        // never terms" with one clause inserted.
+        push_case(
+            &mut cases,
+            "a phone number with a trailing comma before a currency code is still masked",
+            "",
+            "Call +1 555 0100, EUR is the budget line.",
+            &[],
+            &["EUR"],
+        );
+        push_case(
+            &mut cases,
+            "the brief's phone sentence stays masked with an inserted currency clause",
+            "",
+            "Reach Priya at priya.n@example.test or +1 555 0100, EUR is what we discussed, \
+             details at https://example.test/x.",
+            &["Priya Nair"],
+            &["EUR"],
+        );
+        push_case(
+            &mut cases,
+            "a parenthesised area code plus a hyphenated local number is masked",
+            "",
+            "Call (555) 010-0100 for details.",
+            &[],
+            &[],
+        );
+        push_case(
+            &mut cases,
+            "a phone number ending a sentence with a period is masked",
+            "",
+            "Reach us at +44 20 7946 0958. Thanks.",
+            &[],
+            &[],
+        );
+        push_case(
+            &mut cases,
+            "a phone number at the very end of a sentence is masked",
+            "",
+            "Call me at 555 0100.",
+            &[],
+            &[],
+        );
+
+        // I1: an all-caps common word is never an acronym; a real acronym still is.
+        push_case(
+            &mut cases,
+            "all-caps common words are never acronyms",
+            "",
+            "OK, THANKS for the update.",
+            &[],
+            &[],
+        );
+        push_case(
+            &mut cases,
+            "real acronyms stay terms",
+            "",
+            "Let's review the SLA and KPI before the SOW renewal.",
+            &[],
+            &["SLA", "KPI", "SOW"],
+        );
+
+        // Minor: a skip name only drops a run that matches it whole, not a run that merely
+        // shares one word with it.
+        push_case(
+            &mut cases,
+            "a run sharing one word with a skip name survives if the rest doesn't match",
+            "",
+            "Priya Nair reached out, and Nair Logistics confirmed the deal.",
+            &["Priya Nair"],
+            &["Nair Logistics"],
         );
 
         cases
