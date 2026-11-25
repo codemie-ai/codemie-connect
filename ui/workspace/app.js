@@ -3742,7 +3742,7 @@ async function boot() {
   if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie, meetingsUi };
   if (tour) {
     const report = await tour.runTour({
-      invoke, goHash, store, mutate, doc: document, raf: fn => requestAnimationFrame(fn),
+      invoke, goHash, store, mutate, voice: voiceUi, doc: document, raf: fn => requestAnimationFrame(fn),
       only: flags.tour, runId: flags.tour_run_id, ops: tourOps, refused: tourRefused, allow: tourAllow,
     });
     // Rust adds its view, writes the verdict and quits.

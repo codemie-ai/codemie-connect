@@ -192,6 +192,8 @@ Every `workspace_request` op is recorded (`recordOps` from `status-smoke.js`), a
 
 Seed ids are named in the plan. 61 stops: every stop but T28 is captured, and T23 also takes `T23-next`, so a full tour writes 61 screenshots. T01–T30 are the first table's; T31–T61 were added in Task 6 (T31 the plugin frame, Ruling 5; T32–T61 every built feature T01–T30 didn't check). The real app's answers changed four rows of the first table: T06's ⋯ has no Summarize (offered only on a long conversation), T14 reads "Add 1 to Todoist" (the seed ticks only the user's own item), T17 goes back to the summary after its capture, and T23 returns to Todoist through the Copy dialog (`copyOffered` starts empty).
 
+Step 8 (reply in the user's voice) added T62–T70 (`T68-next` the Delete ask), on a seed that chooses Knowledge (an offline stand-in plugin and a `FakeVoice` holding voice-states.json's ready copy) and copies the invented skills folder into the test folder; Refresh now, saving through the provider, the sheet line, the folder pick, Shorten with AI and the import's save stay the browser run's (amber).
+
 | Stop | Step | Route | View · theme · width | Action | Must be visible |
 |---|---|---|---|---|---|
 | T01 | 0 | settings/plugins | default · light · 1440 | none | `codemie` with Built-in, listed before `onetest`; no remove button on either; `codemie` "Not fetched yet" |

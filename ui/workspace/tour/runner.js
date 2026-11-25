@@ -7,7 +7,7 @@
 // the runner asks Rust what it refused (`tour_refused`): every refusal, the gate's and Rust's, is
 // that stop's, and fails it unless the stop's `expectRefused` names it.
 //
-// Everything is passed in (`invoke`, `goHash`, `store`, `mutate`, `doc`, `raf`, `wait`), so
+// Everything is passed in (`invoke`, `goHash`, `store`, `mutate`, `voice`, `doc`, `raf`, `wait`), so
 // node:test drives it over fakes. It sends and opens nothing: every action is checked against
 // `denied` before it clicks or mutates, and `gate` puts the same check in front of every call
 // the window itself makes to native.
@@ -152,6 +152,7 @@ function judge(doc, c) {
   if (c.value !== undefined && els[0].value !== c.value) return { pass: false, detail: `holds "${short(String(els[0].value ?? ''))}"` };
   if (c.valueStarts !== undefined && !String(els[0].value ?? '').startsWith(c.valueStarts)) return { pass: false, detail: `holds "${short(String(els[0].value ?? ''))}"` };
   if (c.disabled !== undefined && !!els[0].disabled !== c.disabled) return { pass: false, detail: `disabled is ${!!els[0].disabled}` };
+  if (c.focused !== undefined && (doc.activeElement === els[0]) !== c.focused) return { pass: false, detail: `focused is ${doc.activeElement === els[0]}` };
   if (c.attr !== undefined && els[0].getAttribute(c.attr[0]) !== c.attr[1]) return { pass: false, detail: `${c.attr[0]} is ${JSON.stringify(els[0].getAttribute(c.attr[0]))}` };
   if (c.below !== undefined || c.over !== undefined) {
     const other = all(doc, c.below ?? c.over)[0];
@@ -237,9 +238,10 @@ const LANE_OF = { 'c-reply-1': 'reply', 'c-reply-2': 'reply', 'm-reply-1': 'repl
 
 /**
  * The in-app steps a stop can take: DOM clicks on the app's own controls, an `input` event on a
- * text box, or a `mutate` of a settings or task op. Each gets `ctx` (`click`, `mutate`, `find`,
- * `settle`, `invoke`, `wait`, `doc`) and the stop's argument; `ctx.click` and `ctx.mutate`
- * refuse what the deny-list names before anything is dispatched.
+ * text box, a `mutate` of a settings or task op, or a read (`query`). Each gets `ctx` (`click`,
+ * `mutate`, `query`, `find`, `settle`, `invoke`, `wait`, `doc`, `store`, `voice`) and the stop's
+ * argument; `ctx.click`, `ctx.mutate` and `ctx.query` refuse what the deny-list names before
+ * anything is dispatched.
  */
 export const ACTIONS = {
   /** A click on the app's own control (`selector`). */
@@ -319,6 +321,17 @@ export const ACTIONS = {
   unfoldRun: async (ctx, id) => {
     await ctx.click(`.ws-run-row[data-id="${id}"]`);
     await ctx.until(() => ctx.doc.querySelector(`#run-${id}`));
+  },
+  /** Settings › Your voice: the import preview of the seed's skills folder `name`, which seed.mjs
+   *  puts in the test folder beside the meetings root. The tour opens no picker, so the scan's
+   *  answer is handed to the voice controller as the picker's path would be. */
+  voiceImport: async (ctx, name) => {
+    const root = ctx.store.get()?.snapshot?.settings?.meetings?.root;
+    if (!root) throw new Error('the seed’s meetings root is not in the snapshot');
+    const path = `${root.replace(/\/[^/]+\/?$/, '')}/${name}`;
+    const preview = await ctx.query('voice_import_scan', { path });
+    await ctx.voice.openImport(preview, path);
+    await ctx.until(() => ctx.doc.querySelector('.ws-voice-import'));
   },
   /** The menu bar's computed state: there is no tray in a tour to photograph. */
   menuBar: async ctx => {
@@ -403,7 +416,7 @@ function judgeRefused(s, refused, from, result) {
  * `ops` and `refused` may be shared with `gate`, so they hold the window's own calls too.
  */
 export async function runTour({
-  invoke, goHash, store, mutate, doc, raf, only = 'all', runId = null,
+  invoke, goHash, store, mutate, voice = null, doc, raf, only = 'all', runId = null,
   stops = STOPS, ops = [], refused = [], allow = new Set(),
   wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
@@ -441,7 +454,7 @@ export async function runTour({
     const refusedBefore = refused.length;
     for (const name of s.allow || []) allow.add(name);
     const ctx = {
-      doc, invoke: call, wait, settle, until, goHash,
+      doc, invoke: call, wait, settle, until, goHash, store, voice,
       find: selector => {
         const el = doc.querySelector(selector);
         if (!el) throw new Error(`${selector} is not on the page`);
@@ -467,6 +480,14 @@ export async function runTour({
         const out = await mutate(op, data);
         await settle();
         return out;
+      },
+      /** A read through the window's own store (its call is gated and recorded like a mutate). */
+      query: async (op, data) => {
+        if (denied('op', op) && !lifted(allow, op)) {
+          refused.push({ kind: 'op', name: op });
+          throw refusal('op', op);
+        }
+        return store.query(op, data);
       },
     };
     // One action, or a list of them run in order; the last one's answer is kept.

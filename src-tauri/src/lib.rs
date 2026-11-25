@@ -166,12 +166,12 @@ pub fn run() {
             #[cfg(feature = "tour")]
             let tour_tasks = if tour {
                 match commands::tour::seed::import(&default_root) {
-                    Ok((counts, provider)) => {
+                    Ok((counts, provider, voice)) => {
                         eprintln!(
                             "CODEMIE_TOUR: seed imported, {} records, {} connections",
                             counts.records, counts.connections
                         );
-                        Some(provider)
+                        Some((provider, voice))
                     }
                     Err(e) => {
                         eprintln!("{}", e.message);
@@ -209,10 +209,12 @@ pub fn run() {
                 #[cfg(feature = "tour")]
                 if tour {
                     // Seeded before the plugin manager starts, so its own `set_task_providers`
-                    // finds one set already and does nothing (design § 2). The seed's own
-                    // provider state (Task 3): `tour_tasks` is set whenever `tour` is true.
-                    let tasks = tour_tasks.expect("the seed was imported for this tour");
+                    // and `set_voice_providers` find one set already and do nothing (design
+                    // § 2). The seed's own provider state (Task 3): `tour_tasks` is set whenever
+                    // `tour` is true.
+                    let (tasks, voice) = tour_tasks.expect("the seed was imported for this tour");
                     core.set_task_providers(tasks);
+                    core.set_voice_providers(voice);
                     app.manage(plugins::manager::PluginManager::start_with_http(
                         app.handle(),
                         core,

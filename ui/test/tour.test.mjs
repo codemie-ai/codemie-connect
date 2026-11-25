@@ -113,7 +113,8 @@ test('every browser feature names a check file that exists', () => {
   const browser = FEATURES.filter(f => f.status === 'browser');
   // Ruling 12: amber only for what needs a real send or the desktop (or a provider state the seed
   // doesn't hold), each naming its browser check.
-  assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners']);
+  assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners',
+    'v8.import-distil', 'v8.import-pick', 'v8.import-save', 'v8.refresh', 'v8.save-through-provider', 'v8.sheet-line']);
   for (const f of browser) {
     const file = new URL(f.browserCheck.file, repo);
     assert.ok(existsSync(file), `${f.id}: ${f.browserCheck.file} is missing`);
@@ -122,8 +123,8 @@ test('every browser feature names a check file that exists', () => {
   }
 });
 
-test('stops are T01..T61 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7', () => {
-  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 61 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
+test('stops are T01..T70 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5, 7 and 8', () => {
+  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 70 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
   for (const s of STOPS) {
     assert.ok(s.checks.length > 0, `${s.id} has no checks`);
     if (s.capture === false) continue;
@@ -131,7 +132,7 @@ test('stops are T01..T61 in order, widths in {1000,1440,1680}, views and themes 
     assert.ok(['default', 'compact'].includes(s.view) && ['light', 'dark'].includes(s.theme), `${s.id} ${s.view} ${s.theme}`);
     assert.match(s.route, /^#\//, `${s.id} route`);
   }
-  for (const step of [1, 2, 3, 4, 5, 7]) {
+  for (const step of [1, 2, 3, 4, 5, 7, 8]) {
     const of = STOPS.filter(s => s.step.includes(step) && s.capture !== false);
     assert.deepEqual([...new Set(of.map(s => s.view))].sort(), ['compact', 'default'], `step ${step} views`);
     assert.deepEqual([...new Set(of.map(s => s.theme))].sort(), ['dark', 'light'], `step ${step} themes`);
@@ -642,11 +643,47 @@ test('allowing the Delete control opens its ask but never lets task_delete throu
   assert.deepEqual(refused, [{ kind: 'op', name: 'task_delete' }]);
   const stop60 = STOPS.find(s => s.covers.includes('tp4.delete-ask'));
   assert.deepEqual(stop60.allow, ['task-delete']);
-  assert.ok(STOPS.at(-1).covers.includes('tp4.removed-local'), 'removing the plugin stays last');
+  // Removing the Todoist plugin stays the last stop that needs Todoist: only step 8's voice stops
+  // come after it.
+  const removing = STOPS.findIndex(s => s.covers.includes('tp4.removed-local'));
+  assert.ok(STOPS.slice(removing + 1).every(s => s.step.every(n => n === 8)), 'only voice stops come after removing the plugin');
 });
 
 test('the seed’s AI settings are the ones the chooser stop saves back', async () => {
   const { SEED_AI } = await import('../workspace/tour/script.js');
   const { buildSeed } = await import('../../scripts/tour/seed.mjs');
   assert.deepEqual(buildSeed('/tmp/connect-tour-x/workspace', Date.now()).seed.settings.ai, SEED_AI);
+});
+
+test('voiceImport scans the skills folder beside the meetings root and hands the preview to the voice controller', async () => {
+  const preview = { folder: 'voice-skills', found: 6, items: [], skipped: [] };
+  const queried = [];
+  const opened = [];
+  const doc = fakeDoc({ '.ws-voice-import': () => (opened.length ? [node({ text: 'Import from skills · voice-skills' })] : []) });
+  const ops = [];
+  const stops = [stop('T69', { action: { name: 'voiceImport', arg: 'voice-skills' }, checks: [{ name: 'the preview', selector: '.ws-voice-import' }, { name: 'one scan', op: 'voice_import_scan', count: 1 }] })];
+  const result = await runTour({
+    invoke: fakeInvoke(), doc, stops, ops, raf: fn => fn(), wait: async () => {}, goHash: async () => {},
+    store: {
+      get: () => ({ snapshot: { settings: { view: 'default', theme: 'light', meetings: { root: '/tmp/connect-tour-x/workspace/Meetings' } } } }),
+      // The window's own query goes through the gate, which records the op.
+      query: async (op, data) => { queried.push([op, data]); ops.push(op); return preview; },
+    },
+    voice: { openImport: async (p, path) => { opened.push([p, path]); } },
+    mutate: async () => ({}),
+  });
+  const [r] = result.stops;
+  assert.equal(r.pass, true, JSON.stringify(r));
+  assert.deepEqual(queried, [['voice_import_scan', { path: '/tmp/connect-tour-x/workspace/voice-skills' }]]);
+  assert.deepEqual(opened, [[preview, '/tmp/connect-tour-x/workspace/voice-skills']]);
+});
+
+test('checks: focused', async () => {
+  const cancel = node({ text: 'Cancel' });
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '.cancel': [cancel], '.other': [node()] });
+  doc.activeElement = cancel;
+  const h = harness({ doc, stops: [stop('T68', { checks: [{ name: 'yes', selector: '.cancel', focused: true }, { name: 'no', selector: '.other', focused: true }] })] });
+  const [r] = (await h.run()).stops;
+  assert.equal(checkOf(r, 'yes').pass, true);
+  assert.equal(checkOf(r, 'no').pass, false);
 });

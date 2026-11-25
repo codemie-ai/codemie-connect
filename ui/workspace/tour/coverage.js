@@ -1,5 +1,5 @@
 // The real-app tour's coverage matrix (design docs/superpowers/specs/2026-11-24-real-app-tour-design.md
-// § 7): every user-visible feature of rollout steps 0–7, each with the design it comes from. A
+// § 7): every user-visible feature of rollout steps 0–8, each with the design it comes from. A
 // stop of `script.js` names the features it shows in `covers`. The report colours each row:
 // - `built`: green when a passing stop covers it, red with no stop or when all its stops failed;
 // - `browser`: amber, for what the real app can't show without sending or without the desktop;
@@ -17,6 +17,8 @@ const TASKS = 'docs/superpowers/specs/2026-11-23-task-provider-design.md';
 const TEMPLATES = 'docs/superpowers/specs/2026-11-24-create-tasks-templates-design.md';
 const MENU_BAR = 'docs/superpowers/specs/2026-11-24-menu-bar-count-design.md';
 const PROFILES = 'docs/superpowers/specs/2026-11-24-profiles-models-design.md';
+const VOICE = 'docs/superpowers/specs/2026-11-25-reply-voice-design.md';
+const VOICE_CHECKS = 'ui/test/browser/voice-checks.mjs';
 
 export const FEATURES = [
   // step 0: the Connect marketplace
@@ -158,7 +160,58 @@ export const FEATURES = [
   },
   { id: 'pm7.editor-default', step: 7, text: 'The automation editor’s "Default · <row> (…)" profile line', spec: PROFILES, status: 'built' },
 
+  // step 8: Reply in the user's voice
+  { id: 'v8.settings-tab', step: 8, text: 'Settings has a "Your voice" tab', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.provider-choice', step: 8, text: '"Where your voice comes from": Off or Knowledge, with its state line', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.privacy-line', step: 8, text: 'The privacy line: a copy on this Mac, facts never kept, only to the replies’ AI profile', spec: `${VOICE} § Copy`, status: 'built' },
+  { id: 'v8.facts-setting', step: 8, text: '"Add facts from Knowledge": the names and codes, never the message', spec: `${VOICE} § 10`, status: 'built' },
+  { id: 'v8.style-card', step: 8, text: 'The style card and what it was built from', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.style-head', step: 8, text: 'Your own page’s preferences head the style card, read-only', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.style-edit', step: 8, text: 'Edit opens the style card’s text without its head, with Save and Cancel', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.rules', step: 8, text: 'The instructions list', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.rule-scopes', step: 8, text: 'Each instruction names what it applies to: a chat, a domain, no profile, a channel', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.people', step: 8, text: 'People and a person’s profile: how to write to them and about them', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.teams-only-person', step: 8, text: 'A person known only by a Teams id says "Teams only"', spec: `${VOICE} § 5`, status: 'built' },
+  { id: 'v8.off', step: 8, text: 'Off keeps Connect’s copy and says when it is from', spec: `${VOICE} § 6`, status: 'built' },
+  { id: 'v8.delete-ask', step: 8, text: 'Delete Connect’s copy asks first, with Cancel focused', spec: `${VOICE} § 6`, status: 'built' },
+  { id: 'v8.draft-voice', step: 8, text: 'A draft in your voice says " · in your voice" and Context names the voice', spec: `${VOICE} § 4`, status: 'built' },
+  { id: 'v8.draft-examples', step: 8, text: 'Context counts the earlier messages used', spec: `${VOICE} § 4`, status: 'built' },
+  { id: 'v8.draft-facts', step: 8, text: 'Context lists the facts’ page titles', spec: `${VOICE} § 10`, status: 'built' },
+  { id: 'v8.background-draft', step: 8, text: 'An automation’s draft from Connect’s copy says so, and that no facts came in time', spec: `${VOICE} § 4`, status: 'built' },
+  { id: 'v8.import-preview', step: 8, text: 'Import from skills: the preview’s rows, where each came from and what a long skill kept', spec: `${VOICE} § 11`, status: 'built' },
+  { id: 'v8.import-skipped', step: 8, text: 'Import from skills: what was not imported and why, with Shorten with AI offered', spec: `${VOICE} § 11`, status: 'built' },
+  { id: 'v8.compact', step: 8, text: 'Settings › Your voice in Compact at 1000', spec: `${VOICE} § 5`, status: 'built' },
+  {
+    id: 'v8.refresh', step: 8, text: 'Refresh now asks the provider for a new copy', spec: `${VOICE} § 5`, status: 'browser',
+    reason: 'Its control is `voice-refresh`, which the deny-list’s `refresh` refuses.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V5', set: 'voice' },
+  },
+  {
+    id: 'v8.save-through-provider', step: 8, text: 'A style card or instruction edit saves through the provider, one write each', spec: `${VOICE} § 5`, status: 'browser',
+    reason: 'A save is a plugin call; the tour calls no plugin.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V3', set: 'voice' },
+  },
+  {
+    id: 'v8.sheet-line', step: 8, text: 'Installing a reply-context plugin shows the role’s sheet line', spec: `${VOICE} § Copy`, status: 'browser',
+    reason: 'It is an install; the tour installs nothing.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V7', set: 'voice' },
+  },
+  {
+    id: 'v8.import-pick', step: 8, text: 'Import from skills… picks the folder, then scans it once', spec: `${VOICE} § 11`, status: 'browser',
+    reason: 'The folder picker opens on the desktop; the tour opens no picker.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V10', set: 'voice' },
+  },
+  {
+    id: 'v8.import-distil', step: 8, text: 'Shorten with AI rewrites a skill’s rows', spec: `${VOICE} § 11`, status: 'browser',
+    reason: 'It is an AI run; the tour runs no AI.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V11', set: 'voice' },
+  },
+  {
+    id: 'v8.import-save', step: 8, text: 'Add N instructions saves the ticked rows in one write', spec: `${VOICE} § 11`, status: 'browser',
+    reason: 'Saving goes through the provider; the tour calls no plugin.',
+    browserCheck: { file: VOICE_CHECKS, check: 'voice V12', set: 'voice' },
+  },
+
   // planned
-  { id: 's8.reply-voice', step: 8, text: 'Reply in the user’s voice', spec: `${ROLLOUT} § Order, step 8`, status: 'planned' },
   { id: 's9.ask-inline', step: 9, text: 'Ask, inline in the window', spec: `${ROLLOUT} § Order, step 9`, status: 'planned' },
 ];

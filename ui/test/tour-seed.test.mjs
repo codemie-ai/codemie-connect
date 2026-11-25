@@ -4,9 +4,9 @@
 // fresh workspace.sqlite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { buildSeed, SEED_IDS } from '../../scripts/tour/seed.mjs';
@@ -112,9 +112,9 @@ test('the CLI refuses a non-empty folder', () => {
   assert.equal(result.status, 1);
 });
 
-test('the seed installs hello, the Todoist stand-in and Digest, their sheets agreed to, and a task due in 20 days', () => {
+test('the seed installs hello, the Todoist stand-in, Digest and Knowledge, their sheets agreed to, and a task due in 20 days', () => {
   const { seed } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
-  assert.deepEqual(seed.plugins.map(p => p.id), ['hello', 'todoist', 'digest']);
+  assert.deepEqual(seed.plugins.map(p => p.id), ['hello', 'todoist', 'digest', 'knowledge']);
   const [hello, todoist, digest] = seed.plugins;
   assert.deepEqual(todoist.agreed, ['network', 'provides_tasks'], 'Todoist provides tasks');
   const manifest = JSON.parse(todoist.files['echo-plugin.json']);
@@ -142,4 +142,58 @@ test('a critical rule makes the seeded critical message Critical in native terms
   assert.equal(rule.data.enabled, true);
   assert.equal(rule.data.sender, critical.data.fromAddress);
   assert.ok(critical.data.title.toLowerCase().includes(rule.data.keyword.toLowerCase()));
+});
+
+test('the seed chooses Knowledge with facts and holds a ready copy with no secret', () => {
+  const dir = '/tmp/connect-tour-x/workspace';
+  const { seed } = buildSeed(dir, NOW);
+  assert.deepEqual(seed.settings.voice, { provider: 'plugin:knowledge', facts: true });
+  assert.deepEqual(seed.voice.available, [{ id: 'plugin:knowledge', name: 'Knowledge', on: true, ready: true, facts: true }]);
+  const { style, rules, people } = seed.voice.copy;
+  assert.equal(rules.length, 6);
+  assert.equal(people.length, 3);
+  assert.ok(style.text.startsWith('Short and direct.') && style.head.source === 'people/me.md', 'the ready style card and its head');
+  for (const p of people) assert.ok(p.text, `${p.id} has a profile text`);
+  assert.ok(people.find(p => p.id === 'priya-n').about, 'Priya has an about text');
+  assert.ok(people.find(p => p.id === 'marek-novak').ids.length === 1 && !people.find(p => p.id === 'marek-novak').addresses.length, 'Marek is Teams only');
+  const text = JSON.stringify(seed.voice);
+  assert.ok(!/token|secret|password/i.test(text), 'no secret in the voice seed');
+  const addresses = text.match(/[\w.+-]+@[\w.-]+/g) || [];
+  assert.ok(addresses.length > 0 && addresses.every(a => a.endsWith('@example.test')), `addresses: ${addresses}`);
+  // The import stops scan a copy of the invented skills fixture inside the test folder, beside
+  // Meetings: runner.js finds it from the meetings root.
+  assert.equal(seed.voice.skillsFolder, join(dir, 'voice-skills'));
+  assert.equal(seed.voice.skillsFolder, join(dirname(seed.settings.meetings.root), 'voice-skills'));
+  const knowledge = seed.plugins.find(p => p.id === 'knowledge');
+  assert.deepEqual(knowledge.agreed, ['claude', 'folders', 'provides_reply-context']);
+  assert.equal(JSON.parse(knowledge.files['echo-plugin.json']).settings, undefined, 'no settings values');
+});
+
+test('Elena\'s mail holds a draft in your voice, and Inbox triage left one from the copy in the group chat', () => {
+  const { seed } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
+  const mail = seed.records.find(r => r.kind === 'draft' && r.data.sourceId === SEED_IDS.voiceMail);
+  assert.equal(mail.id, `ai:${SEED_IDS.voiceMail}`);
+  assert.equal(mail.data.draftKey, SEED_IDS.voiceMail);
+  assert.equal(mail.data.aiSuggested, true);
+  assert.equal(mail.data.provenance.voice.examples, 2);
+  assert.deepEqual(mail.data.provenance.voice.facts.map(f => f.title), ['Atlas rollout', 'EPM-1234']);
+  const chat = seed.records.find(r => r.kind === 'draft' && r.data.sourceId === SEED_IDS.groupChat);
+  assert.equal(chat.data.draftKey, 'chat:chat:chat-group');
+  assert.equal(chat.data.provenance.automationId, 'auto-triage');
+  assert.ok(seed.records.some(r => r.kind === 'automation' && r.id === 'auto-triage'));
+  assert.equal(chat.data.provenance.voice.from, 'copy');
+  assert.equal(chat.data.provenance.voice.factsMissed, true);
+  assert.deepEqual(chat.data.provenance.voice.facts, []);
+  // The Jordan 1:1 and the Priya mail keep their boxes: T05 checks the "✦ draft with AI" hint,
+  // T55's Nudge fills Priya's reply.
+  for (const id of [SEED_IDS.teams1to1, SEED_IDS.priyaMail]) assert.ok(!seed.records.some(r => r.kind === 'draft' && r.data.sourceId === id), id);
+});
+
+test('the CLI copies the invented skills folder into the test folder', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'tour-seed-cli-')), 'workspace');
+  const result = spawnSync(process.execPath, [SCRIPT, dir]);
+  assert.equal(result.status, 0, String(result.stderr));
+  for (const skill of ['broken', 'budget-answers', 'deploy-helper', 'long-standard', 'meeting-notes', 'reply-style']) {
+    assert.ok(existsSync(join(dir, 'voice-skills', skill, 'SKILL.md')), `${skill} copied`);
+  }
 });

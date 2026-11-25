@@ -1,6 +1,7 @@
 //! Imports the tour's seed (design § 4) into a fresh `workspace.sqlite` before `Core::open_tour`
 //! opens it: `lib.rs` calls [`import`] with the test folder, writes a refusal and exits 3 on
-//! `Err`, and otherwise hands the returned `FakeProvider` to `Core::set_task_providers`.
+//! `Err`, and otherwise hands the returned `FakeProvider` to `Core::set_task_providers` and the
+//! returned `FakeVoice` to `Core::set_voice_providers`.
 //!
 //! The seed holds no secret and no path outside the test folder (design § 4); [`import`] refuses
 //! both before writing anything, so a refused import leaves no database behind.
@@ -9,6 +10,7 @@ use crate::workspace::models::{
 };
 use crate::workspace::repository::Repository;
 use crate::workspace::task_provider::{fake::FakeProvider, ProviderInfo};
+use crate::workspace::voice::{copy as voice_copy, fake::FakeVoice, VoiceInfo};
 use crate::workspace::CorePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +43,23 @@ pub struct Seed {
     /// files, written under `<test dir>/plugins/installed/<id>/<version>/`.
     #[serde(default)]
     pub plugins: Vec<PluginSeed>,
+    /// The reply voice (rollout step 8): what the voice provider lists, Connect's copy of it,
+    /// and the skills folder the import stops scan.
+    #[serde(default)]
+    pub voice: Option<VoiceSeed>,
+}
+
+/// The seeded reply-context provider: what `available` answers, the copy as its `export`
+/// answers it (`{style, rules, people}`, written as Connect's copy of the chosen provider and
+/// answered to every refresh), and the skills folder inside the test folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSeed {
+    pub available: Vec<VoiceInfo>,
+    #[serde(default)]
+    pub copy: Value,
+    #[serde(default)]
+    pub skills_folder: Option<String>,
 }
 
 /// One seeded plugin: its id and version, its files by name (flat, text) and the `uses` keys
@@ -311,6 +330,9 @@ fn check_paths(seed: &Seed, test_dir: &Path) -> Result<()> {
     if let Some(file) = &meetings.tags_file {
         confine(file, "settings.meetings.tagsFile", &canonical_root)?;
     }
+    if let Some(folder) = seed.voice.as_ref().and_then(|v| v.skills_folder.as_ref()) {
+        confine(folder, "voice.skillsFolder", &canonical_root)?;
+    }
     for (i, record) in seed.records.iter().enumerate() {
         match record.kind.as_str() {
             "meeting" => check_meeting_record(i, record, &canonical_root)?,
@@ -450,9 +472,12 @@ fn install_plugins(test_dir: &Path, plugins: &[PluginSeed]) -> Result<()> {
 /// Nothing is wrapped in one transaction: a write that fails leaves a folder the next run's
 /// `fresh_folder` check refuses as not fresh, rather than a tour that quietly ran on half a seed.
 ///
-/// Returns what was written and the seeded `FakeProvider`, for the caller to give
-/// `Core::set_task_providers`.
-pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
+/// The seed's voice copy is written as Connect's copy of the chosen provider (`settings.voice`),
+/// ready, as a refresh would leave it.
+///
+/// Returns what was written, the seeded `FakeProvider` for `Core::set_task_providers` and the
+/// seeded `FakeVoice` for `Core::set_voice_providers`.
+pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>, Arc<FakeVoice>)> {
     let raw = std::fs::read_to_string(test_dir.join(SEED_FILE)).map_err(|_| {
         WorkspaceError::new("validation", "tour-seed.json is missing or unreadable.")
     })?;
@@ -493,6 +518,20 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
         updated_at: now(),
         data: seed.seen,
     })?;
+    let voice = Arc::new(FakeVoice::new());
+    if let Some(v) = seed.voice {
+        voice.set_available(v.available);
+        let provider = &seed.settings.voice.provider;
+        if provider != "off" && !v.copy.is_null() {
+            voice_copy::replace(
+                &mut repository,
+                provider,
+                &voice_copy::from_export(&v.copy),
+                now(),
+            )?;
+            voice.answer_every("export", v.copy);
+        }
+    }
 
     install_plugins(test_dir, &seed.plugins)?;
 
@@ -505,7 +544,7 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>)> {
     for task in seed.provider.remote {
         provider.put_remote(task);
     }
-    Ok((counts, provider))
+    Ok((counts, provider, voice))
 }
 
 #[cfg(test)]
@@ -575,6 +614,7 @@ mod tests {
                 remote: vec![json!({"id": "9001", "title": "Check something", "done": false})],
             },
             plugins: vec![],
+            voice: None,
         }
     }
 
@@ -588,6 +628,96 @@ mod tests {
                 .collect(),
             agreed: vec!["network".into()],
         }
+    }
+
+    fn knowledge() -> VoiceInfo {
+        VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: true,
+        }
+    }
+
+    /// An `export` answer: a style card, two instructions and one person with their texts.
+    fn voice_copy() -> Value {
+        json!({
+            "style": {"text": "Short and direct.", "updatedAt": "2026-11-24T09:00:00Z", "source": "Voice/style.md",
+                      "basedOn": {"mail": 12, "teams": 140},
+                      "head": {"text": "Prefers short replies.", "source": "people/me.md"}},
+            "rules": [
+                {"id": "everyone", "applies": {"kind": "everyone"}, "text": "Never promise a date.", "source": "Voice/rules.md", "editable": true},
+                {"id": "no-profile-teams", "applies": {"kind": "no-profile", "channel": "teams"}, "text": "Polite.", "source": "Voice/rules.md", "editable": true}
+            ],
+            "people": [
+                {"id": "priya-n", "name": "Priya N.", "addresses": ["priya.n@example.test"], "text": "Product lead.",
+                 "about": "Platform team.", "updatedAt": "2026-11-24T09:00:00Z", "source": "People/priya-n.md"}
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn import_writes_the_voice_copy_and_returns_its_fake() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        seed.settings.voice.provider = "plugin:knowledge".into();
+        let skills = dir.path().join("voice-skills");
+        seed.voice = Some(VoiceSeed {
+            available: vec![knowledge()],
+            copy: voice_copy(),
+            skills_folder: Some(skills.display().to_string()),
+        });
+        write_seed(dir.path(), &seed);
+        let (_counts, _provider, voice) = import(dir.path()).unwrap();
+
+        let repository = Repository::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let c = crate::workspace::voice::copy::read_copy(&repository)
+            .unwrap()
+            .expect("the copy is written");
+        assert_eq!(c.provider, "plugin:knowledge");
+        assert_eq!(c.state, crate::workspace::voice::VoiceState::Ready);
+        assert_eq!(c.rules.len(), 2);
+        assert_eq!(c.people.len(), 1);
+        assert_eq!(
+            c.people[0].about, "Platform team.",
+            "the profile and about texts are kept"
+        );
+        assert_eq!(c.style.unwrap().head.unwrap().source, "people/me.md");
+
+        use crate::workspace::voice::VoiceProviders;
+        let listed = voice.available();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "plugin:knowledge");
+        assert!(listed[0].facts && listed[0].on && listed[0].ready);
+        // Every refresh the tour's background loop or a switch back queues reads the same copy.
+        for _ in 0..3 {
+            let answer = voice
+                .call(
+                    "knowledge",
+                    "export",
+                    json!({}),
+                    std::time::Duration::from_secs(1),
+                )
+                .await
+                .unwrap();
+            assert_eq!(answer, voice_copy());
+        }
+    }
+
+    #[test]
+    fn import_refuses_a_skills_folder_outside_the_test_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        seed.voice = Some(VoiceSeed {
+            available: vec![knowledge()],
+            copy: Value::Null,
+            skills_folder: Some("/Users/taylor/Skills/voice-skills".into()),
+        });
+        write_seed(dir.path(), &seed);
+        let e = expect_refusal(dir.path());
+        assert_eq!(e.field.as_deref(), Some("voice.skillsFolder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
     }
 
     #[test]
@@ -692,7 +822,7 @@ mod tests {
         std::fs::write(dir.join(SEED_FILE), serde_json::to_string(seed).unwrap()).unwrap();
     }
 
-    /// `import`'s `Ok` holds a `FakeProvider`, which has no `Debug`, so a refusal test can't use
+    /// `import`'s `Ok` holds a `FakeProvider` and a `FakeVoice`, which have no `Debug`, so a refusal test can't use
     /// `unwrap_err()`.
     fn expect_refusal(dir: &Path) -> WorkspaceError {
         match import(dir) {
@@ -710,7 +840,7 @@ mod tests {
         ]);
         write_seed(dir.path(), &seed);
 
-        let (counts, provider) = import(dir.path()).unwrap();
+        let (counts, provider, _voice) = import(dir.path()).unwrap();
         assert_eq!(counts.records, 2);
         assert_eq!(counts.connections, 1);
 
@@ -960,7 +1090,7 @@ mod tests {
         )]);
         write_seed(dir.path(), &seed);
 
-        let (counts, _provider) = import(dir.path()).unwrap();
+        let (counts, _provider, _voice) = import(dir.path()).unwrap();
         assert_eq!(counts.records, 1);
     }
 
@@ -977,7 +1107,7 @@ mod tests {
         })];
         write_seed(dir.path(), &seed);
 
-        let (_counts, provider) = import(dir.path()).unwrap();
+        let (_counts, provider, _voice) = import(dir.path()).unwrap();
         assert_eq!(provider.tasks().len(), 1);
         assert_eq!(provider.tasks()[0]["title"], "/urgent: call back");
     }

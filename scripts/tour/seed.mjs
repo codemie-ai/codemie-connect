@@ -1,13 +1,13 @@
 // Builds the tour's seed (design docs/superpowers/specs/2026-11-24-real-app-tour-design.md § 4)
 // from the browser run's own fixture builders and contract JSON, so every implemented screen of
-// rollout steps 0-7 shows real, invented content — the same people and records the browser run
+// rollout steps 0-8 shows real, invented content — the same people and records the browser run
 // itself uses. `commands::tour::seed::import` (Task 3, src-tauri/src/commands/tour/seed.rs) reads
 // what this writes (`tour-seed.json`) into a fresh `workspace.sqlite` before `Core::open_tour`
 // opens it.
 //
 // Usage: node scripts/tour/seed.mjs <testDir>
 //   Refuses (exit 1) if <testDir> exists and already holds anything; creates it otherwise.
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -21,6 +21,31 @@ import { allTodoist, marekCheckIn, demoHandled } from '../../ui/test/browser/tas
 function contract(name) {
   const url = new URL(`../../ui/test/fixtures/contract/${name}.json`, import.meta.url);
   return JSON.parse(readFileSync(url, 'utf8'));
+}
+
+/** The invented skills folder the Rust import tests scan (`src-tauri/tests/fixtures/voice-skills`):
+ *  the CLI copies it into the test folder, since no seeded path may point outside it. */
+const SKILLS_FIXTURE = fileURLToPath(new URL('../../src-tauri/tests/fixtures/voice-skills/', import.meta.url));
+
+/** The texts Connect's copy holds for each person of voice-states.json's ready copy (the
+ *  snapshot carries only their lengths): what Profile shows. Invented. */
+const PROFILES = {
+  'priya-n': { names: ['Priya', 'Priya Nair'], ids: [], text: 'Product lead at the bank; prefers mornings.', about: 'Product lead, platform team.' },
+  'jordan-lee': { names: [], ids: [], text: 'Engineering manager.', about: '' },
+  'marek-novak': { names: [], ids: ['00000000-0000-4000-8000-00000000a003'], text: 'Finance contact.', about: '' },
+};
+
+/** voice-states.json's ready copy as the provider's `export` answers it (`{style, rules,
+ *  people}`), each person with their profile and about texts. */
+function voiceCopy() {
+  const ready = contract('voice-states').ready;
+  return {
+    style: ready.style,
+    rules: ready.rules,
+    people: ready.people.map(p => ({
+      id: p.id, name: p.name, addresses: p.addresses, ...PROFILES[p.id], updatedAt: '2026-11-24T09:00:00Z', source: p.source,
+    })),
+  };
 }
 
 /** A plugin folder as a seeded install: its files, and its permission sheet agreed to (each
@@ -38,12 +63,16 @@ function seededPlugin(dir) {
  *  - the tour's offline Todoist stand-in (`scripts/tour/plugins/todoist`): Todoist is installed,
  *    as it is whenever a user has it active, so the real boot keeps it and Settings shows the
  *    real Todoist card; it holds no token;
- *  - `digest` (`scripts/tour/plugins/digest`), which agreed to Claude: Settings › AI's plugin row. */
+ *  - `digest` (`scripts/tour/plugins/digest`), which agreed to Claude: Settings › AI's plugin row;
+ *  - the tour's offline Knowledge stand-in (`scripts/tour/plugins/knowledge`): the reply-context
+ *    provider Settings › Your voice chooses; it registers nothing (the seed's `voice` is the
+ *    quiet Core's provider). */
 function seededPlugins() {
   return [
     new URL('../../ui/test/fixtures/plugins/hello/', import.meta.url),
     new URL('./plugins/todoist/', import.meta.url),
     new URL('./plugins/digest/', import.meta.url),
+    new URL('./plugins/knowledge/', import.meta.url),
   ].map(seededPlugin);
 }
 
@@ -57,6 +86,7 @@ export const SEED_IDS = {
   teams1to1: 'c-reply-1',
   groupChat: 'c-reply-2',
   priyaMail: 'm-reply-1',
+  voiceMail: 'm-reply-2',
   critical: 'm-critical',
   readyMeeting: 'mtg-philips',
   checkWithTask: 'task-marek',
@@ -157,6 +187,44 @@ export function buildSeed(testDir, nowMs) {
   // again from Connect (its "Not now" then records the offer, as the user's answer would).
   s.settings.tasks = { provider: 'plugin:todoist', copyOffered: [] };
 
+  // Reply voice (step 8): Knowledge chosen with facts on; its copy and skills folder are the
+  // seed's `voice` below.
+  s.settings.voice = { provider: 'plugin:knowledge', facts: true };
+
+  // Reply voice: Elena's mail holds an AI draft in your voice (draft-ai-voice.json's
+  // provenance), and Inbox triage left a draft from Connect's copy with no facts in the group
+  // chat (draft-ai-chat.json's record). The Jordan 1:1 and the Priya mail keep their boxes for
+  // the reply stops and Nudge (T05, T55).
+  const elena = s.records.find(r => r.id === SEED_IDS.voiceMail);
+  const voiceTpl = contract('draft-ai-voice');
+  s.records.push({
+    ...voiceTpl, id: `ai:${elena.id}`, connectionId: s.connection.id, workspaceId: 'personal', source: elena.source,
+    revision: `l-ai-${elena.id}`, updatedAt: now - 600,
+    data: {
+      ...voiceTpl.data, channel: 'mail', sourceId: elena.id, sourceRevision: elena.revision, draftKey: elena.id, conversationKey: elena.id,
+      text: 'Hi Elena,\n\n[The large room, please / 4.12 is enough] for the workshop.\n\nThanks,\nTaylor',
+      questions: ['Which room does the workshop need?'],
+      provenance: { ...voiceTpl.data.provenance, at: now - 600, messageIds: [elena.id] },
+    },
+  });
+  const group = s.records.find(r => r.id === SEED_IDS.groupChat);
+  const groupKey = `chat:${group.data.conversationId}`;
+  const chatTpl = contract('draft-ai-chat');
+  s.records.push({
+    ...chatTpl, id: `ai:${groupKey}`, connectionId: s.connection.id, workspaceId: 'personal', source: group.source,
+    revision: `l-ai-${group.id}`, updatedAt: now - 1800,
+    data: {
+      ...chatTpl.data, channel: 'chat', sourceId: group.id, sourceRevision: group.revision, draftKey: groupKey, conversationKey: groupKey,
+      options: { ...chatTpl.data.options, intent: 'reply', includeFreeTimes: false },
+      text: 'Approved. [I went through the rollback steps / I still need to check the rollback steps].',
+      questions: [],
+      provenance: {
+        ...chatTpl.data.provenance, at: now - 1800, messageIds: [group.id], automationId: 'auto-triage',
+        voice: { provider: 'Knowledge', style: true, person: null, rules: 1, examples: 0, cut: false, from: 'copy', at: now, facts: [], factsMissed: true },
+      },
+    },
+  });
+
   // Menu bar: every source counted (spec § 4 "Menu bar").
   s.settings.menuBar = { replies: true, tasks: true, meetings: true, automations: true };
 
@@ -202,6 +270,11 @@ export function buildSeed(testDir, nowMs) {
         })),
     },
     plugins: seededPlugins(),
+    voice: {
+      available: [{ id: 'plugin:knowledge', name: 'Knowledge', on: true, ready: true, facts: true }],
+      copy: voiceCopy(),
+      skillsFolder: path.join(testDir, 'voice-skills'),
+    },
   };
 
   return { seed, folders };
@@ -228,6 +301,7 @@ function main() {
       writeFileSync(path.join(folder.path, name), text, 'utf8');
     }
   }
+  cpSync(SKILLS_FIXTURE, seed.voice.skillsFolder, { recursive: true });
   writeFileSync(path.join(testDir, 'tour-seed.json'), JSON.stringify(seed), 'utf8');
   const fileCount = folders.reduce((n, f) => n + Object.keys(f.files).length, 0);
   console.log(`Wrote ${seed.records.length} records, ${seed.connections.length} connection(s), ${folders.length} meeting folder(s) (${fileCount} files) to ${testDir}`);

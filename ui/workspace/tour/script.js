@@ -30,6 +30,7 @@ export const SEED_IDS = {
   teams1to1: 'c-reply-1',
   groupChat: 'c-reply-2',
   priyaMail: 'm-reply-1',
+  voiceMail: 'm-reply-2',
   critical: 'm-critical',
   readyMeeting: 'mtg-philips',
   checkWithTask: 'task-marek',
@@ -394,6 +395,156 @@ const MORE = [
       { name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 },
     ],
     covers: ['tp4.removed-local'],
+  },
+];
+
+/** Settings › Your voice (rollout step 8, voice-checks.mjs's selectors). */
+const VOICE = '#/settings/voice';
+const MODAL_CANCEL = '.ws-modal[open] .ws-modal-footer [data-modal-close]';
+/** The seed's skills folder (scripts/tour/seed.mjs copies the invented fixture there). */
+const SKILLS = 'voice-skills';
+/** voice-import-preview.json's skipped skills, as § 11 words their reasons (voice-checks.mjs). */
+const SKIPPED = [
+  ['deploy-helper', 'A procedure that runs tools. It waits for the skill runner, a later step.'],
+  ['meeting-notes', 'Not about how you write messages.'],
+  ['broken', 'Its SKILL.md has no name in its frontmatter.'],
+];
+
+/** Step 8's stops. They change state only through in-app clicks and store actions, and put back
+ *  what they changed: T68 chooses Knowledge again with facts on, the import stops Cancel. */
+const VOICE_STOPS = [
+  {
+    id: 'T62', step: [8], title: 'Settings › Your voice: Knowledge, facts, the instructions and the privacy line', route: VOICE,
+    view: 'default', theme: 'light', width: 1440,
+    checks: [
+      { name: 'the tab is "Your voice"', selector: '.ws-settings-nav [data-tab="voice"]', exact: 'Your voice' },
+      { name: 'the radios: Off and Knowledge', selector: '[data-voice-provider] input[name="voice-provider"]', count: 2 },
+      { name: 'Knowledge is chosen', selector: '[data-voice-provider] input[value="plugin:knowledge"]:checked', count: 1 },
+      { name: '"Ready · 3 people · style card · 6 instructions"', selector: '#ws-voice-state-plugin_knowledge', exact: 'Ready · 3 people · style card · 6 instructions' },
+      { name: 'facts on', selector: '[data-voice-facts]:checked', count: 1 },
+      { name: 'facts: "never the message"', selector: '#ws-voice-facts-hint', text: 'never the message' },
+      { name: 'six instructions', selector: '[data-voice-rule]', count: 6 },
+      { name: 'a chat, a domain on mail only and no profile on Teams only', selector: '.ws-voice-rules', text: ['In the chat “Platform review”', 'Anyone at bank.example.test · mail only', 'Anyone without a profile · Teams only'] },
+      { name: 'the privacy line', selector: '.ws-voice-privacy', text: ['goes only to the AI profile', 'never kept'] },
+      { name: 'Refresh now', selector: '[data-action="voice-refresh"]', exact: 'Refresh now' },
+      { name: 'Delete Connect’s copy', selector: '[data-action="voice-forget"]', exact: 'Delete Connect\'s copy' },
+    ],
+    covers: ['v8.settings-tab', 'v8.provider-choice', 'v8.privacy-line', 'v8.facts-setting', 'v8.rules', 'v8.rule-scopes'],
+  },
+  {
+    id: 'T63', step: [8], title: 'Settings › Your voice in Compact at 1000', route: VOICE,
+    view: 'compact', theme: 'dark', width: 1000, scroll: '#ws-voice-rules-title',
+    checks: [
+      { name: 'the card', selector: '.ws-voice-card', count: 1 },
+      { name: 'the instructions', selector: '[data-voice-rule]', min: 6 },
+    ],
+    covers: ['v8.compact'],
+  },
+  {
+    id: 'T64', step: [8], title: 'The style card: its head, and Edit', route: VOICE,
+    view: 'default', theme: 'dark', width: 1440, scroll: '[data-voice-style-head]',
+    action: [click('[data-action="voice-edit-style"]'), until('#ws-voice-style-text')],
+    after: click('[data-action="voice-cancel"]'),
+    checks: [
+      { name: '"From your page people/me.md"', selector: '[data-voice-style-head]', text: 'From your page people/me.md' },
+      { name: 'a labelled box', selector: 'label[for="ws-voice-style-text"]', exact: 'Style card' },
+      { name: 'it holds the card', selector: '#ws-voice-style-text', valueStarts: 'Short and direct.' },
+      { name: 'and not the head', selector: '#ws-voice-style-text', notText: 'Prefers short replies' },
+      { name: '"From 12 mail previews and 140 Teams messages"', selector: '.ws-voice-meta', text: 'From 12 mail previews and 140 Teams messages' },
+      { name: 'Save', selector: '[data-action="voice-save-style"]', count: 1 },
+      { name: 'Cancel', selector: '[data-action="voice-cancel"]', count: 1 },
+    ],
+    covers: ['v8.style-card', 'v8.style-head', 'v8.style-edit'],
+  },
+  {
+    id: 'T65', step: [8], title: 'People: Marek is Teams only, and Priya’s profile', route: VOICE,
+    view: 'default', theme: 'light', width: 1440, scroll: '#ws-voice-people-title',
+    action: [click('[data-voice-person="priya-n"] [data-action="voice-person"]'), until('.ws-modal[open] .ws-voice-dialog-head'), { name: 'wait', arg: 400 }],
+    after: click('.ws-modal[open] [data-modal-close]'),
+    checks: [
+      { name: 'Marek Novak: "Teams only"', selector: '[data-voice-person="marek-novak"]', text: ['Marek Novak', 'Teams only'] },
+      { name: 'the profile: how to write to them, about them, edit it in Knowledge', selector: '.ws-modal[open] .ws-modal-body', text: ['How to write to them', 'About them', 'Edit it in Knowledge'] },
+      { name: 'one voice_read', op: 'voice_read', count: 1 },
+    ],
+    covers: ['v8.people', 'v8.teams-only-person'],
+  },
+  {
+    // Elena's mail, not Priya's: T55's Nudge fills Priya's reply, and a seeded draft would hold
+    // that box. draft-ai-voice.json's voice names no person (controller ruling: the fixture wins).
+    id: 'T66', step: [8], title: 'A mail’s draft in your voice, with its facts', route: '#/inbox',
+    view: 'default', theme: 'light', width: 1440,
+    action: [{ name: 'selectRow', arg: SEED_IDS.voiceMail }, click(`${read(SEED_IDS.voiceMail)} [data-action="ai-draft-context"]`), until('#draft-context:not([hidden])')],
+    checks: [
+      { name: '" · in your voice"', selector: `${read(SEED_IDS.voiceMail)} .ws-draft-source`, text: ' · in your voice' },
+      { name: 'Context: your voice, the style card and 2 earlier messages', selector: '#draft-context .ws-draft-voice', text: ['Your voice (Knowledge): style card', '2 earlier messages'] },
+      // draft-ai-voice.json's facts (controller ruling: the contract fixture wins over the brief).
+      { name: '"Facts from Knowledge: Atlas rollout · EPM-1234"', selector: '#draft-context .ws-draft-voice', text: 'Facts from Knowledge: Atlas rollout · EPM-1234' },
+    ],
+    covers: ['v8.draft-voice', 'v8.draft-examples', 'v8.draft-facts'],
+  },
+  {
+    // The group chat, not the Jordan 1:1: T05 needs that box empty, and a seeded draft fills it.
+    id: 'T67', step: [8], title: 'Inbox triage’s draft from Connect’s copy, with no facts in time', route: '#/inbox',
+    view: 'compact', theme: 'light', width: 1440,
+    action: [{ name: 'openRow', arg: SEED_IDS.groupChat }, click(`${crow(SEED_IDS.groupChat)} [data-action="ai-draft-context"]`), until('#draft-context:not([hidden])')],
+    checks: [
+      { name: 'drafted by “Inbox triage”, in your voice', selector: `${crow(SEED_IDS.groupChat)} .ws-draft-source`, text: ['“Inbox triage”', ' · in your voice'], order: true },
+      { name: 'Context: Connect’s copy, and no facts in time', selector: '#draft-context .ws-draft-voice', text: ['Knowledge found no facts in time.', 'Connect\'s copy from'] },
+    ],
+    covers: ['v8.background-draft'],
+  },
+  {
+    id: 'T68', step: [8], title: 'Off keeps the copy; Delete Connect’s copy asks first', route: VOICE,
+    view: 'default', theme: 'light', width: 1440,
+    action: [{ name: 'mutate', arg: { op: 'voice_set', data: { provider: 'off' } } }, { name: 'untilText', arg: { selector: '.ws-voice-copy', text: 'Off. Connect still keeps a copy from' } }],
+    next: {
+      title: 'Delete Connect’s copy of your voice? Cancel is focused',
+      action: [click('[data-action="voice-forget"]'), until('.ws-modal[open] .ws-modal-header h2'), { name: 'wait', arg: 400 }],
+      checks: [
+        { name: '"Delete Connect\'s copy of your voice?"', selector: '.ws-modal[open] .ws-modal-header h2', exact: 'Delete Connect\'s copy of your voice?' },
+        { name: 'Cancel is focused', selector: MODAL_CANCEL, focused: true },
+      ],
+    },
+    // Cancel, then Knowledge again with facts on (as T23 goes back to Todoist).
+    after: [click(MODAL_CANCEL), { name: 'mutate', arg: { op: 'voice_set', data: { provider: 'plugin:knowledge', facts: true } } }],
+    checks: [
+      { name: 'Off is chosen', selector: '[data-voice-provider] input[value="off"]:checked', count: 1 },
+      { name: '"Off. Connect still keeps a copy from …"', selector: '.ws-voice-copy', text: 'Off. Connect still keeps a copy from' },
+    ],
+    covers: ['v8.off', 'v8.delete-ask'],
+  },
+  {
+    // The real scan of the invented skills folder (voice-import-preview.json; the brief's
+    // counts gave way to it, controller ruling).
+    id: 'T69', step: [8], title: 'Import from skills: the preview', route: VOICE,
+    view: 'compact', theme: 'light', width: 1440, scroll: '#ws-voice-import-title',
+    action: { name: 'voiceImport', arg: SKILLS }, after: click('[data-action="voice-import-cancel"]'),
+    checks: [
+      { name: '"Import from skills · voice-skills"', selector: '#ws-voice-import-title', exact: 'Import from skills · voice-skills' },
+      { name: '"Found 6 skills. 8 instructions to add."', selector: '.ws-voice-import > .ws-hint', text: 'Found 6 skills. 8 instructions to add.' },
+      { name: 'eight rows', selector: '[data-voice-import-item]', count: 8 },
+      { name: 'where each came from', selector: '.ws-voice-import-rows', text: ['From budget-answers', 'From long-standard', 'From reply-style'], order: true },
+      { name: 'a long skill says what it kept', selector: '[data-voice-import-item="long-standard#4"] .ws-voice-src', exact: 'From long-standard · Kept 6 of 14 lines.' },
+      { name: '"Add 8 instructions"', selector: '[data-action="voice-import-save"]', exact: 'Add 8 instructions' },
+      { name: 'one voice_import_scan', op: 'voice_import_scan', count: 1 },
+      { name: 'no voice_import_distil', op: 'voice_import_distil', count: 0 },
+      { name: 'no voice_import', op: 'voice_import', count: 0 },
+    ],
+    covers: ['v8.import-preview'],
+  },
+  {
+    id: 'T70', step: [8], title: 'Import from skills: what was not imported', route: VOICE,
+    view: 'default', theme: 'dark', width: 1000, scroll: '.ws-voice-subhead',
+    action: { name: 'voiceImport', arg: SKILLS }, after: click('[data-action="voice-import-cancel"]'),
+    checks: [
+      { name: '"Not imported (3)"', selector: '.ws-voice-subhead', exact: 'Not imported (3)' },
+      ...SKIPPED.map(([skill, reason]) => ({ name: `${skill}: "${reason}"`, selector: `[data-voice-import-skipped="${skill}"] .ws-muted`, exact: reason })),
+      { name: 'Shorten with AI for deploy-helper', selector: '[data-action="voice-import-distil"][data-skill="deploy-helper"]', count: 1 },
+      { name: 'Shorten with AI for long-standard', selector: '[data-action="voice-import-distil"][data-skill="long-standard"]', count: 1 },
+      { name: 'no voice_import_distil', op: 'voice_import_distil', count: 0 },
+      { name: 'no voice_import', op: 'voice_import', count: 0 },
+    ],
+    covers: ['v8.import-skipped'],
   },
 ];
 
@@ -802,4 +953,5 @@ export const STOPS = [
     covers: ['m0.plugin-frame'],
   },
   ...MORE,
+  ...VOICE_STOPS,
 ];

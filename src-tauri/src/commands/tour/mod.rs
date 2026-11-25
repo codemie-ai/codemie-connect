@@ -324,14 +324,18 @@ mod run {
         })
     }
 
-    /// The test folder may hold only the seed: `tour-seed.json`, `Meetings/` and `home/`. Anything
+    /// The test folder may hold only the seed: `tour-seed.json`, `Meetings/`, `voice-skills/` (the
+    /// invented skills folder the import stops scan) and `home/`. Anything
     /// else (a database, an earlier run's results or shots) means it isn't fresh.
     pub fn fresh_folder(dir: &Path) -> Result<(), String> {
         let refusal = || format!("That folder isn't a fresh tour seed: {}.", dir.display());
         let entries = std::fs::read_dir(dir).map_err(|_| refusal())?;
         for entry in entries {
             let name = entry.map_err(|_| refusal())?.file_name();
-            if !matches!(name.to_str(), Some("tour-seed.json" | "Meetings" | "home")) {
+            if !matches!(
+                name.to_str(),
+                Some("tour-seed.json" | "Meetings" | "voice-skills" | "home")
+            ) {
                 return Err(refusal());
             }
         }
@@ -513,16 +517,15 @@ mod tests {
     }
 
     /// Final review I1: a value that selects no stop would run nothing and pass. A stop id the
-    /// script doesn't have, or a step none of its stops belongs to (8 and 9 today), is refused at
+    /// script doesn't have, or a step none of its stops belongs to (9 today), is refused at
     /// parse time, naming it.
     #[test]
     fn parse_refuses_a_stop_or_step_with_nothing_to_run() {
         for (value, named) in [
-            ("T62", "T62"),
+            ("T71", "T71"),
             ("T99", "T99"),
             ("T00", "T00"),
-            ("T05,T62", "T62"),
-            ("8", "step 8"),
+            ("T05,T71", "T71"),
             ("9", "step 9"),
             ("0,9", "step 9"),
         ] {
@@ -540,11 +543,12 @@ mod tests {
     #[test]
     fn script_stops_are_read_from_script_js() {
         let stops = script_stops();
-        assert_eq!(stops.len(), 61);
+        assert_eq!(stops.len(), 70);
         assert_eq!(stops[0], ("T32".to_string(), vec![0]));
         assert!(stops.contains(&("T12".to_string(), vec![1, 4, 5])));
         assert!(stops.contains(&("T61".to_string(), vec![4])));
-        for step in 0..=7 {
+        assert!(stops.contains(&("T70".to_string(), vec![8])));
+        for step in 0..=8 {
             assert!(stops.iter().any(|(_, s)| s.contains(&step)), "step {step}");
         }
     }
@@ -579,6 +583,7 @@ mod tests {
         std::fs::write(dir.path().join("tour-seed.json"), "{}").unwrap();
         std::fs::create_dir(dir.path().join("Meetings")).unwrap();
         std::fs::create_dir(dir.path().join("home")).unwrap();
+        std::fs::create_dir(dir.path().join("voice-skills")).unwrap();
         assert!(fresh_folder(dir.path()).is_ok());
         let refusal = format!(
             "That folder isn't a fresh tour seed: {}.",

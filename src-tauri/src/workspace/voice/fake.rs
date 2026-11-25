@@ -11,6 +11,7 @@ use std::time::Duration;
 #[derive(Default)]
 struct Inner {
     scripted: HashMap<String, VecDeque<Result<Value, VoiceError>>>,
+    standing: HashMap<String, Value>,
     calls: Vec<(String, String, Value)>,
     available: Option<Vec<VoiceInfo>>,
     loading: bool,
@@ -59,6 +60,12 @@ impl FakeVoice {
             .push_back(Ok(value));
     }
 
+    /// Every call of `op` with nothing scripted answers `value` from now on (the tour's
+    /// `export`, which every refresh asks for).
+    pub fn answer_every(&self, op: &str, value: Value) {
+        self.lock().standing.insert(op.into(), value);
+    }
+
     /// The next call of `op` fails, as a provider's thrown message would parse
     /// (`VoiceError::parse`).
     pub fn fail(&self, op: &str, message: &str) {
@@ -94,6 +101,7 @@ impl VoiceProviders for FakeVoice {
             .scripted
             .get_mut(op)
             .and_then(VecDeque::pop_front)
+            .or_else(|| s.standing.get(op).cloned().map(Ok))
             .unwrap_or(Err(VoiceError::Unavailable));
         let delay = s.delay.get(op).copied();
         drop(s);
