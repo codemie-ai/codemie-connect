@@ -1,7 +1,7 @@
 // Workspace controller: routing, native snapshot rendering and actions. Settings → CodeMie is
 // codemie/controller.js; the legacy installer UI (ui/renderer.js) only serves smoke/probe mode
 // and the storage-recovery page.
-import { createStore, escapeHtml as e } from './store.js';
+import { createStore, escapeHtml as e, refreshDelay } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
@@ -3034,7 +3034,7 @@ async function boot() {
   if (state.route === 'settings' && state.settingsTab === 'plugins') pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
   const listen = window.__TAURI__.event.listen;
-  // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
+  // A sync round emits one change per Graph request; read what changed about three times a second.
   // Every write announces its own change too: the write's own read, asked after that, brings it.
   let refreshTimer = null;
   let lastRefresh = 0;
@@ -3046,7 +3046,7 @@ async function boot() {
       refreshTimer = null;
       lastRefresh = Date.now();
       store.refreshAfter(heardAt).catch(fail);
-    }, Math.max(150, 1200 - (Date.now() - lastRefresh)));
+    }, refreshDelay(Date.now() - lastRefresh));
   };
   for (const name of ['workspace:changed', 'connection:changed']) await listen(name, scheduleRefresh);
   // The plugin manager finished a reload: what loaded and what didn't (and why) is read again, so

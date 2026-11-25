@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, escapeHtml, REBASE_SAFE } from '../workspace/store.js';
+import { createStore, escapeHtml, REBASE_SAFE, refreshDelay } from '../workspace/store.js';
 import { runReadOnlyProbe } from '../workspace/safe-probe.js';
 import {
   calendarDays, calendarWindow, calendarCoverage, calendarIds, calendarColor, eventSpan, eventsOnDay,
@@ -450,6 +450,13 @@ test('a write with a preview settles on a delta, the preview laid over it until 
   await store.idle();
   assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'changes_since']);
   assert.equal(valueOf(store), 6);
+});
+
+test('a change is read again 300 ms after the last read at most, and never sooner than 150 ms', () => {
+  assert.equal(refreshDelay(0), 300);
+  assert.equal(refreshDelay(100), 200);
+  assert.equal(refreshDelay(250), 150);
+  assert.equal(refreshDelay(60_000), 150);
 });
 
 test('sending rebases; native guards the review itself', async () => {

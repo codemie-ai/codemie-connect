@@ -24,6 +24,11 @@ import { applyChanges } from './changes.js';
 
 export const REBASE_SAFE = new Set(['action_prepare', 'action_confirm', 'sync_request', 'job_retry', 'calendar_window', 'notification_test', 'settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
 
+/** How long after a workspace:changed the window reads again, `elapsed` ms after its last read:
+ *  at most 300 ms after it (a sync round announces each Graph request; a delta costs
+ *  milliseconds, so about three reads a second), never sooner than 150 ms (changes come in bursts). */
+export const refreshDelay = elapsed => Math.max(150, 300 - elapsed);
+
 /** How many times a rebase-safe operation is sent before a stale view is reported. */
 const REBASE_TRIES = 5;
 
