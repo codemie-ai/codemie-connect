@@ -105,13 +105,16 @@ fn check_secrets(value: &Value, path: &str) -> Result<()> {
 
 /// `path.canonicalize()`, but for a path that may not exist yet in full (a meeting folder the
 /// seed describes before Node has created it, or simply a path a test doesn't create): resolves
-/// the longest ancestor that does exist on disk — which resolves any symlink in it — and appends
-/// whatever is left literally. What's appended never contains `..`: [`confine`] already refuses
-/// that before calling this.
+/// the longest ancestor whose entry exists — `symlink_metadata`, not `exists()`, so a *dangling*
+/// symlink (whose target is missing) still counts as that ancestor, rather than being skipped
+/// over as if it weren't there — and appends whatever is left literally. What's appended never
+/// contains `..`: callers already refuse that before calling this. `existing.canonicalize()`
+/// then fully resolves `existing`: if `existing` is itself a dangling symlink, that resolution
+/// fails and so does this function, which is exactly the refusal a dangling symlink must get.
 fn canonicalize_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
     let existing = path
         .ancestors()
-        .find(|a| a.exists())
+        .find(|a| a.symlink_metadata().is_ok())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no existing ancestor"))?;
     let real = existing.canonicalize()?;
     Ok(match path.strip_prefix(existing) {
@@ -120,80 +123,190 @@ fn canonicalize_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
     })
 }
 
-/// Refuses `value` (a path-valued seed field named `field`) unless it stays inside the test
-/// folder (design § 4: "No path in it points outside the test folder"):
-/// - any `..` component, anywhere in the string, refuses it outright — whether `value` is
-///   relative (`"../../etc/passwd"`) or absolute with an embedded `..`
-///   (`"<test_dir>/../../etc/passwd"`), which a lexical `Path::starts_with` alone would miss;
-/// - a relative `value` (no `..` left to find) is resolved against `test_dir`;
+/// Refuses `value` (a path-valued seed field named `field`) unless it is absolute and stays
+/// inside the test folder (design § 4: "No path in it points outside the test folder"; the
+/// app's own validators also require these fields absolute — `meetings/model.rs`,
+/// `library_ops.rs` — and nothing in `import` resolves a relative one against the test folder,
+/// so a relative value must be refused rather than silently accepted and later resolved against
+/// whatever the process's current directory happens to be):
+/// - not absolute refuses it outright;
+/// - any `..` component, anywhere in the string, refuses it outright too — closing both the
+///   plain-relative form (already caught by "not absolute") and an absolute path with an
+///   embedded `..` (`"<test_dir>/../../etc/passwd"`), which a lexical `Path::starts_with` alone
+///   would miss;
 /// - what's left is canonicalized as far as it exists ([`canonicalize_existing_prefix`]), which
-///   resolves a symlink inside the test folder that points out, and the result must stay inside
-///   `canonical_root` (`test_dir`, already canonicalized once by the caller).
-fn confine(value: &str, field: &str, test_dir: &Path, canonical_root: &Path) -> Result<()> {
+///   resolves a symlink inside the test folder that points out (or refuses a dangling one), and
+///   the result must stay inside `canonical_root` (`test_dir`, canonicalized once by the
+///   caller).
+///
+/// Returns the resolved, canonical path on success, so a caller that needs it as a boundary for
+/// something nested inside it (a meeting's own documents, see [`confine_doc_file`]) doesn't
+/// canonicalize the same value twice.
+fn confine(value: &str, field: &str, canonical_root: &Path) -> Result<PathBuf> {
     let candidate = Path::new(value);
-    let outside = || {
+    let outside = |message: String| refused(message, field.to_string());
+    if !candidate.is_absolute() {
+        return Err(outside(format!(
+            "This path must be absolute, inside the tour's test folder: {value}."
+        )));
+    }
+    if candidate.components().any(|c| c == Component::ParentDir) {
+        return Err(outside(format!(
+            "This path is outside the tour's test folder: {value}."
+        )));
+    }
+    let resolved = canonicalize_existing_prefix(candidate)
+        .map_err(|_| outside(format!("This path could not be resolved: {value}.")))?;
+    if !resolved.starts_with(canonical_root) {
+        return Err(outside(format!(
+            "This path is outside the tour's test folder: {value}."
+        )));
+    }
+    Ok(resolved)
+}
+
+/// The one subfolder a document file name may sit in (`workspace::meetings::docs::HISTORY`,
+/// private there; duplicated here as a literal for the same reason `menu_bar`'s kind/id/scope
+/// are).
+const HISTORY_SUBFOLDER: &str = "notes-history";
+
+/// Whether `name` is a plain relative file name the app would accept for a document
+/// (`Doc::file`) or a kept version (`DocVersion::file`, `allow_history_subfolder`): not empty,
+/// not absolute, no `..` (or `.`, or any other non-plain component), and no path separator at
+/// all unless it is exactly `notes-history/<name>`, the one subfolder the app itself writes
+/// into (`docs.rs`'s `HISTORY`).
+fn relative_name_shape(name: &str, allow_history_subfolder: bool) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        return false;
+    }
+    let components: Vec<Component> = candidate.components().collect();
+    if components
+        .iter()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return false;
+    }
+    match components.as_slice() {
+        [_] => true,
+        [first, _] => allow_history_subfolder && first.as_os_str() == HISTORY_SUBFOLDER,
+        _ => false,
+    }
+}
+
+/// Confines a meeting document's file name (design § 4; `docs.rs` joins this onto the meeting
+/// folder, then writes, renames, reads and deletes the result): refuses it unless
+/// [`relative_name_shape`] accepts it, and unless `folder.join(file)`, resolved as far as it
+/// exists, stays inside the meeting's own canonical folder — not just inside the test folder in
+/// general, since a document belongs to its own meeting, not another one.
+fn confine_doc_file(
+    file: &str,
+    folder: &Path,
+    canonical_folder: &Path,
+    field: &str,
+    allow_history_subfolder: bool,
+) -> Result<()> {
+    if !relative_name_shape(file, allow_history_subfolder) {
+        return Err(refused(
+            format!("This isn't a plain file name inside the meeting folder: {file}."),
+            field.to_string(),
+        ));
+    }
+    let resolved = canonicalize_existing_prefix(&folder.join(file)).map_err(|_| {
         refused(
-            format!("This path is outside the tour's test folder: {value}."),
+            format!("This file could not be resolved: {file}."),
             field.to_string(),
         )
-    };
-    if candidate.components().any(|c| c == Component::ParentDir) {
-        return Err(outside());
-    }
-    let absolute = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        test_dir.join(candidate)
-    };
-    let resolved = canonicalize_existing_prefix(&absolute)
-        .map_err(|_| WorkspaceError::new("storage", "A seeded path could not be resolved."))?;
-    if !resolved.starts_with(canonical_root) {
-        return Err(outside());
+    })?;
+    if !resolved.starts_with(canonical_folder) {
+        return Err(refused(
+            format!("This file is outside its meeting folder: {file}."),
+            field.to_string(),
+        ));
     }
     Ok(())
 }
 
-/// The seed's path-valued fields, decided from its schema (`Settings::meetings` and the
-/// `meeting`/`note_template` record kinds), not from what a string looks like: a free-form
-/// string elsewhere (a task title, a note) is never treated as a path just because it starts
-/// with `/`.
+/// A `meeting` record's path fields (design § 4): the folder itself, then — joined onto it —
+/// every document's `file` and every kept version's `file` (`docs.rs:50,53,278,284,289,290,368`
+/// reads, writes, renames and deletes `folder.join(file)`). Nothing is checked when the record
+/// has no folder yet (an `upcoming` or `pending` meeting has no documents either).
+fn check_meeting_record(i: usize, record: &Record, canonical_root: &Path) -> Result<()> {
+    let Some(folder) = record.data.get("folder").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let canonical_folder = confine(folder, &format!("records[{i}].data.folder"), canonical_root)?;
+    let folder_path = Path::new(folder);
+    let docs = record
+        .data
+        .get("docs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for (d, doc) in docs.enumerate() {
+        if let Some(file) = doc.get("file").and_then(Value::as_str) {
+            confine_doc_file(
+                file,
+                folder_path,
+                &canonical_folder,
+                &format!("records[{i}].data.docs[{d}].file"),
+                false,
+            )?;
+        }
+        let versions = doc
+            .get("versions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        for (v, version) in versions.enumerate() {
+            if let Some(file) = version.get("file").and_then(Value::as_str) {
+                confine_doc_file(
+                    file,
+                    folder_path,
+                    &canonical_folder,
+                    &format!("records[{i}].data.docs[{d}].versions[{v}].file"),
+                    true,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The seed's path-valued fields, decided from its schema (`Settings::meetings`, the
+/// `meeting`/`note_template` record kinds, and a meeting's own documents), not from what a
+/// string looks like: a free-form string elsewhere (a task title, a note) is never treated as a
+/// path just because it starts with `/`.
 fn check_paths(seed: &Seed, test_dir: &Path) -> Result<()> {
     let canonical_root = test_dir.canonicalize().map_err(|_| {
         WorkspaceError::new("storage", "The tour's test folder could not be resolved.")
     })?;
     let meetings = &seed.settings.meetings;
     if let Some(root) = &meetings.root {
-        confine(root, "settings.meetings.root", test_dir, &canonical_root)?;
+        confine(root, "settings.meetings.root", &canonical_root)?;
     }
     if let Some(file) = &meetings.glossary_file {
-        confine(
-            file,
-            "settings.meetings.glossaryFile",
-            test_dir,
-            &canonical_root,
-        )?;
+        confine(file, "settings.meetings.glossaryFile", &canonical_root)?;
     }
     if let Some(file) = &meetings.tags_file {
-        confine(
-            file,
-            "settings.meetings.tagsFile",
-            test_dir,
-            &canonical_root,
-        )?;
+        confine(file, "settings.meetings.tagsFile", &canonical_root)?;
     }
     for (i, record) in seed.records.iter().enumerate() {
-        let key = match record.kind.as_str() {
-            "meeting" => "folder",
-            "note_template" => "skillPath",
-            _ => continue,
-        };
-        if let Some(value) = record.data.get(key).and_then(Value::as_str) {
-            confine(
-                value,
-                &format!("records[{i}].data.{key}"),
-                test_dir,
-                &canonical_root,
-            )?;
+        match record.kind.as_str() {
+            "meeting" => check_meeting_record(i, record, &canonical_root)?,
+            "note_template" => {
+                if let Some(value) = record.data.get("skillPath").and_then(Value::as_str) {
+                    confine(
+                        value,
+                        &format!("records[{i}].data.skillPath"),
+                        &canonical_root,
+                    )?;
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -448,6 +561,162 @@ mod tests {
         assert_eq!(err.code, "validation");
         assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
         assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_a_relative_path_without_traversal() {
+        // No `..` at all, but still not absolute: the app's own validators require an absolute
+        // path (`meetings/model.rs`, `library_ops.rs`), and nothing in `import` resolves a
+        // relative one against the test folder, so it must be refused outright.
+        let dir = tempfile::tempdir().unwrap();
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({"folder": "Meetings/meet-1"}),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_refuses_a_dangling_symlink_inside_the_test_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // A target that does not exist: `Path::exists()` would call the link itself "not
+        // there" and skip straight past it to `dir` as the longest existing ancestor, which
+        // would then wrongly accept whatever is appended after it.
+        let missing_target = outside.path().join("missing");
+        let link = dir.path().join("escape");
+        std::os::unix::fs::symlink(&missing_target, &link).unwrap();
+
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({"folder": link.join("meet-1").display().to_string()}),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.folder"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_an_absolute_document_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Meetings").join("meet-1");
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({
+                "folder": folder.display().to_string(),
+                "docs": [{"file": "/etc/passwd"}],
+            }),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.docs[0].file"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_a_document_file_name_with_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Meetings").join("meet-1");
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({
+                "folder": folder.display().to_string(),
+                "docs": [{"file": "../../etc/passwd"}],
+            }),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.docs[0].file"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_a_kept_version_file_in_a_disallowed_subfolder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Meetings").join("meet-1");
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({
+                "folder": folder.display().to_string(),
+                "docs": [{
+                    "file": "notes.md",
+                    "versions": [{"file": "not-history/old.md"}],
+                }],
+            }),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(
+            err.field.as_deref(),
+            Some("records[0].data.docs[0].versions[0].file")
+        );
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_refuses_a_document_file_that_is_a_symlink_escaping_the_meeting_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Meetings").join("meet-1");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::os::unix::fs::symlink(outside.path(), folder.join("escape")).unwrap();
+
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({
+                "folder": folder.display().to_string(),
+                "docs": [{"file": "escape"}],
+            }),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let err = expect_refusal(dir.path());
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.field.as_deref(), Some("records[0].data.docs[0].file"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_accepts_a_document_file_and_a_kept_version_in_the_history_subfolder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Meetings").join("meet-1");
+        let seed = seed_with(vec![record(
+            "meeting",
+            "meet-1",
+            json!({
+                "folder": folder.display().to_string(),
+                "docs": [{
+                    "file": "notes.md",
+                    "versions": [{"file": "notes-history/2026-01-01_1200-template.md"}],
+                }],
+            }),
+        )]);
+        write_seed(dir.path(), &seed);
+
+        let (counts, _provider) = import(dir.path()).unwrap();
+        assert_eq!(counts.records, 1);
     }
 
     #[test]
