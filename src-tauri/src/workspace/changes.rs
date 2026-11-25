@@ -274,8 +274,12 @@ mod tests {
             user_id: "me-1".into(),
             generation: 1,
             policy_revision: 1,
-            scopes: vec!["Mail.Read".into(), "Chat.Read".into()],
-            enabled: vec!["mail".into(), "chats".into()],
+            scopes: vec![
+                "Mail.Read".into(),
+                "Chat.Read".into(),
+                "Calendars.Read".into(),
+            ],
+            enabled: vec!["mail".into(), "chats".into(), "calendar".into()],
             status: "connected".into(),
             ..Default::default()
         };
@@ -285,7 +289,7 @@ mod tests {
         r.settings_update(&s).unwrap();
         let mut w = r.workspace("personal").unwrap();
         w.connection_id = Some(ACCT.into());
-        w.sources = json!({"mail": true, "chats": ["chat-a"], "calendars": []});
+        w.sources = json!({"mail": true, "chats": ["chat-a"], "calendars": ["cal-1"]});
         r.save_workspace(&w).unwrap();
     }
 
@@ -708,5 +712,363 @@ mod tests {
         assert_eq!(ids(&delta, "removedJobs"), ["job-1"]);
         assert_eq!(delta["jobsAll"], true);
         assert!(!ids(&delta, "jobs").contains(&"job-1".to_string()));
+    }
+
+    // ------------------------------------------------------------ parity with the snapshot
+
+    use std::collections::{BTreeMap, HashSet as Set};
+
+    fn value_key(r: &Value) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            r["kind"].as_str().unwrap(),
+            r["id"].as_str().unwrap(),
+            r["connectionId"].as_str().unwrap_or(""),
+            r["workspaceId"].as_str().unwrap_or("")
+        )
+    }
+
+    /// The window's `applyChanges` (ui/workspace/changes.js), mirrored: a snapshot answer and a
+    /// delta give the next snapshot answer; None on a reset.
+    fn apply(before: &Value, delta: &Value) -> Option<Value> {
+        if delta["reset"] == true {
+            return None;
+        }
+        let mut snap = before["snapshot"].clone();
+        let replace: Vec<&str> = delta["replace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        let removed: Set<String> = delta["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(value_key)
+            .collect();
+        let mut records: BTreeMap<String, Value> = snap["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                !replace.contains(&r["kind"].as_str().unwrap()) && !removed.contains(&value_key(r))
+            })
+            .map(|r| (value_key(r), r.clone()))
+            .collect();
+        for r in delta["records"].as_array().unwrap() {
+            records.insert(value_key(r), r.clone());
+        }
+        snap["records"] = Value::Array(records.into_values().collect());
+        let mut jobs: BTreeMap<String, Value> = if delta["jobsAll"] == true {
+            BTreeMap::new()
+        } else {
+            snap["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|j| (j["id"].as_str().unwrap().to_string(), j.clone()))
+                .collect()
+        };
+        for id in delta["removedJobs"].as_array().unwrap() {
+            jobs.remove(id.as_str().unwrap());
+        }
+        for j in delta["jobs"].as_array().unwrap() {
+            jobs.insert(j["id"].as_str().unwrap().to_string(), j.clone());
+        }
+        let mut jobs: Vec<Value> = jobs.into_values().collect();
+        jobs.sort_by(|a, b| b["dueAt"].as_i64().cmp(&a["dueAt"].as_i64()));
+        jobs.truncate(300);
+        snap["jobs"] = Value::Array(jobs);
+        for field in [
+            "settings",
+            "workspaces",
+            "connection",
+            "available",
+            "meetingsRoot",
+            "noteTemplates",
+        ] {
+            snap[field] = delta[field].clone();
+        }
+        snap["revision"] = delta["revision"].clone();
+        Some(
+            json!({"snapshot": snap, "scope": delta["scope"], "authPending": delta["authPending"], "authError": delta["authError"]}),
+        )
+    }
+
+    /// Records and jobs in key order, so two answers compare whatever order they came in.
+    fn sorted(answer: &Value) -> Value {
+        let mut a = answer.clone();
+        let mut records = a["snapshot"]["records"].as_array().unwrap().clone();
+        records.sort_by_key(value_key);
+        a["snapshot"]["records"] = Value::Array(records);
+        let mut jobs = a["snapshot"]["jobs"].as_array().unwrap().clone();
+        jobs.sort_by_key(|j| j["id"].as_str().unwrap().to_string());
+        a["snapshot"]["jobs"] = Value::Array(jobs);
+        a
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) % n
+        }
+    }
+
+    fn job(id: &str, kind: &str, due: i64) -> Job {
+        Job {
+            id: id.into(),
+            kind: kind.into(),
+            key: id.into(),
+            state: "queued".into(),
+            workspace_id: Some("personal".into()),
+            connection_id: Some(ACCT.into()),
+            due_at: due,
+            lease_until: None,
+            attempts: 0,
+            policy: json!({}),
+            payload: json!({"meetingId": "mtg-1"}),
+            result: None,
+            error_class: None,
+            error_code: None,
+        }
+    }
+
+    fn meeting(id: &str, data: Value) -> Record {
+        provider(id, "meeting", "calendar:cal-1", data)
+    }
+
+    #[tokio::test]
+    async fn a_delta_applied_to_a_snapshot_is_the_next_snapshot() {
+        let (_dir, core) = core();
+        connect(&core);
+        waiting_thread(&core);
+        let mut rng = Lcg(7);
+        let mut tasks: Vec<String> = Vec::new();
+        let mut gone: Vec<String> = Vec::new();
+        let mut messages: Vec<String> = vec!["m1".into(), "m2".into(), "m3".into()];
+        let mut jobs: Vec<String> = Vec::new();
+        let mut base = snapshot(&core).await;
+        for step in 0..60 {
+            let n = step as i64;
+            match rng.below(14) {
+                0 | 1 => {
+                    let saved = write(&core, Operation::LocalSave, json!({"kind": "commitment", "text": format!("Task {n}"), "status": "todo"})).await;
+                    tasks.push(saved["id"].as_str().unwrap().into());
+                }
+                2 if !tasks.is_empty() => {
+                    let id = tasks[rng.below(tasks.len() as u64) as usize].clone();
+                    let status = ["doing", "waiting", "done", "todo"][rng.below(4) as usize];
+                    write(
+                        &core,
+                        Operation::LocalSave,
+                        json!({"kind": "commitment", "id": id, "status": status}),
+                    )
+                    .await;
+                }
+                3 if !tasks.is_empty() => {
+                    let id = tasks.remove(rng.below(tasks.len() as u64) as usize);
+                    write(
+                        &core,
+                        Operation::LocalDelete,
+                        json!({"kind": "commitment", "id": id}),
+                    )
+                    .await;
+                    gone.push(id);
+                }
+                4 if !gone.is_empty() => {
+                    // Undo of a delete: the same key again.
+                    let id = gone.remove(0);
+                    write(&core, Operation::LocalSave, json!({"kind": "commitment", "id": id, "text": "Back again", "status": "todo"})).await;
+                    tasks.push(id);
+                }
+                5 => {
+                    let template = ["meeting-notes", "short-summary"][rng.below(2) as usize];
+                    put(
+                        &core,
+                        meeting(
+                            "mtg-1",
+                            json!({"title": "Sync", "state": "downloaded", "template": template, "start": "2026-11-25T10:00:00Z", "end": "2026-11-25T10:30:00Z"}),
+                        ),
+                    );
+                }
+                6 => {
+                    let id = format!("job-{n}");
+                    core.repo()
+                        .unwrap()
+                        .enqueue(&job(
+                            &id,
+                            if n % 2 == 0 {
+                                "meeting_notes"
+                            } else {
+                                "transcript_check"
+                            },
+                            1_795_000_000 + n,
+                        ))
+                        .unwrap();
+                    jobs.push(id);
+                }
+                7 if !jobs.is_empty() => {
+                    let id = jobs[rng.below(jobs.len() as u64) as usize].clone();
+                    let mut j = core
+                        .repo()
+                        .unwrap()
+                        .jobs_by_id(&[id.as_str()])
+                        .unwrap()
+                        .pop()
+                        .unwrap();
+                    j.state = ["running", "succeeded", "failed"][rng.below(3) as usize].into();
+                    core.repo().unwrap().save_job(&j).unwrap();
+                }
+                8 => {
+                    let id = format!("m{}", 10 + n);
+                    let conv = format!("conv-{}", 1 + rng.below(3));
+                    put(
+                        &core,
+                        mail(&id, &conv, 1000 + n, rng.below(3) == 0, "Any news?"),
+                    );
+                    messages.push(id);
+                }
+                9 => {
+                    let id = messages[rng.below(messages.len() as u64) as usize].clone();
+                    let lane = ["waiting", "fyi", "reply"][rng.below(3) as usize];
+                    put(
+                        &core,
+                        decision(&id, json!({"lane": lane, "waitingSince": 1000 + n})),
+                    );
+                }
+                10 => {
+                    let mut run = Record {
+                        id: format!("run-{n}"),
+                        kind: "automation_run".into(),
+                        connection_id: None,
+                        workspace_id: Some("personal".into()),
+                        source: "local".into(),
+                        revision: id(),
+                        updated_at: 1_795_000_000 + n,
+                        data: json!({"automationId": format!("auto-{}", rng.below(2)), "startedAt": 1_795_000_000 + n, "delivered": ["today"]}),
+                    };
+                    if n % 3 == 0 {
+                        run.data["delivered"] = json!([]);
+                    }
+                    put(&core, run);
+                }
+                11 => {
+                    core.repo()
+                        .unwrap()
+                        .prune_finished_jobs(&["meeting_notes", "transcript_check"], i64::MAX)
+                        .unwrap();
+                }
+                12 => {
+                    let mut ai =
+                        provider(&format!("ai-{n}"), "ai_run", "local", json!({"cost": 0.01}));
+                    ai.connection_id = None;
+                    core.repo().unwrap().put_ai_run(&ai).unwrap();
+                }
+                _ => {
+                    let id = format!("c{n}");
+                    let mut chat = provider(
+                        &id,
+                        "message",
+                        "chat:chat-a",
+                        json!({"channel": "chat", "conversationId": "19:chat-a", "at": 2000 + n, "isMine": false, "text": "ping"}),
+                    );
+                    chat.updated_at = 1_795_000_000 + n;
+                    put(&core, chat);
+                    messages.push(id);
+                }
+            }
+            if step % 5 == 4 {
+                let delta = since(&core, &base).await;
+                let applied =
+                    apply(&base, &delta).unwrap_or_else(|| panic!("reset at step {step}: {delta}"));
+                let now = snapshot(&core).await;
+                assert_eq!(sorted(&applied), sorted(&now), "step {step}");
+                base = applied;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_fixture_changes_since() {
+        let (_dir, core) = core();
+        connect(&core);
+        let at = 1_795_000_000;
+        {
+            let mut r = core.repo().unwrap();
+            tasks::task_save(&mut r, "personal", &json!({"id": "task-keep", "text": "Send the roadmap comments", "status": "todo", "order": 1.0}), at).unwrap();
+            tasks::task_save(&mut r, "personal", &json!({"id": "task-gone", "text": "Book the room", "status": "todo", "order": 2.0}), at).unwrap();
+        }
+        let mut m = meeting(
+            "mtg-1",
+            json!({"title": "Vendor sync", "state": "downloaded", "start": "2026-11-25T10:00:00Z", "end": "2026-11-25T10:30:00Z"}),
+        );
+        m.updated_at = at;
+        put(&core, m.clone());
+        for mut rec in [
+            mail("m1", "conv-1", 100, false, "Can you review the Q3 budget?"),
+            mail("m2", "conv-1", 200, true, "Sure, which version?"),
+            mail("m3", "conv-1", 300, false, "The one from Monday."),
+        ] {
+            rec.updated_at = at;
+            put(&core, rec);
+        }
+        let mut d = decision("m2", json!({"lane": "waiting", "waitingSince": 350}));
+        d.revision = "rev-d".into();
+        put(&core, d);
+        let before = snapshot(&core).await;
+        {
+            let mut r = core.repo().unwrap();
+            tasks::task_save(
+                &mut r,
+                "personal",
+                &json!({"id": "task-keep", "status": "doing"}),
+                at + 60,
+            )
+            .unwrap();
+            tasks::task_delete(&mut r, "personal", "task-gone").unwrap();
+            r.enqueue(&job("job-notes", "meeting_notes", at + 120))
+                .unwrap();
+        }
+        m.data["template"] = json!("short-summary");
+        m.updated_at = at + 90;
+        put(&core, m);
+        let mut m4 = mail("m4", "conv-1", 400, false, "Any news?");
+        m4.updated_at = at + 180;
+        put(&core, m4);
+        let delta = since(&core, &before).await;
+        let after = snapshot(&core).await;
+        assert_eq!(sorted(&apply(&before, &delta).unwrap()), sorted(&after));
+        // What varies from run to run: the install's client id and the temp folder.
+        fn steady_part(s: &mut Value) {
+            // A task's revision is a fresh id at every save.
+            if let Some(records) = s.get_mut("records").and_then(Value::as_array_mut) {
+                for r in records.iter_mut().filter(|r| r["kind"] == "commitment") {
+                    r["revision"] = json!(format!("rev-{}", r["id"].as_str().unwrap()));
+                }
+            }
+            if s.get("settings").is_some() {
+                s["settings"]["clientId"] = json!("client-id");
+            }
+            if s.get("meetingsRoot").is_some() {
+                s["meetingsRoot"] =
+                    json!({"path": "/Users/taylor/CodeMie Connect/Meetings", "isDefault": true});
+            }
+        }
+        let steady = |mut v: Value| {
+            if v.get("snapshot").is_some() {
+                steady_part(&mut v["snapshot"]);
+            }
+            steady_part(&mut v);
+            v
+        };
+        crate::plugins::testkit::contract_fixture(
+            "changes-since.json",
+            &json!({"before": steady(sorted(&before)), "delta": steady(delta), "after": steady(sorted(&after))}),
+        );
     }
 }
