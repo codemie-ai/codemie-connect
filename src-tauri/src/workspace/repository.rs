@@ -98,6 +98,7 @@ pub struct ChangeRow {
 const CHANGE_LOG: &str = "
     CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL, conversation TEXT);
     CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
+    CREATE INDEX IF NOT EXISTS message_conversation ON records(COALESCE(json_extract(body,'$.conversationId'),'')) WHERE kind='message';
     CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
       INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
     CREATE TRIGGER IF NOT EXISTS records_logged_update AFTER UPDATE ON records BEGIN
@@ -555,6 +556,26 @@ impl Repository {
             add.execute([k])?;
         }
         self.visible_where(scope, " AND kind IN (SELECT kind FROM wanted_kinds)", false)
+    }
+    /// The messages a view sees of these conversations (`conversationId`, "" for none, as the
+    /// Inbox projection groups them), as the snapshot holds them before the projection.
+    pub fn visible_messages_of(
+        &self,
+        scope: &SnapshotScope,
+        conversations: &[String],
+    ) -> Result<Vec<Record>> {
+        self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wanted_conversations(conversation TEXT NOT NULL); DELETE FROM wanted_conversations;")?;
+        let mut add = self
+            .db
+            .prepare("INSERT INTO wanted_conversations VALUES(?1)")?;
+        for c in conversations {
+            add.execute([c])?;
+        }
+        self.visible_where(
+            scope,
+            " AND kind='message' AND COALESCE(json_extract(body,'$.conversationId'),'') IN (SELECT conversation FROM wanted_conversations)",
+            false,
+        )
     }
     /// The snapshot's record queries with `wanted` added to the local and account ones; the
     /// automation runs (each automation's newest) when `runs`.

@@ -18,21 +18,21 @@ use std::collections::HashSet;
 const INBOX: [&str; 4] = ["message", "decision", "incident", "summary"];
 
 /// The conversations (`conversationId`, "" for none, as `inbox::project` groups them) that
-/// changed inbox rows touch, and the summary keys they name; `None` when one can't be told (an
-/// incident gone): the window then reads the whole snapshot.
+/// changed inbox rows touch, and the summary keys changed summaries hold; `None` when one can't
+/// be told (an incident gone): the window then reads the whole snapshot.
 fn touched(
     repo: &Repository,
-    all: &[Record],
     rows: &[&ChangeRow],
+    summaries: &[Record],
     cid: &str,
 ) -> Result<Option<(HashSet<String>, HashSet<String>)>> {
     let conversation_of = |id: &str| {
-        all.iter()
-            .find(|m| m.kind == "message" && m.id == id)
+        repo.record("message", id, Some(cid), None)
+            .ok()
             .map(|m| m.data["conversationId"].as_str().unwrap_or("").to_string())
     };
     let mut convs = HashSet::new();
-    let mut summaries = HashSet::new();
+    let mut keys = HashSet::new();
     for row in rows {
         match row.kind.as_str() {
             "message" => {
@@ -50,23 +50,30 @@ fn touched(
                 convs.extend(incident.data["itemId"].as_str().and_then(conversation_of));
             }
             "summary" => {
-                if let Some(key) = all
+                let Some(key) = summaries
                     .iter()
-                    .find(|r| r.kind == "summary" && r.id == row.id)
+                    .find(|r| r.id == row.id)
                     .and_then(|r| r.data["conversationKey"].as_str())
+                else {
+                    continue;
+                };
+                keys.insert(key.to_string());
+                // prompts::conversation_key: "chat:<conversation>", "mail:<conversation>" or,
+                // for a mail without one, the message's id.
+                match key
+                    .split_once(':')
+                    .filter(|(k, _)| matches!(*k, "chat" | "mail"))
                 {
-                    summaries.insert(key.to_string());
-                    convs.extend(
-                        all.iter()
-                            .filter(|m| m.kind == "message" && prompts::conversation_key(m) == key)
-                            .map(|m| m.data["conversationId"].as_str().unwrap_or("").to_string()),
-                    );
+                    Some((_, conversation)) => {
+                        convs.insert(conversation.to_string());
+                    }
+                    None => convs.extend(conversation_of(key)),
                 }
             }
             _ => {}
         }
     }
-    Ok(Some((convs, summaries)))
+    Ok(Some((convs, keys)))
 }
 
 /// More changed records than this: the window reads the whole snapshot instead.
@@ -165,38 +172,33 @@ impl Core {
                 .copied()
                 .filter(|c| INBOX.contains(&c.kind.as_str()))
                 .collect();
-            if !inbox_rows.is_empty() {
-                // Projected as the snapshot projects them: across every conversation's messages,
-                // with the decisions and the chat catalog.
-                let mut all = repo.visible_records_of_kinds(
-                    &scope,
-                    &["message", "summary", "decision", "catalog"],
-                )?;
-                inbox::project(&repo, &scope.active, scope.visible.as_ref(), &mut all)?;
-                ai_jobs::mark_stale_summaries(&mut all);
-                let Some((convs, mut summary_keys)) = touched(&repo, &all, &inbox_rows, cid)?
+            if let (false, Some(c)) = (inbox_rows.is_empty(), scope.visible.as_ref()) {
+                // The touched conversations, whole, projected as the snapshot projects them:
+                // their messages, with the decisions and the chat catalog beside them.
+                let mut summaries = repo.visible_records_of_kinds(&scope, &["summary"])?;
+                let Some((convs, mut summary_keys)) = touched(&repo, &inbox_rows, &summaries, cid)?
                 else {
                     return Ok(json!({"reset": true}));
                 };
-                summary_keys.extend(
-                    all.iter()
-                        .filter(|m| {
-                            m.kind == "message"
-                                && convs.contains(m.data["conversationId"].as_str().unwrap_or(""))
-                        })
-                        .map(prompts::conversation_key),
-                );
-                records.extend(all.into_iter().filter(|r| {
-                    match r.kind.as_str() {
-                        "message" => {
-                            convs.contains(r.data["conversationId"].as_str().unwrap_or(""))
-                        }
-                        "summary" => r.data["conversationKey"]
-                            .as_str()
-                            .is_some_and(|k| summary_keys.contains(k)),
-                        _ => false,
-                    }
-                }));
+                let convs: Vec<String> = convs.into_iter().collect();
+                let messages = repo.visible_messages_of(&scope, &convs)?;
+                summary_keys.extend(messages.iter().map(prompts::conversation_key));
+                let mut projected =
+                    repo.visible_records_of_kinds(&scope, &["decision", "catalog"])?;
+                projected.extend(messages.iter().cloned());
+                inbox::project_with(&repo, &scope.active, c, &mut projected, &messages)?;
+                summaries.retain(|r| {
+                    r.data["conversationKey"]
+                        .as_str()
+                        .is_some_and(|k| summary_keys.contains(k))
+                });
+                let mut sent: Vec<Record> = projected
+                    .into_iter()
+                    .filter(|r| r.kind == "message")
+                    .chain(summaries)
+                    .collect();
+                ai_jobs::mark_stale_summaries(&mut sent);
+                records.extend(sent);
             }
             let shown: HashSet<RecordKey> = records.iter().map(record_key).collect();
             let removed: Vec<Value> = keys
@@ -1070,5 +1072,82 @@ mod tests {
             "changes-since.json",
             &json!({"before": steady(sorted(&before)), "delta": steady(delta), "after": steady(sorted(&after))}),
         );
+    }
+
+    /// Times a full snapshot against deltas on a workspace the size of a real one (about 18 MB,
+    /// as measured 2026-11-20). Run by hand:
+    /// `cargo test --lib measure_snapshot_against_deltas -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn measure_snapshot_against_deltas() {
+        let (_dir, core) = core();
+        connect(&core);
+        let body = "lorem ipsum ".repeat(250);
+        {
+            let mut r = core.repo().unwrap();
+            for i in 0..3000 {
+                let mut m = mail(
+                    &format!("f{i}"),
+                    &format!("conv-{}", i % 600),
+                    i,
+                    i % 4 == 0,
+                    &body,
+                );
+                m.updated_at = 1_795_000_000 + i;
+                r.put_record(&m).unwrap();
+            }
+            for i in 0..1500 {
+                let mut note = provider(&format!("n{i}"), "note", "local", json!({"text": body}));
+                note.connection_id = None;
+                note.workspace_id = Some("personal".into());
+                r.put_record(&note).unwrap();
+            }
+        }
+        let timed = |label: &str, start: std::time::Instant, bytes: usize| {
+            println!(
+                "{label}: {} ms, {} KB",
+                start.elapsed().as_millis(),
+                bytes / 1024
+            );
+        };
+        let start = std::time::Instant::now();
+        let before = snapshot(&core).await;
+        timed(
+            "full snapshot (read + JSON)",
+            start,
+            before.to_string().len(),
+        );
+        write(
+            &core,
+            Operation::LocalSave,
+            json!({"kind": "commitment", "text": "Accept me", "status": "todo"}),
+        )
+        .await;
+        let start = std::time::Instant::now();
+        let delta = since(&core, &before).await;
+        timed("delta after one task save", start, delta.to_string().len());
+        let after_task = apply(&before, &delta).unwrap();
+        for i in 0..50 {
+            put(
+                &core,
+                mail(
+                    &format!("new{i}"),
+                    &format!("conv-{}", i % 10),
+                    10_000 + i,
+                    false,
+                    "A new reply",
+                ),
+            );
+        }
+        let start = std::time::Instant::now();
+        let delta = since(&core, &after_task).await;
+        timed(
+            "delta after 50 new mails in 10 conversations",
+            start,
+            delta.to_string().len(),
+        );
+        let start = std::time::Instant::now();
+        let whole = snapshot(&core).await;
+        timed("full snapshot again", start, whole.to_string().len());
     }
 }
