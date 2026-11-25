@@ -320,7 +320,19 @@ impl Core {
             zone: &zone,
             texts: &texts,
         };
-        let ctx = prompts::draft_context(&*self.repo()?, &w, &source, &c, &opts, &reading)?;
+        // Every reply draft carries the user's voice and facts (reply voice design §4, ruling
+        // 5); the asks run before the context is built, never under a lock.
+        let voice = self.voice_for_draft(&w, &c, &source, &run.cancel).await;
+        let ctx = prompts::draft_context(
+            &*self.repo()?,
+            &w,
+            &source,
+            &c,
+            &opts,
+            &reading,
+            voice.voice.as_deref(),
+            voice.facts.as_deref(),
+        )?;
         let spec = RunSpec {
             purpose: wire_name(purpose),
             profile_id: resolved.profile.id.clone(),
@@ -354,7 +366,13 @@ impl Core {
                 "The conversation changed while Claude was drafting. Draft again.",
             ));
         }
-        let made = provenance(resolved.profile_of(&used), &outcome, used.model, &ctx);
+        let made = provenance(
+            resolved.profile_of(&used),
+            &outcome,
+            used.model,
+            &ctx,
+            voice.provenance.as_ref(),
+        );
         // The reply being changed is only for this run; the stored draft keeps its own options.
         let mut options = json!(opts);
         if let Some(obj) = options.as_object_mut() {
@@ -429,7 +447,7 @@ impl Core {
                 "latestMessageId": ctx.newest.id,
                 "latestRevision": ctx.newest.revision,
                 "latestFingerprint": ctx.newest.fingerprint,
-                "provenance": provenance(resolved.profile_of(&used), &outcome, used.model.clone(), &ctx),
+                "provenance": provenance(resolved.profile_of(&used), &outcome, used.model.clone(), &ctx, None),
             }),
         };
         let stored = stored_job(&r, job)?;
@@ -887,15 +905,17 @@ pub(super) fn stored_job(r: &repository::Repository, job: &Job) -> Result<Job> {
 }
 
 /// Where a draft or summary came from: "Drafted with Claude Code · Sonnet · 4 s · from 5
-/// messages", the Context disclosure (the message ids), and whether some Outlook text was
-/// only its preview (`partialText`).
+/// messages", the Context disclosure (the message ids), whether some Outlook text was only its
+/// preview (`partialText`), and for a reply draft what of the user's voice and facts shaped it
+/// (`voice`, reply voice design §4 "Provenance"; left out when none was added).
 pub(super) fn provenance(
     profile: &AiProfile,
     outcome: &RunOutcome,
     requested_model: Option<String>,
     ctx: &prompts::PromptInput,
+    voice: Option<&Value>,
 ) -> Value {
-    json!({
+    let mut made = json!({
         "profile": profile.id,
         "model": outcome.model.clone().or(requested_model).or_else(|| profile.default_model.clone()),
         "durationMs": outcome.duration_ms,
@@ -903,7 +923,11 @@ pub(super) fn provenance(
         "messageIds": ctx.message_ids,
         "partialText": ctx.partial_text,
         "at": now(),
-    })
+    });
+    if let Some(voice) = voice {
+        made["voice"] = voice.clone();
+    }
+    made
 }
 
 /// Sets `stale` on every summary in a snapshot: true when its conversation's newest message
@@ -2594,6 +2618,313 @@ mod tests {
                     "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
                 );
             }
+        }
+    }
+
+    // Reply voice (design §4, §10): every reply draft carries the user's voice and facts.
+    mod voice {
+        use super::*;
+        use crate::workspace::voice::draft::tests::{
+            atlas_facts, calls_of, priya_context, priya_mail, ready_voice, SENTINEL,
+        };
+        use crate::workspace::voice::fake::FakeVoice;
+        use std::time::Instant;
+
+        struct Env {
+            _dir: tempfile::TempDir,
+            core: Arc<Core>,
+            runner: Arc<FakeRunner>,
+            voice: Arc<FakeVoice>,
+        }
+
+        /// A signed-in core with Knowledge chosen and its copy ready (`extra` in the style card,
+        /// Priya's profile and about), and Priya's mail `p1` saying `text` (also its full text).
+        fn env(text: &str, extra: &str) -> Env {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Arc::new(FakeRunner::new(
+                (0..3).map(|_| Ok(draft_answer())).collect(),
+            ));
+            let graph = Arc::new(FakeGraph::default());
+            let core = test_core_with_graph(dir.path(), runner.clone(), ready(), graph.clone());
+            seed(&core);
+            let voice = ready_voice(&core, extra);
+            put(
+                &core,
+                priya_mail("p1", "conv-p", now() - 60, false, "re: next steps", text),
+            );
+            graph.answer(
+                &body_url("p1"),
+                json!({"uniqueBody": {"contentType": "text", "content": text}}),
+            );
+            Env {
+                _dir: dir,
+                core,
+                runner,
+                voice,
+            }
+        }
+
+        impl Env {
+            /// Asks for a draft of `p1` (with `extra` request fields) and runs it.
+            async fn draft(&self, extra: Value) -> Record {
+                let mut data = json!({"sourceId": "p1"});
+                for (k, v) in extra.as_object().unwrap() {
+                    data[k] = v.clone();
+                }
+                self.core
+                    .request(draft_request(&self.core, data))
+                    .await
+                    .unwrap();
+                run_jobs(&self.core).await;
+                draft(&self.core, "ai:p1").expect("the p1 draft")
+            }
+            fn last_spec(&self) -> RunSpec {
+                self.runner.calls().last().unwrap().clone()
+            }
+        }
+
+        #[tokio::test]
+        async fn a_draft_carries_the_voice_from_the_provider() {
+            let e = env("Could you share the rollout plan today?", "");
+            e.voice.answer("context", priya_context(""));
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input;
+            let voice = input["voice"].as_str().expect("a voice field");
+            assert!(
+                voice.contains("<person name=\"Priya N.\"><writing>"),
+                "{voice}"
+            );
+            assert!(
+                voice.contains("From the provider: two lines at most."),
+                "the context answer was merged: {voice}"
+            );
+            assert!(voice.contains(
+                "<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>"
+            ));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "provider");
+            assert_eq!(p["provider"], "Knowledge");
+            assert_eq!(p["person"], "Priya N.");
+            let asks = calls_of(&e.voice, "context");
+            assert_eq!(
+                asks,
+                vec![
+                    json!({"person": {"name": "Priya N.", "address": "priya.n@example.test", "id": null},
+                    "channel": "mail", "subject": "re: next steps"})
+                ]
+            );
+            assert!(!serde_json::to_string(&e.voice.calls())
+                .unwrap()
+                .contains("rollout plan"));
+        }
+
+        #[tokio::test]
+        async fn a_draft_carries_facts_from_the_provider() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            let d = e.draft(json!({})).await;
+            let asks = calls_of(&e.voice, "facts");
+            assert_eq!(
+                asks,
+                vec![json!({"terms": ["EPM-1234", "Atlas Rollout"], "personId": "priya-n"})]
+            );
+            assert!(!serde_json::to_string(&e.voice.calls())
+                .unwrap()
+                .contains("Can we move"));
+            let input = e.last_spec().input;
+            let facts = input["facts"].as_str().expect("a facts field");
+            assert!(
+                facts.starts_with("<facts provider=\"Knowledge\">"),
+                "{facts}"
+            );
+            assert!(facts
+                .contains("<fact source=\"projects/atlas-rollout.md\" title=\"Atlas rollout\">"));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(
+                p["facts"],
+                json!([{"id": "projects/atlas-rollout.md", "title": "Atlas rollout"},
+                       {"id": "tickets/epm-1234.md", "title": "EPM-1234"}])
+            );
+            assert_eq!(p["factsMissed"], false);
+            assert!(
+                !d.data["provenance"].to_string().contains("Go-live"),
+                "never a fact's text"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_provider_that_misses_facts_marks_facts_missed() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            e.voice.delay("facts", Duration::from_secs(10));
+            let started = Instant::now();
+            let d = e.draft(json!({})).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "{:?}",
+                started.elapsed()
+            );
+            let input = e.last_spec().input;
+            assert!(input.get("facts").is_none());
+            assert!(input["voice"]
+                .as_str()
+                .unwrap()
+                .contains("From the provider"));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "provider");
+            assert_eq!(p["factsMissed"], true);
+            assert_eq!(p["facts"], json!([]));
+        }
+
+        #[tokio::test]
+        async fn a_provider_that_does_not_answer_in_3s_drafts_from_the_copy() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            e.voice.delay("context", Duration::from_secs(10));
+            e.voice.delay("facts", Duration::from_secs(10));
+            let started = Instant::now();
+            let d = e.draft(json!({})).await;
+            let took = started.elapsed();
+            assert!(took < Duration::from_secs(4), "{took:?}");
+            assert!(
+                took >= Duration::from_millis(2_900),
+                "it waited the window: {took:?}"
+            );
+            let input = e.last_spec().input;
+            let voice = input["voice"].as_str().unwrap();
+            assert!(
+                voice.contains("Short sentences; no small talk."),
+                "the copy: {voice}"
+            );
+            assert!(!voice.contains("From the provider"));
+            assert!(input.get("facts").is_none());
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "copy");
+            assert_eq!(p["factsMissed"], true);
+        }
+
+        #[tokio::test]
+        async fn off_adds_no_voice() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            {
+                let mut r = e.core.repo().unwrap();
+                let mut s = r.settings().unwrap();
+                s.voice.provider = "off".into();
+                r.settings_update(&s).unwrap();
+            }
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input;
+            assert!(input.get("voice").is_none());
+            assert!(input.get("facts").is_none());
+            assert!(d.data["provenance"].get("voice").is_none());
+            assert!(e.voice.calls().is_empty(), "no provider call");
+        }
+
+        /// Tell AI (a revise) and Regenerate (the same draft asked again) both ask again and carry
+        /// the voice and the facts.
+        #[tokio::test]
+        async fn revise_and_regenerate_carry_the_voice() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            for _ in 0..2 {
+                e.voice.answer("context", priya_context(""));
+                e.voice.answer("facts", atlas_facts(""));
+            }
+            e.draft(json!({})).await;
+            let first = e.last_spec().input;
+            assert!(first["voice"].is_string() && first["facts"].is_string());
+            let d = e
+                .draft(json!({"revise": "Sure, next week.", "instructions": "Shorter."}))
+                .await;
+            let input = e.last_spec().input;
+            assert!(input["draft"].is_string());
+            assert!(input["voice"].is_string());
+            assert!(input["facts"].is_string());
+            assert_eq!(
+                calls_of(&e.voice, "facts").len(),
+                2,
+                "facts are asked again"
+            );
+            assert_eq!(d.data["provenance"]["voice"]["factsMissed"], false);
+        }
+
+        #[tokio::test]
+        async fn the_ledger_holds_no_voice_or_fact_text() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", SENTINEL);
+            e.voice.answer("context", priya_context(SENTINEL));
+            e.voice.answer("facts", atlas_facts(SENTINEL));
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input.to_string();
+            assert!(input.contains(SENTINEL), "the run itself reads them");
+            let runs = ai_runs(&e.core);
+            assert!(!runs.is_empty());
+            for run in runs {
+                let text = serde_json::to_string(&run).unwrap();
+                assert!(!text.contains(SENTINEL), "the ledger: {text}");
+            }
+            let jobs = serde_json::to_string(&e.core.repo().unwrap().jobs().unwrap()).unwrap();
+            assert!(!jobs.contains(SENTINEL), "the job");
+            assert!(
+                !d.data["provenance"].to_string().contains(SENTINEL),
+                "the provenance"
+            );
+        }
+
+        /// `draft-ai.json`'s record plus `provenance.voice` with two examples and two facts.
+        /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+        #[tokio::test]
+        async fn contract_fixtures_match_the_voice_draft() {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Arc::new(FakeRunner::new(vec![Ok(draft_answer())]));
+            let graph = Arc::new(FakeGraph::default());
+            let core = test_core_with_graph(dir.path(), runner, ready(), graph.clone());
+            seed(&core);
+            budget_thread(&core, Some(&graph));
+            let voice = ready_voice(&core, "");
+            // Two of the user's earlier mails to Ann, in another thread.
+            for (id, days) in [("e1", 2), ("e2", 4)] {
+                let mut m = mail(
+                    id,
+                    now() - days * 86_400,
+                    "Taylor Reed",
+                    true,
+                    "Done, sent.",
+                );
+                m.data["conversationId"] = "conv-e".into();
+                m.data["to"] =
+                    json!([{"emailAddress": {"name": "Ann Lee", "address": "ann@example.test"}}]);
+                put(&core, m);
+            }
+            let mut m3 = core
+                .repo()
+                .unwrap()
+                .record("message", "m3", Some(ACCT), None)
+                .unwrap();
+            m3.data["title"] = "Q3 budget for Atlas Rollout".into();
+            put(&core, m3);
+            voice.answer(
+                "context",
+                json!({"style": null, "person": null, "rules": []}),
+            );
+            voice.answer("facts", atlas_facts(""));
+            core.request(draft_request(
+                &core,
+                json!({"sourceId": "m3", "intent": "reply", "tone": "friendly", "length": "short"}),
+            ))
+            .await
+            .unwrap();
+            run_jobs(&core).await;
+            let record = draft(&core, "ai:m3").unwrap();
+            let p = &record.data["provenance"]["voice"];
+            assert_eq!(p["examples"], 2);
+            assert_eq!(p["facts"].as_array().unwrap().len(), 2);
+            let mut v = serde_json::to_value(&record).unwrap();
+            v["revision"] = "rev-1".into();
+            v["updatedAt"] = 1_795_000_500.into();
+            v["data"]["provenance"]["at"] = 1_795_000_500.into();
+            crate::plugins::testkit::contract_fixture("draft-ai-voice.json", &v);
         }
     }
 }

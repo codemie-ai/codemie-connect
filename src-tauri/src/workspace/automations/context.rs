@@ -57,6 +57,11 @@ pub struct Run<'a> {
     /// stored (`seenAt`) at or after this is read too, though it arrived before `since` (a late
     /// sync), as long as it arrived within the last three days. `None` on a first run.
     pub seen_since: Option<i64>,
+    /// The user's `<voice>` and `<facts>` blocks for the reply draft (reply voice design §4:
+    /// an automation that drafts gets the same fields as a manual draft); only read when
+    /// `draft` is set.
+    pub voice: Option<&'a str>,
+    pub facts: Option<&'a str>,
 }
 
 /// One block Claude read, and the record it stands for.
@@ -169,6 +174,12 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
     }
     if run.draft {
         input["draftReply"] = true.into();
+        if let Some(voice) = run.voice {
+            input["voice"] = voice.into();
+        }
+        if let Some(facts) = run.facts {
+            input["facts"] = facts.into();
+        }
     }
     if a.deliver.create_tasks {
         input["createTasks"] = true.into();
@@ -300,7 +311,16 @@ fn trigger_conversation(
     trigger: &Record,
     reading: &Reading,
 ) -> Result<(PromptInput, Vec<Block>, usize)> {
-    let ctx = prompts::draft_context(repo, w, trigger, c, &DraftOptions::default(), reading)?;
+    let ctx = prompts::draft_context(
+        repo,
+        w,
+        trigger,
+        c,
+        &DraftOptions::default(),
+        reading,
+        None,
+        None,
+    )?;
     let total = prompts::reply_thread(repo, w, c, trigger)?.len();
     let window: HashMap<String, Record> = prompts::draft_window(repo, w, c, trigger)?
         .into_iter()
@@ -871,6 +891,8 @@ mod tests {
             me: &me,
             since: None,
             seen_since: None,
+            voice: None,
+            facts: None,
         };
         build(r, &run, &reading).unwrap()
     }
@@ -1135,6 +1157,8 @@ mod tests {
             me: &me,
             since: Some(since),
             seen_since: None,
+            voice: None,
+            facts: None,
         };
         let built = build(&r, &run, &reading).unwrap();
         let blocks: Vec<&str> = built.input["recentMessages"]

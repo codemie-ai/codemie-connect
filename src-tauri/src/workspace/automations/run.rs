@@ -489,6 +489,14 @@ impl Core {
             }
             _ => FullTexts::new(),
         };
+        // A reply draft carries the user's voice and facts like a manual one (reply voice design
+        // §4, ruling 5); nothing else an automation writes does.
+        let voice = match (&account, message) {
+            (Some(c), Some(s)) if wants_draft => {
+                self.voice_for_draft(&w, c, s, &started.cancel).await
+            }
+            _ => Default::default(),
+        };
         let (zone, last_ok) = {
             let r = self.repo()?;
             (r.settings()?.time_zone, r.last_ok_started(&a.id, &log.id)?)
@@ -509,6 +517,8 @@ impl Core {
             since: Some(recent_since(last_ok, reading.now)),
             // A message synced after the last run started is read though it arrived earlier.
             seen_since: last_ok.map(|_| recent_since(last_ok, reading.now)),
+            voice: voice.voice.as_deref(),
+            facts: voice.facts.as_deref(),
         };
         let built = context::build(&*self.repo()?, &run, &reading)?;
         log.sources = built.sources.iter().map(Source::to_json).collect();
@@ -576,7 +586,13 @@ impl Core {
                 };
                 // A conversation that changed (or went away) while Claude worked gets no draft.
                 if still_readable(&r, &of)? {
-                    let mut made = provenance(&ran_on, &outcome, used.model, conversation);
+                    let mut made = provenance(
+                        &ran_on,
+                        &outcome,
+                        used.model,
+                        conversation,
+                        voice.provenance.as_ref(),
+                    );
                     made["automationId"] = log.automation_id.clone().into();
                     made["runId"] = log.id.clone().into();
                     Some(ai_draft_record(&of, text, &[], Value::Null, made))
@@ -3209,6 +3225,86 @@ mod tests {
                 "automation-run-summary.json is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
             );
         }
+    }
+
+    /// Reply voice design §4, ruling 5: an automation's reply draft (here the Budget request
+    /// reply) gets the same `voice` and `facts` as a manual one, and its draft record's
+    /// provenance says so.
+    #[tokio::test]
+    async fn an_automation_draft_carries_the_voice() {
+        use crate::workspace::voice::draft::tests::{atlas_facts, calls_of, ready_voice};
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let voice = ready_voice(&core, "");
+        voice.answer(
+            "context",
+            json!({"style": null, "person": null, "rules": []}),
+        );
+        voice.answer("facts", atlas_facts(""));
+        let mut automation = reply_automation();
+        automation["name"] = "Budget request reply".into();
+        ann_writes_to(&core, &graph, automation).await;
+        let mut m1 = core
+            .repo()
+            .unwrap()
+            .record("message", "m1", Some(ACCT), None)
+            .unwrap();
+        m1.data["title"] = "Q3 budget for Atlas Rollout".into();
+        put(&core, m1);
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let input = &fake.calls()[0].input;
+        let block = input["voice"].as_str().expect("a voice field");
+        assert!(
+            block.contains("<rule applies=\"everyone\">Never promise a date.</rule>"),
+            "{block}"
+        );
+        assert!(input["facts"]
+            .as_str()
+            .unwrap()
+            .contains("projects/atlas-rollout.md"));
+        let ask = &calls_of(&voice, "context")[0];
+        assert_eq!(ask["person"]["address"], "ann@example.test");
+        assert!(!ask.to_string().contains("Q3 numbers"), "no message text");
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .unwrap();
+        let p = &draft.data["provenance"];
+        assert_eq!(p["automationId"], "auto-reply");
+        assert_eq!(p["voice"]["from"], "provider");
+        assert_eq!(p["voice"]["facts"].as_array().unwrap().len(), 2);
+        // The run record itself carries no voice or fact text.
+        let run = run_of(&core, &done.id);
+        assert!(!run.data.to_string().contains("Never promise a date."));
+        assert!(!run.data.to_string().contains("Go-live"));
+    }
+
+    /// Nothing but a reply draft carries the voice (ruling 5): a triage run asks the provider
+    /// nothing and its input has no `voice` or `facts`.
+    #[tokio::test]
+    async fn a_triage_run_without_a_draft_gets_no_voice() {
+        use crate::workspace::voice::draft::tests::ready_voice;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let voice = ready_voice(&core, "");
+        let mut automation = reply_automation();
+        automation["deliver"] = json!({"today": true, "createTasks": true});
+        ann_writes_to(&core, &graph, automation).await;
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let input = &fake.calls()[0].input;
+        assert!(input.get("voice").is_none());
+        assert!(input.get("facts").is_none());
+        assert!(voice.calls().is_empty());
     }
 
     #[tokio::test]

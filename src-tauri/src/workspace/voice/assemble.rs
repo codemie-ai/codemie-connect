@@ -298,7 +298,7 @@ fn words_of(s: &str) -> BTreeSet<String> {
 /// `ids`; a mail address in `addresses` (case-insensitive); a folded name equal to one of
 /// `name`/`names`. Two people tying at any step is treated the same as no match at that step
 /// (spec: "Two people matching the same name → none").
-fn match_person<'a>(people: &'a [Person], target: &DraftTarget) -> Option<&'a Person> {
+pub(super) fn match_person<'a>(people: &'a [Person], target: &DraftTarget) -> Option<&'a Person> {
     if let Some(fid) = &target.from_id {
         if let Some(p) = unique(people.iter().filter(|p| p.ids.iter().any(|id| id == fid))) {
             return Some(p);

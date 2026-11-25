@@ -14,6 +14,7 @@ use std::time::Duration;
 
 pub mod assemble;
 pub mod copy;
+pub mod draft;
 pub mod facts;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a voice provider yet
