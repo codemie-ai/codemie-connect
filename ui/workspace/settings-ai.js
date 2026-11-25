@@ -86,7 +86,9 @@ const shortLabel = (profiles, id) => { const p = profiles.find(x => x.id === id)
 
 /** Ollama treats a name without a tag as `:latest`. */
 const tagged = (p, id) => (isOllama(p) && id && !String(id).includes(':') ? `${id}:latest` : id);
-const offers = (p, model) => !model || (p?.models || []).some(m => tagged(p, m.id) === tagged(p, model));
+// A profile that lists no model can't say one is missing (Rust's `lacks_model`).
+const listed = p => (p?.models || []).filter(m => m.id);
+const offers = (p, model) => !model || !listed(p).length || listed(p).some(m => tagged(p, m.id) === tagged(p, model));
 
 /**
  * A row's status from Rust's `chosen` for it (which carries the row's saved model) and the

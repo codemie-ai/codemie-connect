@@ -141,8 +141,14 @@ pub fn resolve_plugin(
 /// The error of a ready profile that doesn't offer the row's model (spec §4: the row then
 /// reads "Using fallback" or "<Profile> doesn't offer <model>."), so a run never goes to a
 /// model that isn't there. Only asked of a ready profile: one that can't list its models
-/// (Ollama not running) is not ready, and the saved model is kept for when it is.
+/// (Ollama not running) is not ready, and the saved model is kept for when it is. A ready
+/// profile that lists no model at all (a CodeMie profile without model fields, an Ollama with
+/// nothing pulled and no default) can't say one is missing, so nothing is. Saving still asks
+/// for a listed model.
 fn lacks_model(profile: &AiProfile, model: Option<&str>) -> Option<AiError> {
+    if !profile.models.iter().any(|m| !m.id.is_empty()) {
+        return None;
+    }
     let model = model.filter(|m| !m.is_empty() && !offers_model(profile, m))?;
     let mut e = AiError::new(ErrorClass::NotConfigured);
     e.message = format!("{} doesn't offer {model}.", profile.label);
@@ -1471,6 +1477,21 @@ pub(super) mod tests {
             resolve(&s, &profiles, &k).unwrap().profile.id,
             "codemie:local"
         );
+        // A ready profile that lists no models (a CodeMie profile with no model fields, an
+        // Ollama with nothing pulled and no default) can't say a model is missing: it runs.
+        let unlisted = [
+            ollama("codemie:local", &[]),
+            ollama("codemie:blank", &[""]),
+            profile("claude", ProfileState::Ready),
+        ];
+        for id in ["codemie:local", "codemie:blank"] {
+            let s = settings(json!({"defaultProfile": id, "defaultModel": "qwen3:8b",
+                "defaultFallback": "claude"}));
+            let r = resolve(&s, &unlisted, &k).unwrap();
+            assert_eq!(r.profile.id, id);
+            assert_eq!(r.model.as_deref(), Some("qwen3:8b"));
+            assert_eq!(r.fell_back_from, None);
+        }
     }
 
     #[tokio::test]
@@ -1907,6 +1928,10 @@ pub(super) mod tests {
             ollama("codemie:local-ollama", &["llama3.2:latest"]),
         ];
         let closed = vec![profile("claude", ProfileState::Ready), stopped];
+        let unlisted = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:local-ollama", &[]),
+        ];
         let signed_out = vec![
             profile("claude", ProfileState::Ready),
             profile("codemie:prod", ProfileState::NeedsLogin),
@@ -1940,6 +1965,11 @@ pub(super) mod tests {
                 "missing model, no fallback",
                 ollama_row("qwen3:8b", None),
                 &running,
+            ),
+            (
+                "no model list, fallback",
+                ollama_row("qwen3:8b", Some("claude")),
+                &unlisted,
             ),
             (
                 "cannot list, fallback",

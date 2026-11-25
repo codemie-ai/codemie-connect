@@ -238,6 +238,7 @@ test('route_state_says_what_a_run_does', () => {
   // (ai-route-status-cases.json), so a row never promises a fallback the run doesn't make.
   const cases = JSON.parse(readFileSync(new URL('./fixtures/contract/ai-route-status-cases.json', import.meta.url), 'utf8'));
   assert.ok(cases.some(c => c.name === 'missing model, fallback' && c.state === 'fallback'));
+  assert.ok(cases.some(c => c.name === 'no model list, fallback' && c.state === 'working'));
   for (const c of cases) {
     const { state, using } = routeState(c.chosen, c.profiles);
     assert.deepEqual({ state, using }, { state: c.state, using: c.using }, c.name);

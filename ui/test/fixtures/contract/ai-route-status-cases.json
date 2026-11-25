@@ -431,6 +431,72 @@
       "model": "qwen3:8b",
       "profile": "codemie:local-ollama"
     },
+    "name": "no model list, fallback",
+    "profiles": [
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "claude",
+        "kind": {
+          "type": "native"
+        },
+        "label": "claude",
+        "local": null,
+        "message": null,
+        "models": [
+          {
+            "id": "",
+            "label": ""
+          },
+          {
+            "id": "haiku",
+            "label": "haiku"
+          },
+          {
+            "id": "sonnet",
+            "label": "sonnet"
+          }
+        ],
+        "provider": null,
+        "state": "ready",
+        "version": null
+      },
+      {
+        "account": {
+          "email": null,
+          "method": null,
+          "org": null,
+          "plan": null
+        },
+        "defaultModel": null,
+        "id": "codemie:local-ollama",
+        "kind": {
+          "name": "local-ollama",
+          "type": "code_mie"
+        },
+        "label": "codemie:local-ollama",
+        "local": true,
+        "message": null,
+        "models": [],
+        "provider": "ollama",
+        "state": "ready",
+        "version": null
+      }
+    ],
+    "state": "working",
+    "using": "codemie:local-ollama"
+  },
+  {
+    "chosen": {
+      "fallback": "claude",
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
     "name": "cannot list, fallback",
     "profiles": [
       {
