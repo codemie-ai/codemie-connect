@@ -44,20 +44,75 @@ const SEPARATORS: [&str; 5] = [
     "-----Оригінальне повідомлення-----",
     "__________",
 ];
-/// "On <date>, <name> wrote:" and its forms: the cut goes back to the opening word.
-const WROTE: [(&str, &[&str]); 5] = [
+/// "On <date>, <name> wrote:" and its forms. English runs on after the user's text, so the cut
+/// goes back to "On "; the Russian and Ukrainian forms start with the date, so the cut is at the
+/// start of their line.
+const WROTE: [(&str, &[&str]); 7] = [
     ("wrote:", &["On "]),
-    ("пишет:", &["В ", "в "]),
-    ("написал:", &["В ", "в "]),
-    ("пише:", &["У ", "у ", "В "]),
-    ("написав:", &["У ", "у ", "В "]),
+    ("пишет:", &[]),
+    ("написал:", &[]),
+    ("написал(а):", &[]),
+    ("пише:", &[]),
+    ("написав:", &[]),
+    ("написав(-ла):", &[]),
 ];
-/// How far back from "wrote:" its opening word is looked for, in bytes.
-const WROTE_BACK: usize = 300;
+/// How far around a marker its partner is looked for, in bytes (always widened or narrowed to
+/// a character boundary).
+const NEAR: usize = 300;
+/// Mail clients' own footer lines ("Sent from my iPhone"), never the user's words. Only a line
+/// this short is taken for one.
+const FOOTERS: [&str; 7] = [
+    "Get Outlook for",
+    "Sent from my ",
+    "Sent from Outlook",
+    "Sent from Mail for",
+    "Отправлено с ",
+    "Надіслано з ",
+    "Envoyé de mon",
+];
+const FOOTER_MAX: usize = 80;
 
-/// The byte offset of the start of the line holding `at`.
+/// The largest character boundary of `s` at or below `n`.
+fn floor_boundary(s: &str, n: usize) -> usize {
+    let mut n = n.min(s.len());
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+/// The smallest character boundary of `s` at or above `n`.
+fn ceil_boundary(s: &str, n: usize) -> usize {
+    let mut n = n.min(s.len());
+    while !s.is_char_boundary(n) {
+        n += 1;
+    }
+    n
+}
+
+/// The byte offset of the start of the line holding `at` (a character boundary).
 fn line_start(text: &str, at: usize) -> usize {
     text[..at].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// The lines of `text` with the byte offset each starts at.
+fn lines_at(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.split_inclusive('\n').scan(0, |at, line| {
+        let start = *at;
+        *at += line.len();
+        Some((start, line))
+    })
+}
+
+/// "… Priya <priya.n@example.test> написал(а):", "пн, 24 нояб. …, Priya <priya@…>:": a line
+/// naming someone by `<address>` and ending in a colon introduces a quote, in any language.
+fn is_attribution(line: &str) -> bool {
+    let line = line.trim_end();
+    line.ends_with(':')
+        && line.find('<').is_some_and(|open| {
+            let rest = &line[open..];
+            rest.find('@').is_some_and(|at| rest[at..].contains('>'))
+        })
 }
 
 /// Where the quoted original starts in a mail preview, if it does.
@@ -69,8 +124,7 @@ fn quote_start(text: &str) -> Option<usize> {
     for from in HEADER_FROM {
         for (at, _) in text.match_indices(from) {
             let at_line_start = text[line_start(text, at)..at].trim().is_empty();
-            let rest = &text[at..];
-            let rest = &rest[..rest.len().min(WROTE_BACK)];
+            let rest = &text[at..floor_boundary(text, at + NEAR)];
             let followed = HEADER_NEXT.iter().any(|n| rest.contains(n));
             let after_space = at == 0 || text[..at].ends_with(char::is_whitespace);
             if (at_line_start || followed) && after_space {
@@ -81,10 +135,7 @@ fn quote_start(text: &str) -> Option<usize> {
     }
     for (word, openers) in WROTE {
         if let Some(at) = text.find(word) {
-            let mut from = at.saturating_sub(WROTE_BACK);
-            while !text.is_char_boundary(from) {
-                from += 1;
-            }
+            let from = ceil_boundary(text, at.saturating_sub(NEAR));
             let opener = openers
                 .iter()
                 .filter_map(|o| text[from..at].rfind(o).map(|i| from + i))
@@ -92,7 +143,17 @@ fn quote_start(text: &str) -> Option<usize> {
             cuts.push(opener.unwrap_or_else(|| line_start(text, at)));
         }
     }
+    cuts.extend(
+        lines_at(text)
+            .find(|(_, line)| is_attribution(line))
+            .map(|(at, _)| at),
+    );
     cuts.into_iter().min()
+}
+
+/// A mail client's footer line.
+fn is_footer(line: &str) -> bool {
+    line.chars().count() <= FOOTER_MAX && FOOTERS.iter().any(|f| line.starts_with(f))
 }
 
 /// `text` without its email addresses: each word holding an `@` with a dot after it goes, with
@@ -108,15 +169,25 @@ fn without_addresses(text: &str) -> String {
         .collect()
 }
 
-/// A message's text as the user wrote it: a mail's quoted original cut off, addresses removed,
-/// sanitized and cut to `TEXT_MAX`.
+/// A message's text as the user wrote it: a mail's quoted original cut off, with its `>` lines
+/// and a client's footer dropped; sanitized and cut to `TEXT_MAX`, then addresses removed (after
+/// sanitizing, so a character it deletes can't join an address back together).
 fn own_text(raw: &str, mail: bool) -> String {
     let mine = if mail {
-        &raw[..quote_start(raw).unwrap_or(raw.len())]
+        raw[..quote_start(raw).unwrap_or(raw.len())]
+            .lines()
+            .filter(|l| {
+                let l = l.trim();
+                !l.starts_with('>') && !is_footer(l)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
-        raw
+        raw.to_string()
     };
-    sanitize_text(&without_addresses(mine), TEXT_MAX)
+    without_addresses(&sanitize_text(&mine, TEXT_MAX))
+        .trim()
+        .to_string()
 }
 
 /// What to read: `channel` `mail`, `chat` or `all`; `days` 1–180; `limit` 1–200 (both clamped);
@@ -300,4 +371,90 @@ pub fn own_sent(repo: &Repository, f: &SentFilter, now: i64) -> Result<Vec<SentI
     items.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.record_id.cmp(&b.record_id)));
     items.truncate(limit);
     Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cyrillic (two bytes a letter) after a header, at every byte alignment and length around
+    /// every limit: never a slice inside a character, always cut at the header.
+    #[test]
+    fn long_cyrillic_quotes_never_split_a_character() {
+        for header in ["От: ", "Від: ", "From: ", "De: "] {
+            for pad in 0..4 {
+                for len in [140, 149, 150, 151, 160, 300, 1_200] {
+                    let quote: String = "о".repeat(len);
+                    for next in ["Отправлено: понедельник", ""] {
+                        let raw = format!(
+                            "Ок.\n{header}Прія Наталенко{} {quote} {next}",
+                            " ".repeat(pad)
+                        );
+                        let mine = own_text(&raw, true);
+                        assert_eq!(mine, "Ок.", "{header:?} pad {pad} len {len}");
+                        let inline = format!("Ок. {header}Прія{} {quote} {next} ", " ".repeat(pad));
+                        own_text(&inline, true);
+                    }
+                }
+            }
+        }
+        for len in 0..700 {
+            let raw = format!("{}wrote: {}", "ы".repeat(len), "я".repeat(len % 7));
+            own_text(&raw, true);
+            own_text(&raw, false);
+        }
+    }
+
+    #[test]
+    fn other_quote_shapes_and_footers_are_cut() {
+        let cases = [
+            // `>` lines with no attribution, before and between the user's lines.
+            ("Sure\r\n\r\n> Can you send the SOW?\r\n> Priya", "Sure"),
+            ("Agreed.\r\n> question\r\n  >> older\r\nYes, today.", "Agreed.\nYes, today."),
+            // macOS Mail in Russian and Ukrainian.
+            (
+                "Да, пришлю.\r\n\r\n24 нояб. 2026 г., в 10:00, Прія <priya.n@example.test> написал(а):\r\n\r\nМожешь прислать?",
+                "Да, пришлю.",
+            ),
+            (
+                "Так.\r\n\r\n24 лист. 2026 р. о 10:00 Прія <priya.n@example.test> написав(-ла):\r\nЧи можна?",
+                "Так.",
+            ),
+            // The Ukrainian form with no address.
+            ("Так.\r\nПрія написав(-ла):\r\nЧи можна?", "Так."),
+            // Gmail in Russian with no verb.
+            (
+                "Ок\r\n\r\nпн, 24 нояб. 2026 г. в 10:00, Priya <priya.n@example.test>:\r\n\r\nМожешь прислать?",
+                "Ок",
+            ),
+            // Client footers.
+            (
+                "Sure.\r\n\r\nGet Outlook for iOS<https://aka.ms/o0ukef>\r\n________________________________\r\nFrom: Priya",
+                "Sure.",
+            ),
+            ("On my way.\r\n\r\nSent from my iPhone", "On my way."),
+            ("Буду.\nОтправлено с iPhone", "Буду."),
+            ("Буду.\nНадіслано з iPhone", "Буду."),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(own_text(raw, true), want, "{raw:?}");
+        }
+    }
+
+    /// An address split by a character sanitizing deletes doesn't come back joined.
+    #[test]
+    fn addresses_are_removed_after_sanitizing() {
+        for raw in [
+            "Write priya@example\u{85}.test today",
+            "Write priya@example\u{0b}.test today",
+            "Write priya@\u{1f}example.test today",
+        ] {
+            let mine = own_text(raw, false);
+            assert!(!mine.contains('@'), "{mine:?}");
+            assert!(
+                mine.starts_with("Write") && mine.ends_with("today"),
+                "{mine:?}"
+            );
+        }
+    }
 }
