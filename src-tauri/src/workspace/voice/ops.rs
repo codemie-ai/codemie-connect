@@ -14,6 +14,7 @@ use crate::workspace::models::{now, Operation, Request, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::Core;
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// `save` and `remove`'s limit (design §1).
@@ -159,6 +160,21 @@ pub(crate) struct Asked {
     kind: &'static str,
     answer: Value,
     removed: Option<copy::Rule>,
+    /// `Core::voice_epoch` when the provider was asked: a delete of the copy since then makes the
+    /// answer stale for the copy.
+    epoch: usize,
+}
+
+/// What a voice edit's operation id keeps as its answer (design §6): an ack with the item's id,
+/// never its text, so no voice text outlives Delete Connect's copy. `Core::voice_replayed`
+/// rebuilds the answer from it.
+pub(in crate::workspace) fn ack(req: &Request, response: &Value) -> Value {
+    if req.op == Operation::VoiceDelete {
+        json!({"voiceAck": true, "ok": true, "op": "delete", "id": response["removed"]["id"]})
+    } else {
+        json!({"voiceAck": true, "ok": true, "op": "save", "kind": req.data["kind"],
+               "id": response["item"]["id"]})
+    }
 }
 
 fn rule_id(data: &Value) -> Result<&str> {
@@ -207,6 +223,7 @@ fn set(core: &Core, r: &mut Repository, data: &Value, now: i64) -> Result<Value>
     }
     if provider != "off" && copy::read_copy(r)?.is_none_or(|c| c.provider != provider) {
         // The copy came from another provider (ruling 12): gone with the choice, in one write.
+        core.voice_epoch.fetch_add(1, Ordering::SeqCst);
         let gone = copy::forget_with(r, &s)?;
         if gone > 0 {
             log::info!("voice: another provider chosen, copy deleted ({gone} records)");
@@ -223,8 +240,10 @@ fn set(core: &Core, r: &mut Repository, data: &Value, now: i64) -> Result<Value>
 /// Writes what the provider accepted into the copy and queues a refresh: the saved item
 /// (`{item}`) or the removed rule (`{removed}`). A provider no longer chosen (switched while it
 /// was asked) leaves the copy alone.
-fn record(r: &mut Repository, asked: &Asked, now: i64) -> Result<Value> {
-    let chosen = r.settings()?.voice.provider == asked.provider;
+fn record(r: &mut Repository, asked: &Asked, epoch: usize, now: i64) -> Result<Value> {
+    // Still the chosen provider, and its copy not deleted since the ask (Delete, then the same
+    // provider chosen again within the ask, review N1).
+    let chosen = r.settings()?.voice.provider == asked.provider && asked.epoch == epoch;
     if let Some(rule) = &asked.removed {
         if chosen {
             copy::remove_rule(r, &rule.id)?;
@@ -244,7 +263,8 @@ fn record(r: &mut Repository, asked: &Asked, now: i64) -> Result<Value> {
 
 /// `voice_forget {}` (design §6): sets Off and deletes every copy record in one transaction;
 /// nothing in the provider's folder is touched.
-fn forget(r: &mut Repository) -> Result<Value> {
+fn forget(core: &Core, r: &mut Repository) -> Result<Value> {
+    core.voice_epoch.fetch_add(1, Ordering::SeqCst);
     let mut s = r.settings()?;
     s.voice.provider = "off".into();
     let deleted = copy::forget_with(r, &s)?;
@@ -261,12 +281,14 @@ impl Core {
                 let (kind, args) = validate_save(&req.data)?;
                 let mut args = args;
                 args["kind"] = json!(kind);
+                let epoch = self.voice_epoch.load(Ordering::SeqCst);
                 let (provider, answer) = through(self, "save", args).await?;
                 Ok(Asked {
                     provider,
                     kind,
                     answer,
                     removed: None,
+                    epoch,
                 })
             }
             Operation::VoiceDelete => {
@@ -276,6 +298,7 @@ impl Core {
                     .ok_or_else(|| {
                         WorkspaceError::new("not_found", "This instruction is no longer there.")
                     })?;
+                let epoch = self.voice_epoch.load(Ordering::SeqCst);
                 let (provider, _) =
                     through(self, "remove", json!({"kind": "rule", "id": id})).await?;
                 Ok(Asked {
@@ -283,6 +306,7 @@ impl Core {
                     kind: "rule",
                     answer: Value::Null,
                     removed: Some(rule),
+                    epoch,
                 })
             }
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
@@ -301,11 +325,12 @@ impl Core {
         let mut r = self.repo()?;
         match req.op {
             Operation::VoiceSet => set(self, &mut r, &req.data, now),
-            Operation::VoiceForget => forget(&mut r),
+            Operation::VoiceForget => forget(self, &mut r),
             Operation::VoiceSave | Operation::VoiceDelete => {
                 let asked = asked
                     .ok_or_else(|| WorkspaceError::new("validation", "Unsupported operation."))?;
-                let recorded = record(&mut r, &asked, now);
+                let epoch = self.voice_epoch.load(Ordering::SeqCst);
+                let recorded = record(&mut r, &asked, epoch, now);
                 drop(r);
                 if recorded.is_err() {
                     self.voice_catch_up(&asked);
@@ -328,6 +353,29 @@ impl Core {
                 e.code
             );
         }
+    }
+
+    /// The answer to a replayed voice edit, rebuilt from its stored ack: a save's item as the
+    /// copy keeps it now (`null` when it is gone), a delete's rule by id. Anything else stored
+    /// (an older answer) is given as it is.
+    pub(in crate::workspace) fn voice_replayed(&self, stored: Value) -> Result<Value> {
+        if stored["voiceAck"] != true {
+            return Ok(stored);
+        }
+        if stored["op"] == "delete" {
+            return Ok(json!({"removed": {"id": stored["id"]}}));
+        }
+        let c = copy::read_copy(&*self.repo()?)?;
+        let item = match (stored["kind"].as_str(), c) {
+            (Some("style"), Some(c)) => c.style.map(|s| json!(s)),
+            (Some("rule"), Some(c)) => c
+                .rules
+                .into_iter()
+                .find(|r| stored["id"] == r.id.as_str())
+                .map(|r| json!(r)),
+            _ => None,
+        };
+        Ok(json!({"item": item}))
     }
 
     /// `voice_read {id}` (read-only): one person's profile from the copy,
@@ -362,6 +410,7 @@ impl Core {
         if !chosen && !owned {
             return Ok(());
         }
+        self.voice_epoch.fetch_add(1, Ordering::SeqCst);
         let deleted = if chosen {
             s.voice.provider = "off".into();
             copy::forget_with(&mut r, &s)?
@@ -1013,8 +1062,11 @@ pub(crate) mod tests {
         let (core, second) = (e.core.clone(), req.clone());
         let b = tokio::spawn(async move { core.request(second).await });
         let first = a.await.unwrap().unwrap();
-        // The first send's refresh runs before the second send's ask ends.
-        e.fake.answer("export", export_answer(""));
+        // The first send's refresh runs before the second send's ask ends; the provider's
+        // export holds the saved rule.
+        let mut export = export_answer("");
+        export["rules"].as_array_mut().unwrap().push(saved_rule());
+        e.fake.answer("export", export);
         e.run_jobs().await;
         assert_eq!(e.refreshes_queued(), 0);
         let second = b.await.unwrap().unwrap();
@@ -1047,15 +1099,140 @@ pub(crate) mod tests {
         let req = mutation(&e.core, Operation::VoiceDelete, json!({"id": "everyone"}));
         let answer = e.core.request(req.clone()).await.unwrap();
         assert_eq!(answer["removed"]["id"], "everyone");
+        // The stored ack holds no rule text, so a replay names the removed rule by its id.
         let again = e.core.request(req).await.unwrap();
-        assert_eq!(again, answer, "not not_found");
+        assert_eq!(
+            again,
+            json!({"removed": {"id": "everyone"}}),
+            "not not_found"
+        );
         assert_eq!(e.calls_of("remove").len(), 1);
 
+        // A save's replay is rebuilt from the copy: the same item.
         e.fake.answer("save", saved_rule());
         let req = mutation(&e.core, Operation::VoiceSave, new_rule());
         let answer = e.core.request(req.clone()).await.unwrap();
         assert_eq!(e.core.request(req).await.unwrap(), answer);
         assert_eq!(e.calls_of("save").len(), 1);
+        e.fake.answer(
+            "save",
+            json!({"text": "Terse.", "source": "Voice/style.md"}),
+        );
+        let req = mutation(
+            &e.core,
+            Operation::VoiceSave,
+            json!({"kind": "style", "text": "Terse."}),
+        );
+        let answer = e.core.request(req.clone()).await.unwrap();
+        assert_eq!(e.core.request(req).await.unwrap(), answer);
+        assert_eq!(e.calls_of("save").len(), 2);
+    }
+
+    /// Controller ruling (fix round 2), design §6: after Delete Connect's copy no style or rule
+    /// text the user saved through Connect is left anywhere in the database — not in the copy,
+    /// not in the stored answers of the edits (reservations), not in a job.
+    #[tokio::test]
+    async fn delete_leaves_no_saved_voice_text_in_the_database() {
+        let e = env();
+        e.choose_with_copy().await;
+        let rule = format!("Be brief. {SENTINEL}");
+        e.fake.answer(
+            "save",
+            json!({"id": "everyone-2", "applies": {"kind": "everyone"}, "text": rule,
+                   "source": "Voice/rules.md", "editable": true}),
+        );
+        e.op(
+            Operation::VoiceSave,
+            json!({"kind": "rule", "id": null, "applies": {"kind": "everyone"}, "text": rule}),
+        )
+        .await
+        .unwrap();
+        let style = format!("Terse. {SENTINEL}");
+        e.fake.answer("save", json!({"text": style}));
+        e.op(
+            Operation::VoiceSave,
+            json!({"kind": "style", "text": style}),
+        )
+        .await
+        .unwrap();
+        e.fake.answer("remove", json!({"removed": true}));
+        e.op(Operation::VoiceDelete, json!({"id": "everyone-2"}))
+            .await
+            .unwrap();
+        assert!(
+            e.core
+                .repo()
+                .unwrap()
+                .all_text_for_tests()
+                .contains(SENTINEL),
+            "the scan sees the saved text while the copy holds it"
+        );
+        e.op(Operation::VoiceForget, json!({})).await.unwrap();
+        let text = e.core.repo().unwrap().all_text_for_tests();
+        assert!(
+            !text.contains(SENTINEL),
+            "voice text outlived Delete Connect's copy"
+        );
+        assert!(
+            !text.contains("voiceAck"),
+            "the edits' acks go with the copy"
+        );
+    }
+
+    /// The edits' acks go when another provider is chosen or the plugin is removed, too.
+    #[tokio::test]
+    async fn a_provider_change_or_removal_drops_the_edits_acks() {
+        let e = env();
+        let acks = || {
+            e.core
+                .repo()
+                .unwrap()
+                .all_text_for_tests()
+                .matches("voiceAck")
+                .count()
+        };
+        e.choose_with_copy().await;
+        e.fake.answer("save", saved_rule());
+        e.op(Operation::VoiceSave, new_rule()).await.unwrap();
+        assert_eq!(acks(), 1);
+        e.op(Operation::VoiceSet, json!({"provider": "plugin:other"}))
+            .await
+            .unwrap();
+        assert_eq!(acks(), 0, "a provider change");
+        e.op(Operation::VoiceSet, json!({"provider": KNOWLEDGE}))
+            .await
+            .unwrap();
+        e.fake.answer("export", export_answer(""));
+        e.run_jobs().await;
+        e.fake.answer("save", saved_rule());
+        e.op(Operation::VoiceSave, new_rule()).await.unwrap();
+        assert_eq!(acks(), 1);
+        e.core.voice_plugin_removed("knowledge").unwrap();
+        assert_eq!(acks(), 0, "the plugin removed");
+    }
+
+    /// Review N1: Delete Connect's copy and choosing the same provider again while an edit is
+    /// asked: the late edit writes nothing into the new, empty copy.
+    #[tokio::test]
+    async fn an_edit_asked_before_a_delete_writes_nothing_after_it() {
+        let e = env();
+        e.choose_with_copy().await;
+        e.fake.delay("save", Duration::from_millis(200));
+        e.fake.answer("save", saved_rule());
+        let req = mutation(&e.core, Operation::VoiceSave, new_rule());
+        let core = e.core.clone();
+        let running = tokio::spawn(async move { core.request(req).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        e.op(Operation::VoiceForget, json!({})).await.unwrap();
+        e.op(Operation::VoiceSet, json!({"provider": KNOWLEDGE}))
+            .await
+            .unwrap();
+        let answer = running.await.unwrap().unwrap();
+        assert_eq!(answer, json!({"item": null}));
+        let r = e.core.repo().unwrap();
+        for kind in ["voice_style", "voice_rule", "voice_person", "voice_meta"] {
+            assert!(r.records_of_kind(kind).unwrap().is_empty(), "{kind}");
+        }
     }
 
     /// Review M1: copy records carry the provider as `source`, once (`plugin:<id>`).
@@ -1158,7 +1335,7 @@ pub(crate) mod tests {
         let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
         let c = copy::from_export(&export_answer(""));
         copy::replace(&mut core.repo().unwrap(), KNOWLEDGE, &c, 1_764_000_000).unwrap();
-        let answer = forget(&mut core.repo().unwrap()).unwrap();
+        let answer = forget(&core, &mut core.repo().unwrap()).unwrap();
         assert_eq!(
             answer["deleted"], 7,
             "a style, 2 rules, 3 people and the meta row"

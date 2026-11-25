@@ -442,15 +442,16 @@ pub fn set_state(r: &mut Repository, provider: &str, state: VoiceState, at: i64)
 }
 
 /// Deletes every copy record, whatever provider it belongs to (design §6's "Delete Connect's
-/// copy"), in one transaction. Answers how many records were removed.
+/// copy"), with the stored acks of voice edits, in one transaction. Answers how many copy records
+/// were removed.
 pub fn forget(r: &mut Repository) -> Result<usize> {
-    r.delete_global_records(&KINDS)
+    r.forget_voice(None, &KINDS)
 }
 
 /// `forget` together with writing `settings` (the voice turned Off), in one transaction (design
 /// §6's "sets Off and deletes every copy record in one transaction").
 pub fn forget_with(r: &mut Repository, settings: &Settings) -> Result<usize> {
-    r.settings_update_deleting_global(settings, &KINDS)
+    r.forget_voice(Some(settings), &KINDS)
 }
 
 /// Reads the stored copy, or `None` when nothing has ever been replaced into it.

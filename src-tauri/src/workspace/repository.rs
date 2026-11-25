@@ -305,6 +305,39 @@ impl Repository {
         tx.commit()?;
         Ok(n > 0)
     }
+    /// Every text and blob value of every table, joined: what a privacy test scans.
+    #[cfg(test)]
+    pub(crate) fn all_text_for_tests(&self) -> String {
+        let tables: Vec<String> = self
+            .db
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let mut out = String::new();
+        for table in tables {
+            let mut stmt = self
+                .db
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                for i in 0..columns {
+                    match row.get_ref(i).unwrap() {
+                        rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
+                            out.push_str(&String::from_utf8_lossy(t));
+                            out.push('\n');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        out
+    }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
             .db
@@ -570,23 +603,6 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
-    /// Deletes every global bookkeeping record of these kinds, in one transaction with one
-    /// revision bump when any went. Answers how many were removed.
-    pub fn delete_global_records(&mut self, kinds: &[&str]) -> Result<usize> {
-        let tx = self.db.transaction()?;
-        let mut gone = 0;
-        for kind in kinds {
-            gone += tx.execute(
-                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
-                [kind],
-            )?;
-        }
-        if gone > 0 {
-            bump(&tx)?;
-        }
-        tx.commit()?;
-        Ok(gone)
-    }
     /// Upserts global bookkeeping records in one transaction with one revision bump, leaving
     /// every other record (of the same or another kind) untouched — a partial update
     /// (reply-voice design §2's `voice::copy::merge_context`), unlike `replace_global_records`.
@@ -662,24 +678,33 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
-    /// Writes `settings` and deletes every global record of `kinds`, in one transaction (the
-    /// voice's Delete Connect's copy, reply-voice design §6). Answers how many records went.
-    pub fn settings_update_deleting_global(
-        &mut self,
-        settings: &Settings,
-        kinds: &[&str],
-    ) -> Result<usize> {
+    /// Deletes Connect's copy of the voice in one transaction (reply-voice design §6): every
+    /// global record of `kinds`, the stored acks of voice edits (`voiceAck` reservation results)
+    /// and, when given, writes `settings` (the voice turned Off). Answers how many copy records
+    /// went.
+    pub fn forget_voice(&mut self, settings: Option<&Settings>, kinds: &[&str]) -> Result<usize> {
         let tx = self.db.transaction()?;
-        tx.execute(
-            "UPDATE meta SET settings=?1,revision=revision+1 WHERE id=1",
-            [encode(settings)?],
-        )?;
+        let mut changed = false;
+        if let Some(settings) = settings {
+            tx.execute(
+                "UPDATE meta SET settings=?1 WHERE id=1",
+                [encode(settings)?],
+            )?;
+            changed = true;
+        }
         let mut gone = 0;
         for kind in kinds {
             gone += tx.execute(
                 "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
                 [kind],
             )?;
+        }
+        tx.execute(
+            "DELETE FROM reservations WHERE json_extract(result,'$.voiceAck')=1",
+            [],
+        )?;
+        if changed || gone > 0 {
+            bump(&tx)?;
         }
         tx.commit()?;
         Ok(gone)

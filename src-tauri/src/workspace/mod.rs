@@ -126,6 +126,9 @@ pub struct Core {
     /// Connect's way into reply-context provider plugins' host halves (`voice`), set once by
     /// the plugin manager; `None` while nothing has set it (every test with no voice provider).
     voice_providers: std::sync::OnceLock<Arc<dyn voice::VoiceProviders>>,
+    /// Moves each time Connect's copy of the voice is deleted; a voice edit asked before a delete
+    /// writes nothing after it (`voice::ops`).
+    voice_epoch: AtomicUsize,
     /// How often the plugin manager said it loaded the chosen voice provider
     /// (`Core::voice_reloaded`); tests read it.
     #[cfg(test)]
@@ -298,6 +301,7 @@ impl Core {
             events: std::sync::OnceLock::new(),
             task_providers: std::sync::OnceLock::new(),
             voice_providers: std::sync::OnceLock::new(),
+            voice_epoch: AtomicUsize::new(0),
             #[cfg(test)]
             voice_reloads: AtomicUsize::new(0),
             meetings_told: Default::default(),
@@ -1034,9 +1038,10 @@ impl Core {
         // is asked of the provider.
         let asked = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
             if !self.repo()?.peek_request(&req)? {
-                return self
+                let stored = self
                     .repo()?
-                    .operation_result(req.operation_id.as_deref().unwrap_or(""));
+                    .operation_result(req.operation_id.as_deref().unwrap_or(""))?;
+                return self.voice_replayed(stored);
             }
             Some(self.voice_ask(&req).await?)
         } else {
@@ -1070,9 +1075,14 @@ impl Core {
             None => self.repo()?.check_request(&req)?,
         };
         if !fresh {
-            return self
+            let stored = self
                 .repo()?
-                .operation_result(req.operation_id.as_deref().unwrap_or(""));
+                .operation_result(req.operation_id.as_deref().unwrap_or(""))?;
+            return if asked.is_some() {
+                self.voice_replayed(stored)
+            } else {
+                Ok(stored)
+            };
         }
         let response = match req.op {
             Operation::WorkspaceCreate => {
@@ -1511,8 +1521,15 @@ impl Core {
             | Operation::VoiceForget => self.voice_op(&req, asked)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
+        // A voice edit's stored answer is an ack without its text (design §6: no voice text
+        // outlives Delete Connect's copy); a replay rebuilds the answer from the copy.
+        let stored = if matches!(req.op, Operation::VoiceSave | Operation::VoiceDelete) {
+            voice::ops::ack(&req, &response)
+        } else {
+            response.clone()
+        };
         self.repo()?
-            .finish_operation(req.operation_id.as_deref().unwrap_or(""), &response)?;
+            .finish_operation(req.operation_id.as_deref().unwrap_or(""), &stored)?;
         self.refresh_incidents()?;
         self.emit("workspace:changed");
         Ok(response)
