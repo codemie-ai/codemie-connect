@@ -377,6 +377,19 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector(`${row('mtg-vendor')}:has-text("Short summary")`, { timeout: 8000 });
       });
 
+      await check(`${tag}: Accept on the meeting's Tasks tab reads what changed, not the whole workspace`, async () => {
+        await select(page, 'mtg-philips', 'all', 'tasks');
+        const accept = '.ws-dock[data-page="meetings"] [data-action="task-accept"]';
+        await page.waitForSelector(accept);
+        const id = await page.getAttribute(accept, 'data-id');
+        await page.evaluate(() => { window.__readCalls = []; window.__recordReads = true; });
+        await page.click(accept);
+        await page.waitForSelector(`.ws-dock[data-page="meetings"] [data-action="task-accept"][data-id="${id}"]`, { state: 'detached' });
+        await page.waitForFunction(() => window.__readCalls.includes('changes_since'), null, { timeout: 8000 });
+        const reads = await page.evaluate(() => { window.__recordReads = false; return window.__readCalls; });
+        assert(!reads.includes('snapshot'), `a full read after Accept: ${reads.join(', ')}`);
+      });
+
       await check(`${tag}: tasks tab: each task in two lines; the date chip's menu sets and clears a date`, async () => {
         await select(page, 'mtg-philips', 'all', 'tasks');
         await page.waitForSelector('.ws-mtg-trow');
