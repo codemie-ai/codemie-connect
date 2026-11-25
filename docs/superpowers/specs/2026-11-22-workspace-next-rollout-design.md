@@ -45,7 +45,7 @@ The user wants each step properly built and visually verified, so Connect stays 
 1. **Quality gates** from `.ai-run/guides/quality-gates.md`: format, lint, `npm test`, `cargo test`, contract fixtures regenerated and committed when a shape changed.
 2. **Browser run, new checks:** a check set for the step in `ui/test/browser/` (for example `compact-checks.mjs`) that drives the changed screens in both themes, in Compact and Default, at 1000 / 1440 / 1680 px, with no horizontal overflow, and saves screenshots.
 3. **Browser run, no regressions:** the whole `workspace-e2e.mjs` run passes (plugins, meetings, meetings-settings, layout, analytics), not only the new set.
-4. **The real app:** a debug build launched on real data, with screenshots of every changed screen, and `CODEMIE_STATUS_SMOKE=status` passing.
+4. **The real app:** `make tour` passes and its HTML report has been shown to the user, with no red row for this step or an earlier one; `CODEMIE_STATUS_SMOKE=status` passes on the user's data.
 5. **Plugin steps:** `CODEMIE_PLUGIN_SMOKE=<marketplace folder>` passes against `codemie-connect-marketplace`.
 6. **A side-by-side comparison with the reference mockups** where the step ports a reference-app screen (Inbox, Today, Meetings, Tasks, reply): the Connect screenshot next to the reference one, differences named.
 

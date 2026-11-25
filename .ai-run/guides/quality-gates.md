@@ -46,3 +46,11 @@ Run order is fastest-to-slowest.
 **Fail**: exit 1 with `[build] <reason>` naming the failed assertion; exit 2 on an unknown argument
 **Skip if**: a logic-only change already verified by tests (saves about 2-5 min)
 **Notes**: Staging the runtime (`scripts/stage-runtime.sh`) is a prerequisite of `make build` / `build-installer.sh`, not of cargo commands: CI runs clippy, `cargo test` and `tauri build` without it. `make build-fast` (--skip-stage) reuses the staged tree and still verifies; `make build-app` (`CI=true cargo tauri build`) verifies nothing, for UI-only changes. Windows: `.\build-installer.ps1` writes the git-ignored assets\windows\bin\runtime-key, builds the NSIS installer and asserts the bundle, ending with `Done - all assertions passed.` (exit 1 with `[build] <reason>` on a failed assertion).
+
+### tour
+
+**Run**: `make tour` (optional `ONLY=0,3` or `ONLY=T05,T21` to run only those rollout steps or stop ids)
+**Side effects**: builds the debug app with the `tour` feature into `src-tauri/target/tour` (a separate target folder, rebuilt only when sources changed); seeds a fresh test root and runs it in the background, offline and invisible, under `$TMPDIR/connect-tour-<stamp>-*`; writes screenshots and `tour/results.json` there and the self-contained HTML report under `output/tour/<stamp>-<sha>/` (git-ignored)
+**Pass**: exit 0; stdout prints `TOUR {"path":…,"pass":true,"failed":[]}`
+**Fail**: exit 1 (a check failed, printed with `"pass":false` and the failed checks), 2 (nothing reported within 600 s, the watchdog), or 3 (can't run: a bad `CODEMIE_TOUR` value, a reused or stale test folder, `CODEMIE_STATUS_SMOKE`/`CODEMIE_PLUGIN_SMOKE` also set, or another tour already running)
+**Notes**: Every tour stop is real-app evidence for Definition of done item 4, from step 7 on; a built feature with no stop shows red in the report's coverage table and fails. Never drives the desktop: the window is hidden, never focused or activated, and the user's own running Connect is untouched. Report path, run folder and verdict print at the end; `make tour ONLY=...` reruns a subset without rebuilding when nothing changed.

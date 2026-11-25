@@ -296,7 +296,7 @@ Reference: `src-tauri/src/state.rs::AppState`
 | Config | Location | Access |
 |---|---|---|
 | Install steps | `config/steps.yaml` (macOS) and `config/steps-windows.yaml` (Windows), embedded via `include_str!` | `src-tauri/src/steps.rs::get_steps` |
-| Smoke mode flags | `CODEMIE_SMOKE`, `CODEMIE_PROBE_SMOKE`, `CODEMIE_PLUGIN_SMOKE`, `CODEMIE_STATUS_SMOKE` env vars | read by `src-tauri/src/commands/smoke.rs::smoke_mode`; the plugin and status smokes start in `src-tauri/src/lib.rs::run` |
+| Smoke mode flags | `CODEMIE_SMOKE`, `CODEMIE_PROBE_SMOKE`, `CODEMIE_PLUGIN_SMOKE`, `CODEMIE_STATUS_SMOKE`, `CODEMIE_TOUR` (the stops to run: `all`, rollout steps, or stop ids), `CODEMIE_TOUR_SHA` (the build's git SHA, named in the report) env vars | read by `src-tauri/src/commands/smoke.rs::smoke_mode`; the plugin and status smokes start in `src-tauri/src/lib.rs::run`; `CODEMIE_TOUR`/`CODEMIE_TOUR_SHA` are read by `src-tauri/src/commands/tour/mod.rs::requested`, behind the `tour` Cargo feature that only `make tour` turns on |
 | Session log | `~/Library/Logs/CodeMie/codemie_wizard.log` (Windows: `%USERPROFILE%\AppData\Local\CodeMie\Logs`) | `src-tauri/src/commands/logger.rs::log_path` |
 | Pinned runtime | `runtime.json` (Node version and SHA-256s, CLI package and version) | `scripts/stage-runtime.sh`, `build-installer.sh`; the app embeds `assets/codemie-cli/package.json` and `package-lock.json` (`src-tauri/src/commands/runtime.rs::CLI_PACKAGE_LOCK`) |
 | Test data folder | `CODEMIE_WORKSPACE_TEST_DIR` (debug builds) | `src-tauri/src/lib.rs::run` |
