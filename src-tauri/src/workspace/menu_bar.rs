@@ -753,6 +753,14 @@ impl Refresher {
         let _ = self.sink.set(sink);
     }
 
+    /// Whether a sink has already taken the slot. A test seam for callers (`commands::tour`'s
+    /// `install_quiet_menu_bar`) that need to prove they claimed it, since [`install`] itself
+    /// answers nothing and a second call is silently ignored.
+    #[cfg(test)]
+    pub(crate) fn has_sink(&self) -> bool {
+        self.sink.get().is_some()
+    }
+
     /// Asks for a recount. Takes no lock, so callers may hold the repository guard.
     pub fn wake(&self) {
         self.notify.notify_one();

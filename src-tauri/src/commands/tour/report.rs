@@ -156,31 +156,49 @@ pub fn verdict(window: Value, run: &TourRun, facts: Value) -> Value {
     })
 }
 
-/// Writes `result` to `<test dir>/tour/results.json` and prints `TOUR {…}`.
-fn write_report(run: &TourRun, result: &Value) -> std::path::PathBuf {
+/// Writes `result` to `<test dir>/tour/results.json` and prints `TOUR {…}`. `Err` names what
+/// failed (the folder, the encoding or the write itself): a run whose own evidence can't be
+/// written must not be mistaken for a quiet success by `run.sh`, which only renders a report
+/// when this file exists.
+fn write_report(run: &TourRun, result: &Value) -> Result<std::path::PathBuf, String> {
     let dir = run.test_dir.join("tour");
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("CODEMIE_TOUR: can't create {}: {e}", dir.display()))?;
     let path = dir.join("results.json");
-    let text = serde_json::to_string_pretty(result).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, &text) {
-        eprintln!("CODEMIE_TOUR: can't write {}: {e}", path.display());
-    }
+    let text = serde_json::to_string_pretty(result)
+        .map_err(|e| format!("CODEMIE_TOUR: can't encode results.json: {e}"))?;
+    std::fs::write(&path, &text)
+        .map_err(|e| format!("CODEMIE_TOUR: can't write {}: {e}", path.display()))?;
     println!(
         "TOUR {}",
         json!({"path": &path, "pass": result["pass"], "failed": result["failed"]})
     );
-    path
+    Ok(path)
 }
 
-/// [`write_report`], then exits with `code` after 300 ms, so the answer reaches the caller first.
+/// [`write_report`], then exits after 300 ms (so the answer reaches the caller first) with `code`
+/// on success, or 1 with a clear stderr message when `results.json` couldn't be written at all —
+/// never a silent `eprintln!` that leaves the run looking like whatever `code` would have been.
 fn finish(app: &AppHandle, run: &'static TourRun, result: Value, code: i32) -> std::path::PathBuf {
-    let path = write_report(run, &result);
     let app = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        app.exit(code);
-    });
-    path
+    match write_report(run, &result) {
+        Ok(path) => {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                app.exit(code);
+            });
+            path
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            let path = run.test_dir.join("tour").join("results.json");
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                app.exit(1);
+            });
+            path
+        }
+    }
 }
 
 /// The window's own menu-bar facts (design § 5): [`live_menu_bar`] plus the applied menu's row
@@ -339,5 +357,20 @@ mod tests {
             failed_strings(&v).iter().any(|f| f.contains("menuBar")),
             "{v}"
         );
+    }
+
+    /// A failed `results.json` write must be `Err`, never a swallowed `eprintln!`: `finish` (and
+    /// so `tour_report` and the watchdog) only forces a non-zero exit because this is `Err`, not
+    /// just a side-effecting print, when the file can't be made.
+    #[test]
+    fn write_report_fails_when_the_tour_folder_cant_be_made() {
+        let dir = tempfile::tempdir().unwrap();
+        // A plain file named `tour` blocks `create_dir_all("<test dir>/tour")`.
+        std::fs::write(dir.path().join("tour"), "").unwrap();
+        let mut r = run();
+        r.test_dir = dir.path().to_path_buf();
+        let result = write_report(&r, &json!({"pass": true, "failed": []}));
+        assert!(result.is_err(), "{result:?}");
+        assert!(result.unwrap_err().contains("tour"));
     }
 }

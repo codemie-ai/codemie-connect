@@ -236,7 +236,7 @@ pub fn run() {
             #[cfg(feature = "tour")]
             if tour {
                 if let Some(core) = &core {
-                    commands::tour::install_quiet_menu_bar(core);
+                    commands::tour::install_quiet_menu_bar(&core.menu_bar);
                 }
             } else {
                 workspace::setup_tray(app)?;

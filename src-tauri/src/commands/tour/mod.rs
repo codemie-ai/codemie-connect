@@ -80,11 +80,12 @@ impl crate::workspace::menu_bar::TraySink for QuietTray {
 }
 
 /// Installs [`QuietTray`] and asks for a first count, so the menu bar has an applied view by the
-/// time `tour_menu_bar` is asked for one, with no OS tray icon ever built.
+/// time `tour_menu_bar` is asked for one, with no OS tray icon ever built. Takes the `Refresher`
+/// directly (rather than a whole `Core`) so it can be unit-tested without opening one.
 #[cfg(feature = "tour")]
-pub fn install_quiet_menu_bar(core: &std::sync::Arc<crate::workspace::Core>) {
-    core.menu_bar.install(Box::new(QuietTray));
-    core.menu_bar.wake();
+pub fn install_quiet_menu_bar(menu_bar: &crate::workspace::menu_bar::Refresher) {
+    menu_bar.install(Box::new(QuietTray));
+    menu_bar.wake();
 }
 
 #[cfg(feature = "tour")]
@@ -566,5 +567,32 @@ mod open_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "tour"))]
+mod quiet_tray_tests {
+    use super::install_quiet_menu_bar;
+    use crate::workspace::menu_bar::{FakeTray, Refresher};
+
+    /// A fresh `Refresher` has no sink yet; [`install_quiet_menu_bar`] takes the slot.
+    #[test]
+    fn install_quiet_menu_bar_takes_the_sink_slot() {
+        let menu_bar = Refresher::new(|| 0);
+        assert!(!menu_bar.has_sink());
+        install_quiet_menu_bar(&menu_bar);
+        assert!(menu_bar.has_sink());
+    }
+
+    /// `Refresher::install` ignores a second sink (its own doc comment: "a second sink is
+    /// ignored"). Once [`install_quiet_menu_bar`] has taken the slot, a later `install(FakeTray)`
+    /// — as the shared test fixture's `install_fake` would call, were it run after this one — must
+    /// not panic and must not vacate the slot the quiet tray already holds.
+    #[test]
+    fn a_later_install_is_ignored_once_the_quiet_tray_took_the_slot() {
+        let menu_bar = Refresher::new(|| 0);
+        install_quiet_menu_bar(&menu_bar);
+        menu_bar.install(Box::new(FakeTray::default()));
+        assert!(menu_bar.has_sink());
     }
 }
