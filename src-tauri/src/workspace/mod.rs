@@ -1527,11 +1527,22 @@ impl Core {
                     }
                     job.state = "cancelled".into();
                 }
-                r.save_job(&job)?;
                 // Stop on an answer (ask-capture design § 6): its turn reads `stopped`, under the
-                // same repository guard, so the job's own write after its claim sees it.
-                if req.op == Operation::JobCancel && job.kind == ask::ops::KIND {
+                // same repository guard, so the job's own write after its claim sees it. First,
+                // so a failed turn write changes nothing: the job and the turn still both answer,
+                // the window shows the error, and Stop can be pressed again.
+                let stop_ask = req.op == Operation::JobCancel && job.kind == ask::ops::KIND;
+                if stop_ask {
                     ask::ops::stop_turn(&mut r, &job)?;
+                }
+                if let Err(e) = r.save_job(&job) {
+                    // The turn already reads `stopped`: the run is cancelled anyway, so its job
+                    // ends `cancelled` too (`run_claimed_job`), and the window shows the error.
+                    if stop_ask {
+                        drop(r);
+                        self.cancel_ai_job(&job.id);
+                    }
+                    return Err(e);
                 }
                 drop(r);
                 if req.op == Operation::JobCancel {

@@ -1663,6 +1663,85 @@ mod tests {
         .unwrap();
     }
 
+    /// Makes every write to `table` (of `kind` when given) fail until [`unblock`], from a second
+    /// connection, so one write of a Stop can fail while the others land.
+    fn block_writes(dir: &std::path::Path, table: &str, kind: Option<&str>) {
+        let when = kind
+            .map(|k| format!("WHEN NEW.kind='{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "CREATE TRIGGER block_insert BEFORE INSERT ON {table} {when} BEGIN SELECT RAISE(ABORT,'blocked'); END;
+             CREATE TRIGGER block_update BEFORE UPDATE ON {table} {when} BEGIN SELECT RAISE(ABORT,'blocked'); END;"
+        );
+        rusqlite::Connection::open(dir.join("workspace.sqlite"))
+            .unwrap()
+            .execute_batch(&sql)
+            .unwrap();
+    }
+
+    fn unblock(dir: &std::path::Path) {
+        rusqlite::Connection::open(dir.join("workspace.sqlite"))
+            .unwrap()
+            .execute_batch("DROP TRIGGER block_insert; DROP TRIGGER block_update;")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stop_whose_turn_write_fails_says_so_and_changes_nothing() {
+        let (runner, gate) = FakeRunner::gated(vec![Ok(cited())]);
+        let e = env_with(Arc::new(runner));
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        let tid = a["threadId"].as_str().unwrap().to_string();
+        let (core, jid, dir) = (e.core.clone(), a["jobId"].clone(), e._dir.path().to_owned());
+        let t2 = tid.clone();
+        run_next_with(&e.core, &gate, || async move {
+            block_writes(&dir, "records", Some(store::KIND));
+            let refused = op(&core, Operation::JobCancel, json!({ "id": jid }))
+                .await
+                .unwrap_err();
+            unblock(&dir);
+            assert_eq!(refused.code, "storage");
+            // The job and the turn still agree: both still answering, so Stop can be pressed again.
+            assert_eq!(job(&core, &jid).state, "running");
+            assert_eq!(
+                thread_of(&core, &t2).unwrap().turns[0].state,
+                TurnState::Running
+            );
+        })
+        .await;
+        // The run was not stopped: it answered, and the job and the turn agree.
+        let turn = thread_of(&e.core, &tid).unwrap().turns[0].clone();
+        assert_eq!(turn.state, TurnState::Done);
+        assert_eq!(job(&e.core, &a["jobId"]).state, "succeeded");
+    }
+
+    #[tokio::test]
+    async fn a_stop_whose_job_write_fails_says_so_and_still_stops_the_run() {
+        let (runner, gate) = FakeRunner::gated(vec![Ok(cited())]);
+        let e = env_with(Arc::new(runner));
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        let tid = a["threadId"].as_str().unwrap().to_string();
+        let (core, jid, dir) = (e.core.clone(), a["jobId"].clone(), e._dir.path().to_owned());
+        run_next_with(&e.core, &gate, || async move {
+            block_writes(&dir, "jobs", None);
+            let refused = op(&core, Operation::JobCancel, json!({ "id": jid }))
+                .await
+                .unwrap_err();
+            unblock(&dir);
+            assert_eq!(refused.code, "storage");
+        })
+        .await;
+        // The turn reads stopped and the run was cancelled, so the job ends cancelled too.
+        let turn = thread_of(&e.core, &tid).unwrap().turns[0].clone();
+        assert_eq!(turn.state, TurnState::Stopped);
+        assert_eq!(turn.answer, None);
+        assert_eq!(job(&e.core, &a["jobId"]).state, "cancelled");
+    }
+
     #[tokio::test]
     async fn delete_while_running_cancels_and_writes_nothing() {
         let (runner, gate) = FakeRunner::gated(vec![Ok(cited())]);

@@ -383,6 +383,16 @@ test('Stop and ⌘. send one job_cancel {id}', async () => {
   assert.equal(idle.calls.mutate.length, 0);
 });
 
+test('a failed Stop shows its error, and Stop can be pressed again', async () => {
+  const refusal = Object.assign(new Error('Workspace storage could not complete the operation.'), { code: 'storage' });
+  const { ctl, calls } = pageHarness({ askState: 'running', refuse: refusal });
+  await ctl.stop();
+  assert.deepEqual(calls.failed, [refusal]);
+  await ctl.stop();
+  assert.equal(calls.mutate.length, 2);
+  assert.equal(calls.failed.length, 1);
+});
+
 test('Ask again and Try again send ask_start {threadId, question} with the turn\'s question', async () => {
   const { ctl, calls } = pageHarness();
   await ctl.openThread();
