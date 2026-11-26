@@ -3,7 +3,8 @@
 //! module gives the snapshot its `ask` part (`Core::ask_snapshot`, § 6): thread titles, counts and
 //! states, what runs now and whether the field shows in the menu — never a question beyond its
 //! title, an answer or a context item. The threads themselves live in `store`.
-use super::models::Settings;
+use super::ai::{wire_name, RouteKey};
+use super::models::{Purpose, Settings};
 use super::Core;
 use serde_json::{json, Value};
 
@@ -56,6 +57,17 @@ impl Core {
             .and_then(|r| store::list(&r).ok())
             .unwrap_or_default();
         snapshot(&threads, settings)
+    }
+
+    /// The Ask route's state for the status smoke (task 8): `"ready"` when the route's resolved
+    /// profile can run now, else the error's class (`needs_login`, `not_installed`,
+    /// `not_configured`, `too_old`, `rate_limited`, `needs_choice`, `failed`) — never a profile
+    /// id or message (step 7's `resolve_key`).
+    pub(crate) async fn ask_route_state(&self) -> String {
+        match self.resolve_key(&RouteKey::Purpose(Purpose::Ask)).await {
+            Ok(_) => "ready".into(),
+            Err(e) => wire_name(e.class),
+        }
     }
 }
 

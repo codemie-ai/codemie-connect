@@ -5,8 +5,9 @@
 //!   `CODEMIE_WORKSPACE_TEST_DIR` names another), waits for the workspace, the first sync and the
 //!   plugin manager, and reports what it found: the version, the Claude profiles and routes, the
 //!   data folder, the plugins and whether they loaded, the workspace's counts, the voice copy's
-//!   counts and state (reply-voice design ruling 22: never its style, rule or people text), what
-//!   needs attention and whether the CodeMie setup sheet would open
+//!   counts and state (reply-voice design ruling 22: never its style, rule or people text), the
+//!   Ask route's state and its thread/turn counts (ask-capture design § 6: never a question or an
+//!   answer), what needs attention and whether the CodeMie setup sheet would open
 //!   (`ui/workspace/status-smoke.js`).
 //! - `live`: the same report, then the checks the owner approved, through the workspace ops the
 //!   UI uses: one AI draft (discarded), one thread summary (removed) and one Morning brief run.
@@ -347,6 +348,7 @@ fn facts(app: &AppHandle) -> Value {
     };
     let menu_bar = core.as_ref().map(|c| menu_bar_facts(app, c));
     let voice = core.as_ref().map(|c| voice_facts(c));
+    let ask = core.as_ref().map(|c| ask_facts(c));
     json!({
         "workspaceOpen": core.is_some(),
         "storage": storage,
@@ -355,6 +357,7 @@ fn facts(app: &AppHandle) -> Value {
         "plugins": plugins,
         "menuBar": menu_bar,
         "voice": voice,
+        "ask": ask,
     })
 }
 
@@ -375,6 +378,30 @@ pub(crate) fn voice_facts(core: &crate::workspace::Core) -> Value {
         "style": v["style"].is_object(),
         "facts": v["facts"]["on"],
         "refreshedAt": v["refreshedAt"],
+    })
+}
+
+/// The report's `ask` part (ask-capture design § 6, task 8): the Ask route's state (task 7's
+/// `resolve_key`, never a profile id) and the thread and turn counts and whether a turn runs now
+/// (`ask::store::list`, task 4) — never a question, an answer or a context item.
+pub(crate) fn ask_facts(core: &crate::workspace::Core) -> Value {
+    use crate::workspace::ask::store::{self, TurnState};
+    let threads = core
+        .repo()
+        .ok()
+        .and_then(|r| store::list(&r).ok())
+        .unwrap_or_default();
+    let turns: usize = threads.iter().map(|t| t.turns.len()).sum();
+    let running = threads.iter().any(|t| {
+        t.turns
+            .iter()
+            .any(|turn| matches!(turn.state, TurnState::Queued | TurnState::Running))
+    });
+    json!({
+        "route": tauri::async_runtime::block_on(core.ask_route_state()),
+        "threads": threads.len(),
+        "turns": turns,
+        "running": running,
     })
 }
 
@@ -827,6 +854,7 @@ fn build_report(i: Inputs) -> Value {
         "plugins": i.facts["plugins"],
         "menuBar": i.facts["menuBar"],
         "voice": i.facts["voice"],
+        "ask": i.facts["ask"],
         "ai": ai_summary(&i.ai),
         "window": window,
         "pass": failed.is_empty(),
@@ -1178,6 +1206,81 @@ mod tests {
         let dump = report.to_string();
         assert!(!dump.contains(SENTINEL), "{dump}");
         assert!(!dump.contains('@'), "{dump}");
+    }
+
+    /// Task 8 (ask-capture design § 6): the `ask` part is the route's state and counts and a
+    /// bool only — two threads with 3 turns, one running, a sentinel in every question and
+    /// answer, yet it reaches neither `ask_facts` nor the whole report.
+    #[test]
+    fn status_smoke_reports_ask_counts_only() {
+        use crate::testing::{choose_profile, claude_profile, core as test_core, FakeRunner};
+        use crate::workspace::ask::store::{
+            self,
+            tests::{thread, turn},
+            TurnState,
+        };
+        const SENTINEL: &str = "ASK_SENTINEL_5c1e";
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            vec![claude_profile()],
+        );
+        choose_profile(&core, "claude");
+
+        let mut first_done = turn(
+            1,
+            1_795_000_000,
+            &format!("First? {SENTINEL}"),
+            TurnState::Done,
+        );
+        first_done.answer = Some(format!("Answer one. {SENTINEL}"));
+        let mut running = turn(
+            2,
+            1_795_000_010,
+            &format!("Second? {SENTINEL}"),
+            TurnState::Running,
+        );
+        running.job_id = Some("job-2".into());
+        let mut second_done = turn(
+            3,
+            1_795_000_020,
+            &format!("Third? {SENTINEL}"),
+            TurnState::Done,
+        );
+        second_done.answer = Some(format!("Answer two. {SENTINEL}"));
+
+        let mut r = core.repo().unwrap();
+        store::write(
+            &mut r,
+            &thread("ask-1", 1_795_000_010, vec![first_done, running]),
+        )
+        .unwrap();
+        store::write(&mut r, &thread("ask-2", 1_795_000_020, vec![second_done])).unwrap();
+        drop(r);
+
+        let ask = ask_facts(&core);
+        assert_eq!(
+            ask,
+            json!({"route": "ready", "threads": 2, "turns": 3, "running": true}),
+            "{ask:#}"
+        );
+        let ask_dump = ask.to_string();
+        assert!(!ask_dump.contains(SENTINEL), "{ask_dump}");
+
+        let mut f = facts();
+        f["ask"] = ask;
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        });
+        let dump = report.to_string();
+        assert!(!dump.contains(SENTINEL), "{dump}");
     }
 
     #[test]
