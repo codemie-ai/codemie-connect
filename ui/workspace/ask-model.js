@@ -6,6 +6,8 @@ import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { viewOf } from './view-mode.js';
 import { shownView } from './tasks-dates-model.js';
+import { dayKey } from './format.js';
+import { meetingHash } from './meetings-model.js';
 
 /** `state.ask`: the hash the Ask page was first opened from (`from`), the control focus goes
  *  back to on Esc (`focusBack`, a selector), whether × dropped the About for this question, the
@@ -135,6 +137,56 @@ export function askField(state, snap) {
 /** The rail's ✦ button, in the field's place on the collapsed menu. */
 export function askRailButton() {
   return `<button type="button" class="ws-ask-rail" data-action="ask-rail" aria-label="Ask" aria-keyshortcuts="Meta+K" title="Ask (⌘K)" data-tip="Ask (⌘K)">${icon('sparkles')}</button>`;
+}
+
+// ---------------------------------------------------------------- cites and actions (§ 8)
+
+/** The record kinds a cite of each kind can name (a meeting cite may name its calendar event). */
+const CITE_RECORDS = { message: ['message'], meeting: ['meeting', 'event'], task: ['commitment'], event: ['event'] };
+const findOf = (snap, kinds, id) => (id ? (snap?.records || []).find(r => kinds.includes(r.kind) && r.id === id) : null);
+
+/**
+ * Where a cite chip goes (§ 8), or null when it goes nowhere (a person, a fact, a record no longer
+ * in Connect): a message to `#/inbox` on its lane with the row selected (open in Compact), a
+ * meeting to `#/meetings/<id>/summary`, a task to `#/tasks` with its drawer open (By date: its row
+ * unfolded), an event to `#/calendar` on its day with it open. app.js applies `select`.
+ */
+export function citeTarget(cite, snap) {
+  const kinds = CITE_RECORDS[cite?.kind];
+  const r = kinds && findOf(snap, kinds, cite.recordId);
+  if (!r) return null;
+  if (cite.kind === 'message') return { hash: '#/inbox', select: { kind: 'message', id: r.id, lane: r.data?.lane || 'reply' } };
+  if (cite.kind === 'meeting') return { hash: meetingHash(r.id) };
+  if (cite.kind === 'task') return { hash: '#/tasks', select: { kind: 'task', id: r.id } };
+  const d = r.data || {};
+  const dated = d.allDay && /^\d{4}-\d{2}-\d{2}$/.test(d.startDate || '');
+  const day = dated ? d.startDate : !Number.isNaN(new Date(d.start).getTime()) ? dayKey(d.start, zoneOf(snap)) : null;
+  return { hash: '#/calendar', select: { kind: 'event', id: r.id, day } };
+}
+
+/** Where an Open or a Draft a reply goes: as the cite of its ref does, or, for a ref the answer
+ *  did not cite (the About), as a cite of the record it names would. */
+export function actionTarget(action, turn, snap) {
+  const cite = (turn?.cites || []).find(c => c.id === action?.ref && c.recordId === action.recordId);
+  if (cite) return citeTarget(cite, snap);
+  const kind = ['message', 'task', 'event', 'meeting'].find(k => findOf(snap, CITE_RECORDS[k], action?.recordId));
+  return kind ? citeTarget({ kind, recordId: action.recordId }, snap) : null;
+}
+
+/**
+ * An answer's action as its button reads (Copy "Actions"): `{kind: 'task', label: '+ Add as task'}`,
+ * `{kind: 'go', label: 'Open <label>'}`, `{kind: 'reply', label: '✦ Draft a reply to <name>'}` (the
+ * sender, the label's first part). Null when it can't run: its record is no longer in Connect, a
+ * draft's record is not a message, a task has no words, or the kind is unknown.
+ */
+export function actionControl(action, turn, snap) {
+  if (action?.kind === 'task') return oneLine(action.text) ? { kind: 'task', label: '+ Add as task' } : null;
+  if (action?.kind !== 'open' && action?.kind !== 'draft') return null;
+  const target = actionTarget(action, turn, snap);
+  if (!target) return null;
+  if (action.kind === 'open') return { kind: 'go', label: `Open ${oneLine(action.label)}` };
+  if (target.select?.kind !== 'message') return null;
+  return { kind: 'reply', label: `✦ Draft a reply to ${oneLine(String(action.label || '').split(' · ')[0]) || 'the sender'}` };
 }
 
 /** Whether `ev` is ⌘K (Meta only: Ctrl+K stays the text boxes' "kill to end of line"), no ⌥,

@@ -104,9 +104,10 @@ export function soleMatch(root, selector) {
 
 /**
  * A toast. `action` (`{label, run}`) adds one button, such as Undo: it runs once and the toast
- * goes; a failure shows as an error toast. Such a toast stays 10 s instead of 6 s.
+ * goes; a failure shows as an error toast. Such a toast stays 10 s instead of 6 s, unless `life`
+ * (ms) says otherwise (Ask's "← Back to Ask" stays 6 s).
  */
-export function toast(message, tone = 'info', action = null) {
+export function toast(message, tone = 'info', action = null, { life: lifeMs } = {}) {
   let host = document.querySelector('.ws-toasts');
   if (!host) {
     host = document.createElement('div');
@@ -131,7 +132,7 @@ export function toast(message, tone = 'info', action = null) {
   host.append(el);
   while (host.children.length > 3) host.firstElementChild.remove();
   // A toast with an action (Undo) stays longer, so there is time to use it.
-  const life = action ? 10000 : 6000;
+  const life = lifeMs || (action ? 10000 : 6000);
   setTimeout(() => el.classList.add('ws-toast-leave'), life);
   setTimeout(() => el.remove(), life + 400);
   return el;

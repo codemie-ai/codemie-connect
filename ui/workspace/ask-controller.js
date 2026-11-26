@@ -8,7 +8,17 @@
 // The page (`#/ask/<id>`, view-ask.js): the open thread is read with `ask_read` on open and again
 // whenever the snapshot's `ask` moves for it; Stop is `job_cancel`, Ask again / Try again /
 // follow-ups `ask_start`, Delete `ask_delete` at once, Clear history after a dialog.
-import { aboutOf, BUSY, fieldRunning, newAskView, recentQuestions, recentShown } from './ask-model.js';
+// The answer's cites and actions (§ 8) run only on a click and never send: a cite chip and Open
+// go to the record (app.js's `openRecord`), Add as task opens quick capture filled in (saved only
+// on its Add), Draft a reply opens the message and starts the usual ✦ draft with the action's
+// hint as its instructions (Send stays the composer's). Each route change toasts "← Back to Ask".
+import { aboutOf, actionControl, actionTarget, BUSY, citeTarget, fieldRunning, newAskView, recentQuestions, recentShown } from './ask-model.js';
+import { draftRequest } from './draft-state.js';
+
+/** How long the "← Back to Ask" toast stays (§ 8). */
+const BACK_MS = 6000;
+/** A draft hint is one line of at most this many characters (native checks it too). */
+const HINT_MAX = 200;
 
 /**
  * `state.ask` is the field's view state (made here when missing); `snap()` the snapshot;
@@ -20,10 +30,13 @@ import { aboutOf, BUSY, fieldRunning, newAskView, recentQuestions, recentShown }
  * screen (not hidden by the setting or the rail); `hash()` the hash open now;
  * `hiddenCalendars()` the calendar ids the window hides (kept out of Ask's context);
  * `openCapture({mode, text, due, source})` app.js's quick capture, for the page's Add as task;
+ * `openRecord({hash, select})` app.js opens a cite's record in the window (`citeTarget`);
+ * `draftOptions(channel)` the draft options last used for a channel; `startDraft(message, request)`
+ * queues that `ai_draft` the composer's way (by default through `withClaudeChoice` and `mutate`);
  * `announce(text)` says a short line in the window's polite live region; `confirm(options)` the
  * window's `confirmModal`; `fail(err)` the window's error path.
  */
-export function createAskController({ state, snap, mutate, query = async () => null, render = () => {}, go = async () => {}, toast = () => {}, withClaudeChoice = run => run(), focusBack = () => {}, focus = () => {}, fieldShown = () => true, hash = () => '', hiddenCalendars = () => [], openCapture = () => {}, announce = () => {}, confirm = () => {}, fail = () => {} }) {
+export function createAskController({ state, snap, mutate, query = async () => null, render = () => {}, go = async () => {}, toast = () => {}, withClaudeChoice = run => run(), focusBack = () => {}, focus = () => {}, fieldShown = () => true, hash = () => '', hiddenCalendars = () => [], openCapture = () => {}, openRecord = async () => {}, draftOptions = () => ({}), startDraft = null, announce = () => {}, confirm = () => {}, fail = () => {} }) {
   state.ask ||= newAskView();
   const ask = () => state.ask;
   // The thread the page shows: `{id, key, thread, missing}`, `key` the snapshot's summary of it
@@ -375,10 +388,69 @@ export function createAskController({ state, snap, mutate, query = async () => n
         return focus('#ask-follow-up');
       case 'ask-back': return back();
       case 'ask-mark': return el?.dataset?.askMark ? focus(`#${el.dataset.askMark}`) : undefined;
+      case 'ask-cite': return openCite(el);
+      case 'ask-go': return openAction(el);
+      case 'ask-task': return addAsTask(el);
+      case 'ask-reply': return draftReply(el);
       default: return undefined;
     }
   }
 
-  // `toast` and `openCapture` are the page's actions (Task 11).
+  /** The turn of the open thread a cite or an action button belongs to. */
+  const turnOf = id => thread()?.turns?.find(t => t.id === id) || null;
+
+  /** Goes to a record, then offers the way back to this thread for 6 s. */
+  async function goRecord(target) {
+    const threadId = ask().threadId;
+    await openRecord(target);
+    if (threadId) toast('', 'info', { label: '← Back to Ask', run: () => go(`#/ask/${encodeURIComponent(threadId)}`) }, { life: BACK_MS });
+  }
+
+  async function openCite(el) {
+    const turn = turnOf(el?.dataset?.askTurn);
+    const target = citeTarget(turn?.cites?.find(c => c.id === el?.dataset?.askCite), snap());
+    if (target) await goRecord(target);
+  }
+
+  /** The action a button stands for, when it can still run as `kind` (null otherwise). */
+  function actionOf(el, kind) {
+    const turn = turnOf(el?.dataset?.askTurn);
+    const action = turn?.actions?.[Number(el?.dataset?.askIndex)];
+    return action && actionControl(action, turn, snap())?.kind === kind ? { turn, action } : null;
+  }
+
+  /** + Add as task: quick capture with the action's words, its due and the turn's About (a
+   *  message or a meeting) as the source; `task_save` only on the bar's Add. */
+  function addAsTask(el) {
+    const found = actionOf(el, 'task');
+    if (!found) return;
+    const about = found.turn.about;
+    const source = about && !about.gone && (about.kind === 'message' || about.kind === 'meeting') ? { kind: about.kind, id: about.recordId } : null;
+    openCapture({ mode: 'task', text: found.action.text, due: found.action.due || null, source });
+  }
+
+  async function openAction(el) {
+    const found = actionOf(el, 'go');
+    if (found) await goRecord(actionTarget(found.action, found.turn, snap()));
+  }
+
+  /** ✦ Draft a reply: the message opened as its chip opens it, then one `ai_draft` whose
+   *  instructions are the hint (one line, ≤ 200). Nothing is sent. */
+  async function draftReply(el) {
+    const found = actionOf(el, 'reply');
+    if (!found) return;
+    const target = actionTarget(found.action, found.turn, snap());
+    const message = (snap()?.records || []).find(r => r.kind === 'message' && r.id === target.select.id);
+    await goRecord(target);
+    const hint = [...String(found.action.hint ?? '').replace(/\s+/g, ' ').trim()].slice(0, HINT_MAX).join('');
+    const request = draftRequest(message, draftOptions(message.data.channel), hint);
+    try {
+      await (startDraft ? startDraft(message, request) : withClaudeChoice(() => mutate('ai_draft', request)));
+    } catch (err) {
+      // Closing the chooser is an answer, not an error.
+      if (err?.code !== 'needs_choice' && err?.class !== 'needs_choice') throw err;
+    }
+  }
+
   return { focusField, submitField, submitPage, openPage, input, opened, closed, key, handle, thread, refresh, openThread, stop, back, pageInput };
 }

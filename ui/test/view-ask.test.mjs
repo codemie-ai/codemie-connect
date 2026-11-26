@@ -229,3 +229,42 @@ test('M3: the live status changes only when the answer\'s state changes, its sec
   assert.equal(nextAskStatus(idle, null, 130), idle);
   assert.equal(nextAskStatus(null, null, 130), null);
 });
+
+// ---------------------------------------------------------------- cites and actions (Task 11)
+
+test('a cite chip whose record is in Connect is a button "ask-cite"; a person, a fact and a gone record are not', () => {
+  const html = turnBlock(turnOf(thread(), 'turn-1'), opts(snapshot('idle', { drop: ['task-3'] })));
+  assert.match(html, /<button type="button" class="ws-ask-cite" id="ask-cite-turn-1-a1" data-action="ask-cite" data-ask-turn="turn-1" data-ask-cite="a1">Priya N\. · mail · Tue 24 Nov<\/button>/);
+  for (const id of ['e3', 'm4', 'n5']) assert.match(html, new RegExp(`data-action="ask-cite" data-ask-turn="turn-1" data-ask-cite="${id}"`));
+  for (const id of ['t2', 'p6', 'f7']) assert.doesNotMatch(html, new RegExp(`data-ask-cite="${id}"`));
+  // The mark still focuses its chip.
+  assert.match(html, /data-ask-mark="ask-cite-turn-1-a1"/);
+});
+
+test('the actions: "+ Add as task", "Open <label>", "✦ Draft a reply to <name>" with their controls; an action whose ref is gone is not drawn', () => {
+  const html = turnBlock(turnOf(thread(), 'turn-1'), opts(snapshot()));
+  assert.match(html, /<div class="ws-ask-actions">/);
+  assert.match(html, /<button type="button" class="ws-btn ws-btn-secondary ws-btn-sm" data-action="ask-task" data-ask-turn="turn-1" data-ask-index="0">\+ Add as task<\/button>/);
+  assert.match(html, /data-action="ask-go" data-ask-turn="turn-1" data-ask-index="1">Open Event · Fri 27 Nov 10:00 · QBR<\/button>/);
+  assert.match(html, /data-action="ask-reply" data-ask-turn="turn-1" data-ask-index="2"><span aria-hidden="true">✦<\/span> Draft a reply to Jordan Lee<\/button>/);
+  // The actions sit after the chips and before the meta line.
+  assert.ok(html.indexOf('ws-ask-cites') < html.indexOf('ws-ask-actions'));
+  assert.ok(html.indexOf('ws-ask-actions') < html.indexOf('ws-ask-meta'));
+  // The event and Jordan's message left: only Add as task stays, keeping its index.
+  const gone = turnBlock(turnOf(thread(), 'turn-1'), opts(snapshot('idle', { drop: ['ev-9', 'msg-21'] })));
+  assert.match(gone, /data-action="ask-task" data-ask-turn="turn-1" data-ask-index="0"/);
+  assert.doesNotMatch(gone, /ask-go|ask-reply/);
+  // No actions, no row.
+  assert.doesNotMatch(turnBlock({ ...turnOf(thread(), 'turn-1'), actions: [] }, opts(snapshot())), /ws-ask-actions/);
+  // No control name the tour's deny-list words would catch.
+  for (const name of html.match(/data-action="[^"]+"/g)) assert.doesNotMatch(name, /send|confirm|prepare|open|draft|delete|link/);
+});
+
+test('action labels are escaped', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const done = turnOf(thread(), 'turn-1');
+  const turn = { ...done, actions: [{ ...done.actions[1], label: `Event ${evil}` }, { ...done.actions[2], label: `J ${evil} · Teams` }] };
+  const html = turnBlock(turn, opts(snapshot()));
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /Open Event &lt;img/);
+});

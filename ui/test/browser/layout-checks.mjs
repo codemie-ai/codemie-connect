@@ -14,7 +14,7 @@ const DEFAULT_TODAY = todayOf({ widgetWidths: {} }, {});
 const GAP = 16;
 const ROW = 72;
 
-export async function layoutChecks({ open, check, assert, shot, settled, calls }) {
+export async function layoutChecks({ open, check, assert, shot, settled, calls, OUT }) {
   const saves = page => calls(page, 'layout_save');
   const lastSave = async page => (await saves(page)).at(-1);
   /** Waits until more than `n` layout saves have been recorded. */
@@ -958,6 +958,88 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
         const after = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id || document.activeElement?.tagName);
         assert(before === 'm-reply-1' && after === before, `focus before ⌘K ${before}, after Back ${after}`);
         assert(await page.evaluate(() => document.getElementById('ask-live')?.textContent) === '', 'the status still says Answering');
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // ---------------------------------------------------------------- E12: cites and actions (ask-capture § 8)
+  // The done turn's cites pointing at seeded records: the chips are buttons that open their record
+  // with "← Back to Ask" in a toast for 6 s; + Add as task opens quick capture filled in and saves
+  // nothing; Open goes as its cite does; ✦ Draft a reply opens the message and sends one ai_draft
+  // whose instructions are the hint. Both themes and views at 1000 px.
+  const actionThread = () => {
+    const t = structuredClone(askThread());
+    const at = { a1: 'm-reply-1', t2: 'commit-1', e3: 'ev-standup', m4: 'c-reply-1', n5: 'ev-standup' };
+    for (const c of t.turns[0].cites) if (at[c.id]) c.recordId = at[c.id];
+    t.turns[0].about.recordId = 'm-reply-1';
+    t.turns[0].actions[1].recordId = 'ev-standup';
+    t.turns[0].actions[2].recordId = 'c-reply-1';
+    return t;
+  };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const name = `layout-e12-${theme}-${view}`;
+      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask/ask-7f2c', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E12 (${theme} ${view}): cite chips open their record with "← Back to Ask"; Add as task, Open and Draft a reply run only on a click`, async () => {
+        // The thread's records are seeded ones: `ask_read` answers this copy once the page loads again.
+        await page.addInitScript(t => { window.__askThreads = { 'ask-7f2c': t }; }, actionThread());
+        await page.reload();
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        const seen = await page.evaluate(() => ({
+          cites: [...document.querySelectorAll('[data-ask-turn="turn-1"] button.ws-ask-cite[data-action="ask-cite"]')].map(b => b.dataset.askCite).join(','),
+          plain: [...document.querySelectorAll('[data-ask-turn="turn-1"] span.ws-ask-cite')].map(x => x.textContent).join('|'),
+          actions: [...document.querySelectorAll('[data-ask-turn="turn-1"] .ws-ask-actions button')].map(b => `${b.dataset.action}:${b.textContent}`).join('|'),
+        }));
+        assert(seen.cites === 'a1,t2,e3,m4,n5', JSON.stringify(seen));
+        assert(seen.plain === 'From Knowledge: Marek Novak|From Knowledge: Atlas rollout', JSON.stringify(seen));
+        assert(seen.actions === 'ask-task:+ Add as task|ask-go:Open Event · Fri 27 Nov 10:00 · QBR|ask-reply:✦ Draft a reply to Jordan Lee', JSON.stringify(seen));
+        await page.locator('[data-ask-turn="turn-1"] .ws-ask-actions').scrollIntoViewIfNeeded();
+        await noOverflow(page, `${name} at 1000`);
+        await shot(page, `${name}-actions-1000`);
+        const writesBefore = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => !['ask_read', 'capture_parse'].includes(op)).length);
+        // A cite chip: Priya's mail selected (open in Compact), and the way back for 6 s.
+        await page.click('[data-action="ask-cite"][data-ask-cite="a1"]');
+        await page.waitForSelector(view === 'compact' ? '.ws-inbox-row[data-id="m-reply-1"][aria-expanded="true"]' : '.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        await page.waitForSelector('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        // `shot` drops toasts: this one is the point, so the window is taken as it is.
+        await page.screenshot({ path: `${OUT.replace(/\/$/, '')}/${name}-cite-toast-1000.png` });
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        assert(new URL(page.url()).hash === '#/ask/ask-7f2c', new URL(page.url()).hash);
+        // + Add as task: the bar filled in; nothing saved until Add.
+        await page.click('[data-action="ask-task"]');
+        await page.waitForSelector('.ws-capture');
+        const bar = await page.evaluate(() => ({
+          text: document.getElementById('capture-input')?.value,
+          due: document.querySelector('[data-capture-due]')?.textContent.replace('×', '').trim(),
+          source: document.querySelector('[data-capture-source]')?.textContent.replace('×', '').trim(),
+        }));
+        assert(bar.text === 'Send Priya the Atlas budget' && bar.due === 'Due Fri 27 Nov' && /^From: /.test(bar.source || ''), JSON.stringify(bar));
+        await shot(page, `${name}-add-task-1000`);
+        assert((await calls(page, 'task_save')).length === 0, 'Add as task saved a task');
+        // Esc clears the words, then closes the bar.
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.querySelector('.ws-capture'));
+        // Open: the calendar on the event's day with the event open.
+        await page.click('[data-action="ask-go"]');
+        await page.waitForSelector('dialog.ws-event-modal[open][data-event-id="ev-standup"]');
+        assert(new URL(page.url()).hash.startsWith('#/calendar'), new URL(page.url()).hash);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.querySelector('dialog.ws-event-modal[open]'));
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        // ✦ Draft a reply: Jordan's chat opened, then one ai_draft with the hint; nothing sent.
+        await page.click('[data-action="ask-reply"]');
+        await page.waitForFunction(() => window.__bridgeCalls.some(([op]) => op === 'ai_draft'));
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        const drafts = await calls(page, 'ai_draft');
+        assert(drafts.length === 1 && drafts[0].sourceId === 'c-reply-1' && drafts[0].instructions === 'Say the deck comes Thursday.', JSON.stringify(drafts));
+        const sent = await page.evaluate(n => window.__bridgeCalls.slice(n).map(([op]) => op).filter(op => !['ask_read', 'capture_parse', 'ai_draft', 'ai_status'].includes(op)), writesBefore);
+        assert(!sent.some(op => /send|task_save|reply|note_append|mail/.test(op)), `sent: ${sent.join(',')}`);
+        await shot(page, `${name}-draft-1000`);
         assert(errors.length === 0, errors.join(' | '));
       });
       await context.close().catch(() => {});

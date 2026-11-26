@@ -4,7 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAskController } from '../workspace/ask-controller.js';
-import { askField } from '../workspace/ask-model.js';
+import { askField, citeTarget } from '../workspace/ask-model.js';
+import { createCaptureController } from '../workspace/capture-controller.js';
+import { captureBar } from '../workspace/capture-model.js';
 import { askThread, buildSnapshot, withAsk } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 26, 9);
@@ -516,4 +518,177 @@ test('I1: a close while ⌘K draws the field (focus put back on the row a moment
   await esc.ctl.focusField({ from: '[data-id="m-priya"]' });
   esc.ctl.key(keyEvent({ key: 'Escape' }));
   assert.equal(esc.state.ask.backFocus, null);
+});
+
+// ---------------------------------------------------------------- cites and actions (Task 11)
+
+/** The records ask-thread.json's cites and actions point at; Priya's mail is "Atlas budget". */
+function withThreadRecords(s) {
+  const msg = (id, from, channel) => ({ id, kind: 'message', source: 'mail:inbox', connectionId: s.connection.id, workspaceId: null, revision: `r-${id}`, updatedAt: TUE,
+    data: { channel, title: 'Atlas budget', text: 'Can you send the deck?', from, fromAddress: 'x@example.test', at: TUE, lane: 'reply', lifecycle: 'open', conversationId: `conv-${id}`, isMine: false, to: [] } });
+  s.records.push(
+    msg('msg-17', 'Priya N.', 'mail'), msg('msg-21', 'Jordan Lee', 'chat'),
+    { id: 'task-3', kind: 'commitment', source: 'local', connectionId: null, workspaceId: 'personal', revision: 'r-t', updatedAt: TUE, data: { text: 'Send the Atlas budget', status: 'todo' } },
+    { id: 'ev-9', kind: 'event', source: 'calendar:cal-main', connectionId: s.connection.id, workspaceId: null, revision: 'r-e', updatedAt: TUE, data: { title: 'QBR', start: '2026-11-27T10:00:00Z', end: '2026-11-27T11:00:00Z', allDay: false, calendarId: 'cal-main' } },
+    { id: 'ev-4', kind: 'event', source: 'calendar:cal-main', connectionId: s.connection.id, workspaceId: null, revision: 'r-e4', updatedAt: TUE, data: { title: 'Atlas sync', start: '2026-11-20T14:00:00Z', end: '2026-11-20T15:00:00Z', allDay: false, calendarId: 'cal-main' } },
+  );
+  return s;
+}
+
+/** The page over fakes with the thread's records, app.js's record opener, its quick capture
+ *  (the real controller, drawn with `captureBar`) and the toasts recorded. */
+function actionHarness({ drop = [], ...over } = {}) {
+  const h = pageHarness(over);
+  withThreadRecords(h.s);
+  h.s.records = h.s.records.filter(r => !drop.includes(r.id));
+  Object.assign(h.calls, { opened: [], toasts: [], drafts: [], captureHtml: '', parse: 0 });
+  h.state.capture = undefined;
+  const capture = createCaptureController({
+    state: h.state, snap: () => h.s,
+    mutate: async (op, data) => { h.calls.mutate.push([op, data]); return { id: 'task-new' }; },
+    query: async () => { h.calls.parse++; return { title: '', due: null }; },
+    render: () => { h.calls.captureHtml = h.state.capture.open ? captureBar(h.state, h.s) : ''; },
+    wait: 0,
+  });
+  h.state.capture = { ...h.state.capture };
+  return { ...h, capture };
+}
+
+/** Builds the controller of `h` again with Task 11's dependencies (the harness made it without). */
+function withActions(h, { claude = run => run() } = {}) {
+  const { state, calls, s } = h;
+  let hash = `#/ask/${state.ask.threadId}`;
+  const ctl = createAskController({
+    state, snap: () => s,
+    query: async (op, data) => { calls.query.push([op, data]); return structuredClone(h.threads[data.threadId]); },
+    mutate: async (op, data) => { calls.mutate.push([op, data]); return {}; },
+    render: () => { calls.render++; },
+    go: async target => {
+      calls.go.push(target);
+      hash = target;
+      const m = /^#\/ask(?:\/(.+))?$/.exec(target);
+      state.route = m ? 'ask' : target.replace(/^#\/?/, '').split('/')[0];
+      if (m) state.ask.threadId = m[1] ? decodeURIComponent(m[1]) : null;
+    },
+    openRecord: async target => {
+      calls.opened.push(target);
+      hash = target.hash;
+      state.route = target.hash.replace(/^#\/?/, '').split('/')[0];
+    },
+    hash: () => hash,
+    toast: (message, tone, action, options) => calls.toasts.push({ message, tone, action, options }),
+    withClaudeChoice: claude,
+    draftOptions: channel => ({ intent: 'reply', tone: 'neutral', length: 'short', includeFreeTimes: false, channel }),
+    openCapture: o => h.capture.open(o),
+    focus: (sel, o) => calls.focus.push([sel, o || null]),
+    focusBack: sel => calls.focusBack.push(sel),
+    fail: err => calls.failed.push(err),
+  });
+  return ctl;
+}
+
+const writes = calls => calls.mutate.filter(([op]) => op !== 'job_cancel');
+
+test('a cite chip navigates and toasts "← Back to Ask" for 6 s; the toast returns to the thread', async () => {
+  const h = actionHarness();
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'a1' }));
+  assert.deepEqual(h.calls.opened, [{ hash: '#/inbox', select: { kind: 'message', id: 'msg-17', lane: 'reply' } }]);
+  assert.equal(h.calls.toasts.length, 1);
+  const t = h.calls.toasts[0];
+  assert.equal(t.action.label, '← Back to Ask');
+  assert.equal(t.options.life, 6000);
+  await t.action.run();
+  assert.deepEqual(h.calls.go.at(-1), '#/ask/ask-7f2c');
+  assert.equal(h.state.route, 'ask');
+  // Every kind goes where its cite says; a person and a fact go nowhere.
+  for (const id of ['t2', 'e3', 'n5']) await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: id }));
+  assert.deepEqual(h.calls.opened.slice(1).map(o => o.hash), ['#/tasks', '#/calendar', '#/meetings/ev-4/summary']);
+  for (const id of ['p6', 'f7', 'zz']) await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: id }));
+  assert.equal(h.calls.opened.length, 4);
+  assert.equal(h.calls.toasts.length, 4);
+  assert.deepEqual(writes(h.calls), [], 'a cite sends nothing');
+});
+
+test('+ Add as task opens the capture bar with the action\'s text and due and the turn\'s About as source; nothing is sent until Add', async () => {
+  const h = actionHarness();
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.handle('ask-task', el({ askTurn: 'turn-1', askIndex: '0' }));
+  assert.equal(h.state.capture.open, true);
+  assert.equal(h.state.capture.mode, 'task');
+  assert.equal(h.state.capture.text, 'Send Priya the Atlas budget');
+  assert.deepEqual(h.state.capture.source, { kind: 'message', id: 'msg-17' });
+  assert.match(h.calls.captureHtml, /value="Send Priya the Atlas budget"/);
+  assert.match(h.calls.captureHtml, /Due Fri 27 Nov/);
+  assert.match(h.calls.captureHtml, /From: Atlas budget/);
+  assert.deepEqual(h.calls.mutate, [], 'no task_save before Add');
+  assert.equal(h.calls.opened.length, 0, 'the page stays');
+  // An About that is not a message or a meeting links nothing; none at all, nothing.
+  h.capture.close({ refocus: false });
+  h.threads['ask-7f2c'].turns[0].about = { kind: 'task', recordId: 'task-3', label: 'Task · Send the Atlas budget' };
+  await ctl.refresh({ force: true });
+  await ctl.handle('ask-task', el({ askTurn: 'turn-1', askIndex: '0' }));
+  assert.equal(h.state.capture.source, null);
+});
+
+test('"Open <label>" navigates as its cite does', async () => {
+  const h = actionHarness();
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.handle('ask-go', el({ askTurn: 'turn-1', askIndex: '1' }));
+  const turn = h.threads['ask-7f2c'].turns[0];
+  assert.deepEqual(h.calls.opened, [citeTarget(turn.cites.find(c => c.id === 'e3'), h.s)]);
+  assert.deepEqual(h.calls.opened[0], { hash: '#/calendar', select: { kind: 'event', id: 'ev-9', day: '2026-11-27' } });
+  assert.equal(h.calls.toasts[0].action.label, '← Back to Ask');
+  assert.deepEqual(h.calls.mutate, []);
+});
+
+test('"✦ Draft a reply to Priya N." opens the message, then sends one ai_draft whose instructions are the action\'s hint; nothing is sent', async () => {
+  const h = actionHarness();
+  let chooser = 0;
+  const ctl = withActions(h, { claude: async run => { chooser++; return run(); } });
+  await ctl.openThread();
+  await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '2' }));
+  assert.deepEqual(h.calls.opened, [{ hash: '#/inbox', select: { kind: 'message', id: 'msg-21', lane: 'reply' } }]);
+  assert.deepEqual(h.calls.mutate, [['ai_draft', { sourceId: 'msg-21', intent: 'reply', tone: 'neutral', length: 'short', includeFreeTimes: false, instructions: 'Say the deck comes Thursday.' }]]);
+  assert.equal(chooser, 1, 'through withClaudeChoice');
+  assert.equal(h.calls.toasts[0].action.label, '← Back to Ask');
+  assert.ok(!h.calls.mutate.some(([op]) => /send|task_save|reply_save/.test(op)), 'nothing sent');
+  // The hint stays one line of at most 200 characters on the instructions path.
+  h.threads['ask-7f2c'].turns[0].actions[2].hint = `Line one\nline two ${'x'.repeat(300)}`;
+  h.state.route = 'ask';
+  await ctl.refresh({ force: true });
+  await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '2' }));
+  const instructions = h.calls.mutate.at(-1)[1].instructions;
+  assert.ok(!instructions.includes('\n'));
+  assert.ok(instructions.length <= 200);
+  assert.ok(instructions.startsWith('Line one line two'));
+});
+
+test('an action whose ref is gone is not drawn, and a stale click does nothing', async () => {
+  const h = actionHarness({ drop: ['ev-9', 'msg-21'] });
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.handle('ask-go', el({ askTurn: 'turn-1', askIndex: '1' }));
+  await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '2' }));
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'e3' }));
+  // A wrong index or kind does nothing either.
+  await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '0' }));
+  await ctl.handle('ask-task', el({ askTurn: 'turn-9', askIndex: '0' }));
+  assert.deepEqual(h.calls.opened, []);
+  assert.deepEqual(h.calls.mutate, []);
+  assert.equal(h.calls.toasts.length, 0);
+  assert.notEqual(h.state.capture.open, true);
+});
+
+test('rendering a thread sends nothing', async () => {
+  const h = actionHarness();
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.refresh({ force: true });
+  assert.deepEqual(h.calls.mutate, [], 'no mutate on open');
+  assert.ok(h.calls.query.every(([op]) => op === 'ask_read'), 'only ask_read');
+  assert.equal(h.calls.opened.length + h.calls.toasts.length, 0);
 });

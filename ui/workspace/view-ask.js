@@ -4,14 +4,15 @@
 // takes the window's view state, the snapshot and the thread `ask_read` answered, returns HTML.
 // ask-controller.js owns the thread and the actions; app.js draws this for route `ask`. Every
 // question, label and searched line goes through `escapeHtml`, the answer through `renderMarkdown`
-// in its Ask mode. Cite chips and actions become controls in Task 11 (`ask-cite`, `ask-go`). The
+// in its Ask mode. A cite chip whose record is in Connect is a button (`ask-cite`); the actions are
+// `ask-task`, `ask-go` and `ask-reply` buttons that only propose (ask-controller.js runs them). The
 // answering line is drawn here; the one live status a screen reader hears is app.js's, outside
 // the page, so a redraw never says it again (`nextAskStatus`).
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { renderMarkdown } from './markdown.js';
 import { addDaysToKey, dayKey } from './format.js';
-import { BUSY } from './ask-model.js';
+import { actionControl, BUSY } from './ask-model.js';
 
 const NAV_NAMES = { today: 'Today', inbox: 'Inbox', calendar: 'Calendar', meetings: 'Meetings', tasks: 'Tasks', automations: 'Automations', analytics: 'Analytics', settings: 'Settings' };
 /** The failures a profile's own state explains (Settings › AI fixes them). */
@@ -127,9 +128,24 @@ function answerBlock(turn, snap) {
   };
   const chips = cites.map(c => {
     const gone = citeGone(c, snap);
+    if (RECORD_KINDS[c.kind] && !gone) {
+      return `<li><button type="button" class="ws-ask-cite" id="${e(citeId(turn, c))}" data-action="ask-cite" data-ask-turn="${e(turn.id)}" data-ask-cite="${e(c.id)}">${e(citeText(c, turn, snap))}</button></li>`;
+    }
     return `<li><span class="ws-ask-cite${gone ? ' ws-ask-cite-gone' : ''}" id="${e(citeId(turn, c))}" tabindex="-1">${e(citeText(c, turn, snap))}${gone ? ' · No longer in Connect' : ''}</span></li>`;
   }).join('');
-  return `<div class="ws-ask-answer ws-md">${renderMarkdown(turn.answer || '', { mode: 'ask', cite: mark })}</div>${chips ? `<ul class="ws-ask-cites">${chips}</ul>` : ''}`;
+  return `<div class="ws-ask-answer ws-md">${renderMarkdown(turn.answer || '', { mode: 'ask', cite: mark })}</div>${chips ? `<ul class="ws-ask-cites">${chips}</ul>` : ''}${actionsRow(turn, snap)}`;
+}
+
+/** The answer's actions (at most 3, each only a proposal): one button per action that can still
+ *  run, keeping its index in the turn; an action whose record is gone is not drawn. */
+function actionsRow(turn, snap) {
+  const buttons = (turn.actions || []).slice(0, 3).map((a, i) => {
+    const c = actionControl(a, turn, snap);
+    if (!c) return '';
+    const label = c.label.startsWith('✦ ') ? `<span aria-hidden="true">✦</span> ${e(c.label.slice(2))}` : e(c.label);
+    return `<button type="button" class="ws-btn ws-btn-secondary ws-btn-sm" data-action="ask-${c.kind}" data-ask-turn="${e(turn.id)}" data-ask-index="${i}">${label}</button>`;
+  }).join('');
+  return buttons ? `<div class="ws-ask-actions">${buttons}</div>` : '';
 }
 
 function runningBlock(turn, { snap, now, profiles, ai }) {

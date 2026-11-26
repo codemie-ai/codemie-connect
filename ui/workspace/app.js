@@ -36,6 +36,7 @@ import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { activeProvider, newTasksView, tasksOf } from './tasks-model.js';
+import { shownView } from './tasks-dates-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
@@ -2004,6 +2005,13 @@ const askUi = store && createAskController({
   hash: () => location.hash,
   hiddenCalendars: () => [...hiddenCalendars()],
   openCapture: options => openCapture(options),
+  openRecord: target => openAskTarget(target),
+  draftOptions: channel => rememberedOptions(channel),
+  // The composer's own ✦ draft path (the chooser on first use, a change's Restore ended).
+  startDraft: async (m, request) => {
+    await startDraft(m, request, request.instructions || '', request);
+    document.getElementById('reply-body')?.focus({ preventScroll: true });
+  },
   fieldShown: () => !!document.getElementById('ask-input')?.getClientRects().length,
   focus: (selector, { select = false } = {}) => {
     if (pressing) {
@@ -2021,6 +2029,33 @@ const askUi = store && createAskController({
     el.focus({ preventScroll: true });
   },
 });
+
+/** Opens an Ask cite's record in the window (`citeTarget`, § 8): a message on its lane, selected
+ *  (Default) or open (Compact); a task's drawer (By date: its row unfolded); a calendar day with
+ *  its event open; a meeting by its hash. Sends nothing. */
+async function openAskTarget({ hash, select } = {}) {
+  if (select?.kind === 'message') {
+    const m = getRecord('message', select.id);
+    if (!m) return undefined;
+    Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: m.id, selectedKey: messageKey(m) });
+    if (compactView()) Object.assign(state, { openMessage: m.id, openKey: messageKey(m) });
+    return route('inbox');
+  }
+  if (select?.kind === 'task') {
+    await route('tasks');
+    if (!tasksOf(snap()).some(r => r.id === select.id)) return undefined;
+    if (shownView(state.tasks, snap()) !== 'dates') return tasksUi.openDrawer(select.id);
+    state.tasks.rowOpen = select.id;
+    return render();
+  }
+  if (select?.kind === 'event') {
+    if (select.day) state.calendarDate = dateFromKey(select.day);
+    await route('calendar');
+    const ev = getRecord('event', select.id);
+    return ev ? eventDialog(ev) : undefined;
+  }
+  return hash ? goHash(hash) : undefined;
+}
 
 // The field's and the page box's own keys, first (capture phase): Enter asks, Esc clears then
 // leaves, ↑ ↓ move through Recent; a key handled there goes no further (the Inbox's Enter and ⌘↩).

@@ -2,7 +2,7 @@
 // 19, 32 and 34): the About label, Recent, the field's markup and the ⌘K test.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aboutOf, askField, askRailButton, fieldRunning, isAskKey, isStopKey, recentQuestions, newAskView } from '../workspace/ask-model.js';
+import { aboutOf, actionControl, actionTarget, askField, askRailButton, citeTarget, fieldRunning, isAskKey, isStopKey, recentQuestions, newAskView } from '../workspace/ask-model.js';
 import { readFileSync } from 'node:fs';
 import { buildSnapshot, withAsk, askStates } from './fixtures/workspace-fixture.mjs';
 
@@ -149,4 +149,44 @@ test('⌘. is Stop: Meta only, not with ⌥ ⇧ ⌃ or mid-composition', () => {
   // M2: never under a dialog or the setup sheet.
   assert.equal(isStopKey(ev(), { modal: true }), false);
   assert.equal(isStopKey(ev(), { sheet: true }), false);
+});
+
+// ---------------------------------------------------------------- cites and actions (Task 11)
+
+test('citeTarget: message → #/inbox on its lane with the row selected; meeting → #/meetings/<id>/summary; task → #/tasks with its drawer or row; event → #/calendar on its day with it open; person and fact → null', () => {
+  const s = askSnapshot();
+  s.records.find(r => r.id === 'm-jordan').data.lane = 'waiting';
+  assert.deepEqual(citeTarget({ id: 'a1', kind: 'message', recordId: 'm-priya', label: 'Priya N. · mail · Tue 24 Nov' }, s), { hash: '#/inbox', select: { kind: 'message', id: 'm-priya', lane: 'reply' } });
+  assert.deepEqual(citeTarget({ id: 'm4', kind: 'message', recordId: 'm-jordan' }, s).select.lane, 'waiting');
+  assert.deepEqual(citeTarget({ id: 'n5', kind: 'meeting', recordId: 'mtg-qbr' }, s), { hash: '#/meetings/mtg-qbr/summary' });
+  // A meeting cite may name the calendar event the meeting is.
+  assert.deepEqual(citeTarget({ id: 'n5', kind: 'meeting', recordId: 'ev-qbr' }, s), { hash: '#/meetings/ev-qbr/summary' });
+  assert.deepEqual(citeTarget({ id: 't2', kind: 'task', recordId: 'task-budget' }, s), { hash: '#/tasks', select: { kind: 'task', id: 'task-budget' } });
+  assert.deepEqual(citeTarget({ id: 'e3', kind: 'event', recordId: 'ev-qbr' }, s), { hash: '#/calendar', select: { kind: 'event', id: 'ev-qbr', day: '2026-11-27' } });
+  // An all-day event's day is its start date, whatever the zone.
+  s.records.push({ id: 'ev-day', kind: 'event', source: 'calendar:cal-main', data: { title: 'Offsite', allDay: true, startDate: '2026-12-01', start: '2026-11-30T23:00:00Z', calendarId: 'cal-main' } });
+  assert.equal(citeTarget({ id: 'e9', kind: 'event', recordId: 'ev-day' }, { ...s, settings: { ...s.settings, timeZone: 'America/New_York' } }).select.day, '2026-12-01');
+  assert.equal(citeTarget({ id: 'p6', kind: 'person', recordId: 'p-1', label: 'Person · Marek Novak' }, s), null);
+  assert.equal(citeTarget({ id: 'f7', kind: 'fact', recordId: null, title: 'Atlas rollout' }, s), null);
+  // A record no longer in Connect opens nothing.
+  assert.equal(citeTarget({ id: 'a1', kind: 'message', recordId: 'gone' }, s), null);
+  assert.equal(citeTarget({ id: 't2', kind: 'task', recordId: 'gone' }, s), null);
+  assert.equal(citeTarget(null, s), null);
+});
+
+test('actionControl: "+ Add as task", "Open <label>" and "✦ Draft a reply to <name>"; an action whose record is gone is not drawn', () => {
+  const s = askSnapshot();
+  const turn = { cites: [{ id: 'a1', kind: 'message', recordId: 'm-priya', label: 'Priya N. · mail · Tue 24 Nov' }, { id: 'e3', kind: 'event', recordId: 'ev-qbr', label: 'Event · Fri 27 Nov 10:00 · QBR' }] };
+  assert.deepEqual(actionControl({ kind: 'task', text: 'Send Priya the Atlas budget', due: '2026-11-27' }, turn, s), { kind: 'task', label: '+ Add as task' });
+  assert.deepEqual(actionControl({ kind: 'open', ref: 'e3', recordId: 'ev-qbr', label: 'Event · Fri 27 Nov 10:00 · QBR' }, turn, s), { kind: 'go', label: 'Open Event · Fri 27 Nov 10:00 · QBR' });
+  assert.deepEqual(actionControl({ kind: 'draft', ref: 'a1', recordId: 'm-priya', label: 'Priya N. · mail · Tue 24 Nov', hint: 'Say Friday.' }, turn, s), { kind: 'reply', label: '✦ Draft a reply to Priya N.' });
+  // Open goes as its cite does; an uncited ref (the About) is found by its record.
+  assert.deepEqual(actionTarget({ kind: 'open', ref: 'e3', recordId: 'ev-qbr' }, turn, s), citeTarget(turn.cites[1], s));
+  assert.deepEqual(actionTarget({ kind: 'open', ref: 'a9', recordId: 'task-budget', label: 'Task · Send the Atlas budget' }, turn, s), { hash: '#/tasks', select: { kind: 'task', id: 'task-budget' } });
+  // Gone: the record left, the draft's record is not a message, an empty task, an unknown kind.
+  assert.equal(actionControl({ kind: 'open', ref: 'e3', recordId: 'gone', label: 'x' }, { cites: [] }, s), null);
+  assert.equal(actionControl({ kind: 'draft', ref: 'a1', recordId: 'gone', label: 'Priya N. · mail' }, turn, s), null);
+  assert.equal(actionControl({ kind: 'draft', ref: 't2', recordId: 'task-budget', label: 'Task · Send' }, turn, s), null);
+  assert.equal(actionControl({ kind: 'task', text: '  ' }, turn, s), null);
+  assert.equal(actionControl({ kind: 'send', ref: 'a1', recordId: 'm-priya' }, turn, s), null);
 });
