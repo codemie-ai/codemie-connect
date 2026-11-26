@@ -3184,6 +3184,46 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-user{flex:none;padding:2px}
 }
 
+/* The Ask field (ask-capture design § 2): first in the main menu, below the brand. Open or holding
+   words, it shows the About chip, Recent and the foot under the box. On the rail the ✦ button
+   takes its place. The same markup in both views; Compact's tokens size it. */
+.ws-ask-slot{flex:none;display:flex;flex-direction:column;margin:-4px 0 -4px}
+.ws-ask-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ws-ask-box{position:relative;display:flex;align-items:center;height:var(--ws-input-h);border:1px solid var(--ws-input-border);border-radius:var(--ws-r-control);background:var(--ws-input);transition:border-color .12s ease}
+.ws-ask-box:hover{border-color:var(--ws-input-hover)}
+.ws-ask-box:focus-within{border-color:var(--ws-input-focus)}
+.ws-ask-box .ws-icon.ws-ask-icon{position:absolute;left:9px;width:15px;height:15px;color:var(--ws-accent);pointer-events:none}
+.ws-ask-input{flex:1;min-width:0;height:100%;box-sizing:border-box;padding:0 6px 0 31px;border:0;background:none;color:var(--ws-text);font-size:var(--ws-fs-body-sm);text-overflow:ellipsis}
+.ws-ask-input::placeholder{color:var(--ws-faint)}
+.ws-ask-input:focus{outline:none}
+#workspace-app .ws-ask-input:focus-visible{outline:none}
+.ws-ask-field[data-running] .ws-ask-input::placeholder{color:var(--ws-muted)}
+.ws-ask-hint{flex:none;margin-right:7px;padding:1px 5px;border:1px solid var(--ws-border);border-radius:4px;font:500 var(--ws-fs-label)/14px var(--font-ui);color:var(--ws-faint)}
+.ws-ask-chip{display:flex;align-items:flex-start;gap:4px;padding:4px 4px 4px 8px;border-radius:6px;background:color-mix(in srgb,var(--ws-accent) 14%,transparent);font-size:var(--ws-fs-meta);line-height:15px;color:var(--ws-text)}
+.ws-ask-chip>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.ws-ask-x{flex:none;width:18px;height:18px;margin:-1px 0;padding:0;border:0;border-radius:4px;background:none;color:var(--ws-muted);line-height:16px}
+.ws-ask-x:hover{color:var(--ws-text);background:#ffffff1f}
+.light .ws-ask-x:hover{background:#0000000f}
+.ws-ask-error{font-size:var(--ws-fs-meta);line-height:15px;color:var(--ws-amber)}
+.ws-ask-recent-title{padding:0 8px 2px;font-size:var(--ws-fs-label);font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:#8A8A8A}
+.light .ws-ask-recent-title{color:#666}
+.ws-ask-recent ul{list-style:none;margin:0;padding:0;display:grid;gap:1px}
+.ws-ask-recent li{height:24px;padding:0 8px;border-radius:5px;font-size:var(--ws-fs-secondary);line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#CCCCCC;cursor:pointer}
+.light .ws-ask-recent li{color:#333}
+.ws-ask-recent li:hover,.ws-ask-recent li[aria-selected=true]{background:#212224;color:#F2F0EF}
+.light .ws-ask-recent li:hover,.light .ws-ask-recent li[aria-selected=true]{background:#D5E7FC;color:#007AFF}
+.ws-ask-foot{padding:0 8px;font-size:var(--ws-fs-label);line-height:14px;color:var(--ws-faint)}
+.ws-ask-rail{display:none;width:40px;height:var(--ws-nav-row-h);margin:0 auto;place-items:center;padding:0;border:1px solid var(--ws-input-border);border-radius:var(--ws-r-nav);background:var(--ws-input);color:var(--ws-accent)}
+.ws-ask-rail:hover{border-color:var(--ws-input-hover)}
+.ws-ask-rail .ws-icon{width:16px;height:16px}
+@container ws-menu (max-width:100px){
+  .ws-ask-field{display:none}
+  .ws-ask-rail{display:grid}
+}
+/* The Ask page's box (the page itself comes with its thread view). */
+.ws-ask-page{max-width:760px}
+.ws-ask-page-box{display:flex;gap:8px;margin-top:12px}
+
 /* A rail has no labels: a tooltip names the icon. */
 .ws-tooltip{position:fixed;z-index:500;transform:translateY(-50%);pointer-events:none;padding:5px 9px;border-radius:6px;background:var(--ws-text);color:var(--ws-bg);font-size:var(--ws-fs-secondary);line-height:16px;white-space:nowrap;box-shadow:0 4px 14px #00000040}
 

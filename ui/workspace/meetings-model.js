@@ -574,8 +574,9 @@ export function lineAt(segments, ref) {
 
 // ---------------------------------------------------------------- hash (R6)
 
-/** The app's routes, as hashes name them. */
-export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics', 'settings'];
+/** The app's routes, as hashes name them. `ask` (`#/ask`, `#/ask/<thread>`) is a route like
+ *  `settings`, not a menu page: hiding pages never hides it. */
+export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics', 'settings', 'ask'];
 
 /** `#/route/tab`, and `#/meetings/<encoded id>/<pane>` for a meeting: `{route, meetingId, pane}`;
  *  an unknown route is Today, an empty hash `route: null`. `pane` is null when the hash has none,

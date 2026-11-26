@@ -63,6 +63,8 @@ import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
 import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from './inbox-open.js';
 import { captureBar, isCaptureKey, newCaptureView } from './capture-model.js';
 import { createCaptureController } from './capture-controller.js';
+import { askPageStub, isAskKey, newAskView } from './ask-model.js';
+import { createAskController } from './ask-controller.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
@@ -132,6 +134,9 @@ const state = {
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
   // Quick capture (⌘N): the bar's view state, its Task / Note choice kept for the session.
   capture: newCaptureView(),
+  // Ask (⌘K): the menu field's words, list and About chip, the page it was opened from, the
+  // thread `#/ask/<id>` shows. The calendar event whose card is open (the About chip's event).
+  ask: newAskView(), openEvent: null,
 };
 let pluginHost = null;
 // Connect's terminal dock (terminal-dock.js), made with the plugin host.
@@ -211,6 +216,9 @@ let layoutHolds = 0;
 // The mouse button is down: an update redrawn between a click's mousedown and mouseup would
 // replace the control under the pointer and lose the click, so it waits for the mouseup.
 let pressing = false;
+// The Ask field opened or closed while the button was down (a click into it, or elsewhere): drawn
+// once the button is up, so the press isn't redrawn away (the field keeps its focus and caret).
+let askHeld = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
 const KEEP_FOCUS = new Set(['capture-mode', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
@@ -300,7 +308,7 @@ const shellMarkup = () => renderShell({
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(), sidebarFolded: sidebarFolded(),
-  meetingsHidden: state.meetings.hidden, hiddenPages: snap().settings.hiddenPages || [],
+  meetingsHidden: state.meetings.hidden, hiddenPages: snap().settings.hiddenPages || [], askState: state,
 });
 
 function shell() {
@@ -521,6 +529,7 @@ async function render() {
           : state.route === 'tasks' ? tasksPage(s, ctx)
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [], taskLabel: meetingsUi.taskLabel() })
           : state.route === 'plugin' ? pluginPageHtml()
+          : state.route === 'ask' ? askPageStub(state)
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
@@ -805,6 +814,7 @@ async function route(name, tab, pluginPath = null) {
   if (state.route === 'inbox' && name !== 'inbox') closeRow();
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
+  if (state.route === 'ask') state.ask.threadId = askThreadOf(tab);
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
   state.pluginPath = onPluginsTab ? pluginPath : null;
   state.pluginPage = null;
@@ -839,9 +849,21 @@ function syncTasks() {
   if (s && activeProvider(s) !== 'local') store.query('task_sync_now', {}).catch(() => {});
 }
 
-/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<pane>` for a meeting. */
+/** A thread id from an `#/ask/<id>` hash, or null. */
+function askThreadOf(part) {
+  try {
+    const id = part ? decodeURIComponent(part) : '';
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<pane>` for a meeting,
+ *  `#/ask/<id>` for an Ask thread. */
 function routeHash() {
   if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.pane);
+  if (state.route === 'ask') return `#/ask${state.ask.threadId ? `/${encodeURIComponent(state.ask.threadId)}` : ''}`;
   return `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`;
 }
 
@@ -1950,6 +1972,57 @@ function openCapture(options) {
   return captureUi?.open(options);
 }
 
+// ---------------------------------------------------------------- Ask (ask-capture § 2, § 11)
+
+// The menu's field and the Ask page's box. The field is part of the menu (shell.js draws it from
+// `state.ask` on every render; its words are kept there, so a redraw keeps them, and the render's
+// own refocus keeps its focus and caret). The About chip is read from the page's selection.
+const askUi = store && createAskController({
+  state, snap, mutate, query: (op, data) => store.query(op, data),
+  render: () => {
+    if (!ready || modalOpen()) return;
+    if (pressing) askHeld = true;
+    else render().catch(fail);
+  },
+  go: hash => goHash(hash), toast, withClaudeChoice, fail,
+  hash: () => location.hash,
+  hiddenCalendars: () => [...hiddenCalendars()],
+  openCapture: options => openCapture(options),
+  fieldShown: () => !!document.getElementById('ask-input')?.getClientRects().length,
+  focus: (selector, { select = false } = {}) => {
+    const el = document.querySelector(selector);
+    el?.focus({ preventScroll: true });
+    if (select) el?.select?.();
+  },
+  focusBack: selector => {
+    const el = soleMatch(root, selector) || root.querySelector('#workspace-page h1') || document.getElementById('workspace-main');
+    if (!el) return;
+    if (!el.matches('a,button,input,select,textarea,[tabindex]')) el.setAttribute('tabindex', '-1');
+    el.focus({ preventScroll: true });
+  },
+});
+
+// The field's and the page box's own keys, first (capture phase): Enter asks, Esc clears then
+// leaves, ↑ ↓ move through Recent; a key handled there goes no further (the Inbox's Enter and ⌘↩).
+document.addEventListener('keydown', ev => {
+  if (askUi && ev.target.closest?.('.ws-ask-field,.ws-ask-page-box') && !modalOpen()) askUi.key(ev);
+}, true);
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'ask-input') askUi?.input(ev.target.value);
+}, true);
+// Focus into the field opens its list; focus or a press anywhere else closes it.
+document.addEventListener('focusin', ev => {
+  if (!askUi || !ready) return;
+  if (ev.target.closest?.('.ws-ask-field')) askUi.opened();
+  else if (state.ask.open) askUi.closed();
+});
+// A press elsewhere is drawn after the button is up (a redraw now would swallow its click).
+document.addEventListener('pointerdown', ev => {
+  if (!askUi || !state.ask.open || ev.target.closest?.('.ws-ask-field')) return;
+  Object.assign(state.ask, { open: false, active: -1 });
+  askHeld = true;
+}, true);
+
 /** Lays the bar over the main area, under the top bar (the menu may be a rail, collapsed or
  *  dragged; the terminal dock may be open). */
 function placeCapture(host) {
@@ -2034,6 +2107,16 @@ document.addEventListener('keydown', ev => {
   if (isCaptureKey(ev, { modal: modalOpen(), sheet: sheetOpen() })) {
     ev.preventDefault();
     openCapture();
+    return;
+  }
+  // ⌘K: the Ask field (or the Ask page's box). The terminal dock keeps its own ⌘K (its keys
+  // never reach here; `isAskKey` checks too), as does a plugin frame (another document).
+  if (isAskKey(ev, { modal: modalOpen(), sheet: sheetOpen() })) {
+    ev.preventDefault();
+    if (state.capture.open) captureUi?.close({ refocus: false });
+    const el = document.activeElement;
+    const from = el && root.contains(el) && !el.closest('.ws-ask-field') ? controlSelector(el) : null;
+    askUi?.focusField({ from }).catch(fail);
     return;
   }
   if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
@@ -2205,7 +2288,9 @@ function eventDialog(ev) {
     cancel: 'Close',
     size: 'md',
     footerExtra: eventActions(snap(), ev),
+    onClose: () => { if (state.openEvent === ev.id) state.openEvent = null; },
   });
+  state.openEvent = ev.id;
   dialog.classList.add('ws-event-modal');
   dialog.dataset.eventId = ev.id;
   dialog.style.setProperty('--event-color', calendarColors(snap()).get(d.calendarId) || 'var(--ws-accent)');
@@ -2381,6 +2466,7 @@ function selectMessage(id) {
 async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
   if (action.startsWith('capture-')) return captureUi.handle(action, el);
+  if (action.startsWith('ask-')) return askUi.handle(action, el);
   if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
   if (action.startsWith('dock-')) return dockUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
@@ -3034,6 +3120,8 @@ document.addEventListener('change', async ev => {
 document.addEventListener('submit', async ev => {
   // The capture bar adds on its keys and its Add button, never by a form submission.
   if (ev.target.closest?.('.ws-capture')) return ev.preventDefault();
+  // The Ask boxes ask on their own Enter and button, never by a form submission.
+  if (ev.target.closest?.('.ws-ask-field,.ws-ask-page-box')) return ev.preventDefault();
   const form = ev.target.closest('form[data-form]');
   if (!form || !form.closest('#workspace-app')) return;
   ev.preventDefault();
@@ -3245,7 +3333,14 @@ document.addEventListener('mousedown', ev => {
 const released = () => {
   if (!pressing) return;
   pressing = false;
-  setTimeout(() => { if (heldRender && !taskDrag) flushHeldRender(); }, 0);
+  setTimeout(() => {
+    if (askHeld) {
+      askHeld = false;
+      if (ready && !modalOpen()) return render().catch(fail);
+    }
+    if (heldRender && !taskDrag) flushHeldRender();
+    return undefined;
+  }, 0);
 };
 document.addEventListener('mouseup', released, true);
 window.addEventListener('blur', released);
@@ -3700,7 +3795,8 @@ async function boot() {
       // decide whether an old `/tasks` link may move focus to the column (it can't check the
       // column setting yet here, before the snapshot is in).
       state.meetings.tasksLink = target.pane === 'tasks';
-    } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
+    } else if (state.route === 'ask') state.ask.threadId = askThreadOf(hash[2]);
+    else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');

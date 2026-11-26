@@ -194,3 +194,33 @@ test('the collapsed menu draws the rail: dots for counts, tooltips, a folded gro
   // The top bar has the same button at the left.
   assert.match(rail, /<header class="ws-topbar">\s*<button[^>]*data-action="sidebar-toggle"/);
 });
+
+// ---------------------------------------------------------------- Ask (ask-capture design § 1, § 2)
+
+test('the field is the first item of the menu with "Ask…" and "⌘K"; inMenu false draws no field', () => {
+  const html = shell();
+  const field = html.indexOf('<form class="ws-ask-field" role="search" aria-label="Ask"');
+  assert.ok(field > 0, 'no Ask field');
+  assert.ok(field > html.indexOf('class="ws-brand"'), 'the field sits below the brand');
+  assert.ok(field < html.indexOf('ws-nav-home'), 'the field sits above Today');
+  assert.match(html, /id="ask-input"[^>]*placeholder="Ask…"[^>]*aria-label="Ask Connect" aria-keyshortcuts="Meta\+K"/);
+  assert.match(html, />⌘K<\/kbd>/);
+  const s = buildSnapshot(NOW, { photo: false });
+  s.ask = { ...s.ask, inMenu: false };
+  const off = renderShell({ snapshot: s, route: 'today', resolvedDark: true });
+  assert.doesNotMatch(off, /ws-ask-field|data-action="ask-rail"/);
+});
+
+test('the rail shows a ✦ button "Ask (⌘K)" with aria-label "Ask" and aria-keyshortcuts "Meta+K" in the field\'s place', () => {
+  const rail = shell({ sidebarCollapsed: true });
+  const button = rail.indexOf('data-action="ask-rail"');
+  assert.ok(button > 0 && button < rail.indexOf('ws-nav-home'));
+  assert.match(rail, /<button type="button" class="ws-ask-rail" data-action="ask-rail" aria-label="Ask" aria-keyshortcuts="Meta\+K" title="Ask \(⌘K\)"/);
+});
+
+test('the field draws the window’s Ask state: its words and the About chip', () => {
+  const s = buildSnapshot(NOW, { photo: false });
+  const html = renderShell({ snapshot: s, route: 'inbox', resolvedDark: true, askState: { route: 'inbox', selectedMessage: 'm-reply-1', ask: { text: 'due?', open: true, active: -1 } } });
+  assert.match(html, /value="due\?"/);
+  assert.match(html, /About: Priya Natarajan · mail · /);
+});

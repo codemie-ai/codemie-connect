@@ -1148,6 +1148,19 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       else s.records.push({ id: crypto.randomUUID(), kind: 'note', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { text: joined } });
       return { id: (note || s.records.at(-1)).id };
     },
+    // Ask (ask-capture § 6): `ask_start` is recorded and answers `{threadId, turnId, jobId}`;
+    // `window.__askRefuse = {op, code, message, field?}` refuses the next one (`busy`,
+    // `validation`, `needs_choice`), once.
+    ask_start: d => {
+      calls.push(['ask_start', clone(d)]);
+      const refusal = window.__askRefuse;
+      if (refusal && (!refusal.op || refusal.op === 'ask_start')) {
+        window.__askRefuse = null;
+        throw refusal.field ? { code: refusal.code, message: refusal.message, field: refusal.field } : { code: refusal.code, message: refusal.message };
+      }
+      const threadId = d.threadId || `ask-${crypto.randomUUID().slice(0, 12)}`;
+      return { threadId, turnId: 'turn-1', jobId: `job-${crypto.randomUUID().slice(0, 8)}` };
+    },
     task_delete: d => {
       calls.push(['task_delete', clone(d)]);
       const stored = s.records.find(r => r.kind === 'commitment' && r.id === d.id);

@@ -152,7 +152,22 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     // The snapshot's own menu-bar count (menu-bar-count design §5), matching the settings above
     // (replies only): Task 2's "replies" contract state. `withMenuBar` swaps in another one.
     menuBar: contract('menu-bar-states').replies,
+    // The snapshot's `ask` (ask-capture design § 6): no threads yet, the field in the menu.
+    // `withAsk` swaps in another ask-states.json state.
+    ask: contract('ask-states').empty,
   };
+}
+
+// ---------------------------------------------------------------- Ask (step 9, Task 9)
+// Written by the Rust test that projects the real snapshot's `ask` (ask-states.json): `empty`,
+// `idle`, `running`, `failedLast`, `stoppedLast`.
+
+export const askStates = () => contract('ask-states');
+
+/** `snapshot.ask` replaced with one of the named states from ask-states.json. */
+export function withAsk(s, stateName) {
+  s.ask = askStates()[stateName];
+  return s;
 }
 
 // ---------------------------------------------------------------- menu bar (Task 5)

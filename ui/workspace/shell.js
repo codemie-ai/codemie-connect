@@ -6,6 +6,7 @@ import { active, attentionMessages, decisions, syncShown } from './selectors.js'
 import { agoLabel } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import { meetingCounts } from './meetings-model.js';
+import { askField, askInMenu, askRailButton } from './ask-model.js';
 
 export const NAV = [['today', 'Today'], ['inbox', 'Inbox'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['automations', 'Automations'], ['analytics', 'Analytics']];
 /** The main menu's groups under Today (spec docs/superpowers/specs/2026-11-20-grouped-menu-design.md);
@@ -126,8 +127,9 @@ export function pluginNav(activities = [], current = null, { rail = false, folde
 
 // state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, sidebarCollapsed, sidebarFolded, now } — settingsDot: CodeMie needs the person;
 // sidebarCollapsed: the menu is the 64 px rail of icons (a count becomes a dot); sidebarFolded: the
-// groups folded by hand ({work, ai, plugins}).
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, sidebarCollapsed = false, sidebarFolded = {}, terminals = null, now = Date.now(), meetingsHidden = null, hiddenPages = [] }) {
+// groups folded by hand ({work, ai, plugins}); askState: the window's view state the Ask field
+// draws from (its words, its list, the About chip), see ask-model.js.
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, sidebarCollapsed = false, sidebarFolded = {}, terminals = null, now = Date.now(), meetingsHidden = null, hiddenPages = [], askState = {} }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -155,6 +157,7 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
   const connected = c && c.status !== 'disconnected';
   return `<aside class="ws-sidebar${sidebarCollapsed ? ' ws-sidebar-rail' : ''}">
       <div class="ws-brand"><span class="ws-brand-logo" role="img" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></span><button type="button" class="ws-brand-toggle" data-action="sidebar-toggle" aria-expanded="${!sidebarCollapsed}" aria-label="${toggleTitle}" title="${toggleTitle} (${shortcut})" data-tip="${toggleTitle}">${icon(sidebarCollapsed ? 'chevron-right' : 'chevron-left')}</button></div>
+      ${askInMenu(s) ? `<div class="ws-ask-slot">${askField(askState, s)}${askRailButton()}</div>` : ''}
       <nav class="ws-nav ws-main-nav" aria-label="Main navigation">${todayRow ? `<div class="ws-nav-group ws-nav-home">${todayRow.html}</div>` : ''}${groups}${pluginNav(plugins.activities, plugins.current, { rail: sidebarCollapsed, folded: sidebarFolded })}</nav>
       <div class="ws-sidebar-bottom">
         <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}" data-tip="${e(connected ? c.displayName : 'Connect Microsoft 365')}">

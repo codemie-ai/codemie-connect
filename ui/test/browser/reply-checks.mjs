@@ -541,6 +541,35 @@ export async function replyChecks({ open, check, assert, shot, settled, calls, O
     await context.close().catch(() => {});
   }
 
+  // R15 (ask-capture § 11): ⌘K works in the reply box too: it focuses the Ask field with the open
+  // message as its About, Esc gives focus back to the box with its words, Enter asks once and
+  // sends nothing from the composer (its ⌘↩ and Enter never see the field's keys).
+  for (const view of ['default', 'compact']) {
+    const { page, context, errors } = await open({ hash: '#/inbox', enable: ['chat_send', 'mail_send'], settings: view === 'compact' ? { view: 'compact' } : null });
+    await check(`reply R15 (${view}): ⌘K inside the reply box focuses the Ask field and sends no reply`, async () => {
+      await openRow(page, settled, view, 'c-reply-1');
+      await page.fill('#reply-body', 'See you at 11.');
+      await page.focus('#reply-body');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForFunction(() => document.activeElement?.id === 'ask-input');
+      await page.waitForSelector('.ws-ask-chip:has-text("About: Jordan Lee · Teams ·")');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.activeElement?.id === 'reply-body');
+      assert(await page.inputValue('#reply-body') === 'See you at 11.', 'the reply lost its words');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForFunction(() => document.activeElement?.id === 'ask-input');
+      await page.keyboard.type('When did Jordan ask?');
+      await page.keyboard.press('ControlOrMeta+Enter');
+      await page.waitForFunction(() => location.hash.startsWith('#/ask/'));
+      await page.waitForTimeout(300);
+      const starts = await calls(page, 'ask_start');
+      assert(starts.length === 1 && starts[0].about?.recordId === 'c-reply-1', JSON.stringify(starts));
+      assert((await calls(page, 'action_prepare')).length === 0 && await sent(page, calls) === 0, 'the composer sent');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
   // R12: Default and Compact draw c-reply-1's reply bar identically (any id or aria-controls
   // stripped first, in case either view ever grows one).
   for (const theme of ['dark', 'light']) {

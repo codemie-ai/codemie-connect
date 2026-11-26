@@ -7,6 +7,7 @@
 // proves the window's side, not native storage.
 import { PRESETS, compact, todayOf } from '../../workspace/today-grid.js';
 import { SETTINGS_GROUPS } from '../../workspace/view-settings.js';
+import { askStates } from '../fixtures/workspace-fixture.mjs';
 
 // The Default layout as todayOf builds it for a workspace never customized.
 const DEFAULT_TODAY = todayOf({ widgetWidths: {} }, {});
@@ -719,6 +720,122 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.click('.ws-sidebar .ws-nav button[data-route=settings]');
       await page.waitForSelector('.ws-settings-layout');
       assert(await page.locator('.ws-sidebar .ws-nav-gear[aria-current=page]').count() === 1, 'Settings is not current');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- E10: the Ask field (ask-capture § 2, § 11)
+  const withRecent = s => { s.ask = askStates().idle; };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const { page, context, errors } = await open({ theme, width: 1440, height: 900, hash: '#/today', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E10 (${theme} ${view}): the Ask field first in the menu, Recent on focus, the rail’s ✦ collapsed and at 1000 px`, async () => {
+        const place = await page.evaluate(() => {
+          const r = sel => document.querySelector(sel)?.getBoundingClientRect();
+          const field = r('.ws-ask-field');
+          return { field: field && { h: Math.round(field.height), w: Math.round(field.width) }, belowBrand: field.top >= r('.ws-brand').bottom, aboveToday: field.bottom <= r('.ws-nav-home').top, rail: !!document.querySelector('.ws-ask-rail')?.getClientRects().length, placeholder: document.getElementById('ask-input').placeholder, hint: document.querySelector('.ws-ask-hint')?.textContent };
+        });
+        assert(place.field && place.belowBrand && place.aboveToday && !place.rail && place.placeholder === 'Ask…' && place.hint === '⌘K', `the field: ${JSON.stringify(place)}`);
+        await shot(page, `layout-e10-${theme}-${view}-field`);
+        // ⌘K: the field focused, Recent under it with the seeded questions, the foot.
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.waitForSelector('.ws-ask-recent li');
+        assert(await page.evaluate(() => document.activeElement?.id) === 'ask-input', 'focus is not in the field');
+        const recent = await page.locator('.ws-ask-recent li').allInnerTexts();
+        assert(recent.join('|') === 'What did I promise Priya this week?|When is the QBR?|Who is Marek Novak?', `Recent: ${recent.join('|')}`);
+        assert(await page.locator('.ws-ask-foot:text-is("Enter to ask · Esc to close")').count() === 1, 'no foot');
+        await page.keyboard.press('ArrowDown');
+        await page.waitForSelector('#ask-recent-0[aria-selected=true]');
+        assert(await page.getAttribute('#ask-input', 'aria-activedescendant') === 'ask-recent-0', 'aria-activedescendant');
+        await noOverflow(page, `${theme} ${view} with Recent open`);
+        await shot(page, `layout-e10-${theme}-${view}-recent`);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('.ws-ask-recent', { state: 'detached' });
+        // Collapsed by hand: the ✦ button in the field's place, "Ask (⌘K)".
+        await page.keyboard.press('ControlOrMeta+Backslash');
+        await page.waitForSelector('.ws-sidebar.ws-sidebar-rail');
+        await page.waitForFunction(() => !!document.querySelector('.ws-ask-rail')?.getClientRects().length);
+        assert(!(await page.locator('.ws-ask-field').isVisible()), 'the field shows on the rail');
+        await page.hover('.ws-ask-rail');
+        await page.waitForSelector('.ws-tooltip:text-is("Ask (⌘K)")');
+        await shot(page, `layout-e10-${theme}-${view}-rail`);
+        await page.keyboard.press('ControlOrMeta+Backslash');
+        await page.waitForSelector('.ws-sidebar:not(.ws-sidebar-rail)');
+        // 1000 px: the menu is a rail by its width; the ✦ button, nothing sideways.
+        await page.setViewportSize({ width: 1000, height: 700 });
+        await page.waitForFunction(() => Math.round(document.querySelector('.ws-sidebar').getBoundingClientRect().width) === 64);
+        assert(await page.locator('.ws-ask-rail').isVisible(), 'no ✦ at 1000 px');
+        await noOverflow(page, `${theme} ${view} at 1000 px`);
+        await shot(page, `layout-e10-${theme}-${view}-1000`);
+        // ⌘K with the rail: the Ask page with its box focused.
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.waitForSelector('#ask-follow-up');
+        await page.waitForFunction(() => document.activeElement?.id === 'ask-follow-up');
+        assert(new URL(page.url()).hash === '#/ask', `the hash: ${new URL(page.url()).hash}`);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // Asking from the Inbox: the chip follows the selection, Enter sends one ask_start with the
+  // record chosen at Enter and the window's hidden calendars, and opens the thread. ⌘K does
+  // nothing with a dialog open; × drops the chip; Esc clears, then gives focus back.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/inbox', localPrefs: { 'codemie.calendar.hidden': JSON.stringify(['cal-team']) } });
+    await check('layout E10: the About chip follows the selection and is read at Enter; ask_start carries the hidden calendars', async () => {
+      await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('.ws-ask-chip:has-text("About: Priya Natarajan · mail ·")');
+      await page.keyboard.type('what did I promise?');
+      // Another row, chosen while the question waits: the chip follows.
+      await page.click('.ws-inbox-row[data-id="m-reply-2"]');
+      await page.waitForSelector('.ws-ask-chip:has-text("About: Elena Varga · mail ·")');
+      assert(await page.inputValue('#ask-input') === 'what did I promise?', 'the words went');
+      await shot(page, 'layout-e10-chip');
+      await page.focus('#ask-input');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => location.hash.startsWith('#/ask/ask-'));
+      const starts = await calls(page, 'ask_start');
+      assert(starts.length === 1, `${starts.length} ask_start`);
+      assert(starts[0].question === 'what did I promise?' && starts[0].about?.kind === 'message' && starts[0].about.recordId === 'm-reply-2', JSON.stringify(starts[0]));
+      assert(JSON.stringify(starts[0].hiddenCalendars) === '["cal-team"]', `hiddenCalendars: ${JSON.stringify(starts[0].hiddenCalendars)}`);
+      assert(await page.inputValue('#ask-input') === '', 'the field kept the question');
+      // Back on the Inbox: × drops the chip for this question; busy is said under the box.
+      await page.click('.ws-sidebar [data-route="inbox"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('.ws-ask-chip');
+      await page.keyboard.type('anything urgent?');
+      await page.click('[data-action="ask-about-drop"]');
+      await page.waitForSelector('.ws-ask-chip', { state: 'detached' });
+      await page.evaluate(() => { window.__askRefuse = { op: 'ask_start', code: 'busy', message: 'Connect is still answering. Stop it or wait.' }; });
+      await page.focus('#ask-input');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.ws-ask-error:text-is("Connect is still answering. Stop it or wait.")');
+      const refused = (await calls(page, 'ask_start')).at(-1);
+      assert(!('about' in refused), `× kept the About: ${JSON.stringify(refused)}`);
+      assert(new URL(page.url()).hash === '#/inbox', 'a refusal navigated');
+      await shot(page, 'layout-e10-busy');
+      // Esc clears the words, then puts focus back on the row it came from.
+      await page.keyboard.press('Escape');
+      assert(await page.inputValue('#ask-input') === '', 'Esc kept the words');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.activeElement?.id !== 'ask-input');
+      // ⌘K does nothing with a dialog open.
+      const opened = await page.evaluate(() => {
+        const d = document.createElement('dialog');
+        d.className = 'ws-modal';
+        document.body.append(d);
+        d.showModal();
+        return true;
+      });
+      assert(opened, 'no dialog');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForTimeout(200);
+      assert(await page.evaluate(() => document.activeElement?.id) !== 'ask-input', '⌘K focused the field under a dialog');
+      await page.evaluate(() => document.querySelector('dialog.ws-modal')?.remove());
       assert(errors.length === 0, errors.join(' | '));
     });
     await context.close().catch(() => {});
