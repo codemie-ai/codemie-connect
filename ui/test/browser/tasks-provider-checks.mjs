@@ -601,4 +601,116 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
     });
     await context.close().catch(() => {});
   }
+
+  // ---------------------------------------------------------------- P13: quick capture (ask-capture design § 9)
+  // ⌘N over the Inbox in both views and both themes at 1000 px: the bar over the page (no shift,
+  // nothing sideways), "Task in Todoist", the selected mail as its source, the date read from the
+  // words; ⌘↩ adds and stays without sending the touched reply; Enter adds and closes; Undo;
+  // Esc clears then closes and gives focus back; a note on Today.
+
+  const captureRow = async (page, settled, view) => {
+    if (!(await page.locator('.ws-lane[data-lane="reply"][aria-selected="true"]').count())) {
+      await page.click('.ws-lane[data-lane="reply"]');
+      await settled(page);
+    }
+    await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await settled(page);
+    await page.waitForSelector(view === 'compact' ? '.ws-crow-body[data-message-id="m-reply-1"] #reply-body' : '.ws-read[data-message-id="m-reply-1"] #reply-body');
+  };
+  const sideways = page => page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-capture, .ws-main')].map(el => el.scrollWidth - el.clientWidth)));
+  for (const [view, theme] of [['default', 'light'], ['default', 'dark'], ['compact', 'light'], ['compact', 'dark']]) {
+    const { page, context, errors } = await open({ theme, width: 1000, height: 800, now: FIXED_NOW, hash: '#/inbox', enable: ['mail_send'], settings: view === 'compact' ? { view: 'compact' } : null, patch: allTodoist });
+    await check(`tasks-provider P13: ⌘N over the Inbox, ${view} ${theme} 1000: the bar, its line and the read date; nothing moves or scrolls sideways`, async () => {
+      await captureRow(page, settled, view);
+      const before = await page.locator('#workspace-page').boundingBox();
+      await page.keyboard.press('ControlOrMeta+n');
+      await page.waitForSelector('.ws-capture');
+      assert(await page.evaluate(() => document.activeElement?.id) === 'capture-input', 'the box takes focus');
+      assert((await page.locator('[data-capture-target]').innerText()).trim() === 'Task in Todoist', 'Task in Todoist');
+      assert(/^From: Review: Q4 workspace roadmap/.test((await page.locator('[data-capture-source]').innerText()).trim()), await page.locator('[data-capture-source]').innerText());
+      await page.keyboard.type('send the deck by fri');
+      await page.waitForSelector('[data-capture-due="2026-11-27"]');
+      assert(/^Due Fri 27 Nov/.test((await page.locator('[data-capture-due]').innerText()).trim()), 'Due Fri 27 Nov');
+      const after = await page.locator('#workspace-page').boundingBox();
+      assert(before.y === after.y && before.height === after.height, `the page moved: ${JSON.stringify([before, after])}`);
+      const over = await sideways(page);
+      assert(over <= 0, `scrolls sideways by ${over}px`);
+      await shot(page, `capture-inbox-${view}-${theme}-1000`);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    if (view === 'default' && theme === 'light') {
+      await check('tasks-provider P13: ⌘↩ in the bar adds one task and stays open, never sending the touched reply; Enter adds and closes; Undo deletes it', async () => {
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('.ws-capture', { state: 'detached' });
+        await page.click('#reply-body');
+        await page.keyboard.type('Thanks, on it.');
+        await page.keyboard.press('ControlOrMeta+n');
+        await page.waitForSelector('.ws-capture');
+        await page.keyboard.type('send the deck by fri');
+        await page.waitForTimeout(200);
+        const saves = (await calls(page, 'task_save')).length;
+        await page.keyboard.press('ControlOrMeta+Enter');
+        await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'task_save').length === n + 1, saves);
+        await page.waitForTimeout(400);
+        assert((await calls(page, 'action_prepare')).length === 0 && (await calls(page, 'action_confirm')).length === 0, 'the reply was sent');
+        assert(await page.locator('.ws-capture').count() === 1 && await page.inputValue('#capture-input') === '', 'the bar stays open and empty');
+        assert(await page.inputValue('#reply-body') === 'Thanks, on it.', 'the reply box keeps its words');
+        const saved = (await calls(page, 'task_save')).at(-1);
+        assert(saved.text === 'send the deck' && saved.due === '2026-11-27' && saved.status === 'todo' && saved.sourceId === 'm-reply-1' && saved.owner, JSON.stringify(saved));
+        await page.keyboard.type('Book the room');
+        await page.keyboard.press('Enter');
+        await page.waitForSelector('.ws-capture', { state: 'detached' });
+        await page.waitForSelector('.ws-toast:has-text("Added to Todoist") .ws-toast-action:has-text("Undo")');
+        assert((await calls(page, 'task_save')).length === saves + 2, 'Enter added one more');
+        await page.locator('.ws-toast:has-text("Added to Todoist") .ws-toast-action').last().click();
+        await page.waitForFunction(() => window.__bridgeCalls.some(([op]) => op === 'task_delete'));
+        assert((await calls(page, 'task_delete')).length === 1, 'one task_delete');
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await check('tasks-provider P13: Esc clears the words first, then closes and puts focus back', async () => {
+        await page.click('#reply-body');
+        await page.keyboard.press('ControlOrMeta+n');
+        await page.waitForSelector('.ws-capture');
+        await page.keyboard.type('Half a thought');
+        await page.keyboard.press('Escape');
+        assert(await page.locator('.ws-capture').count() === 1 && await page.inputValue('#capture-input') === '', 'the first Esc clears');
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('.ws-capture', { state: 'detached' });
+        assert(await page.evaluate(() => document.activeElement?.id) === 'reply-body', `focus went to ${await page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName)}`);
+        assert(await page.locator('.ws-read[data-message-id="m-reply-1"]').count() === 1, 'the message stays open');
+        assert(errors.length === 0, errors.join(' | '));
+      });
+    }
+    await context.close().catch(() => {});
+  }
+
+  {
+    const { page, context, errors } = await open({ theme: 'light', width: 1440, height: 900, now: FIXED_NOW, hash: '#/today', settings: { view: 'compact' }, patch: allTodoist });
+    await check('tasks-provider P13: ⌘N on Today, Note: "Adds a line to Notes on Today"; Enter sends one note_append; the line shows in the Notes widget', async () => {
+      await page.waitForSelector('#today-note');
+      await page.keyboard.press('ControlOrMeta+n');
+      await page.waitForSelector('.ws-capture');
+      await page.click('[data-capture-mode="note"]');
+      await page.waitForSelector('[data-capture-mode="note"][aria-checked="true"]');
+      assert((await page.locator('[data-capture-target]').innerText()).trim() === 'Adds a line to Notes on Today', 'the note line');
+      await page.click('#capture-input');
+      await page.keyboard.type('Ask Marek about the Q1 headcount tomorrow');
+      await page.waitForTimeout(250);
+      assert(await page.locator('[data-capture-due]').count() === 0, 'a note reads no date');
+      await shot(page, 'capture-today-note-compact-light-1440');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.ws-capture', { state: 'detached' });
+      const appended = await calls(page, 'note_append');
+      assert(appended.length === 1 && appended[0].text === 'Ask Marek about the Q1 headcount tomorrow' && !appended[0].sourceId, JSON.stringify(appended));
+      assert((await calls(page, 'capture_parse')).length === 0, 'no parse in a note');
+      await page.waitForFunction(() => document.getElementById('today-note')?.value.includes('- Ask Marek about the Q1 headcount tomorrow'));
+      await page.waitForSelector('.ws-toast:has-text("Added to Notes on Today") .ws-toast-action:has-text("Open")');
+      // The choice is kept for the session: ⌘N opens Note again.
+      await page.keyboard.press('ControlOrMeta+n');
+      await page.waitForSelector('[data-capture-mode="note"][aria-checked="true"]');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
 }

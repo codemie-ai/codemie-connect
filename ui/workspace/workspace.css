@@ -3596,3 +3596,21 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-voice-dialog-head{margin:0 0 4px;font-size:var(--ws-fs-secondary);font-weight:600;color:var(--ws-muted)}
 .ws-voice-dialog-head~.ws-voice-text{margin-bottom:14px}
 @media (max-width:1100px){.ws-voice-rule{grid-template-columns:minmax(0,1fr) auto}.ws-voice-rule>.ws-voice-text{grid-column:1/-1;grid-row:2}}
+
+/* ------------------------------------------------------------------ quick capture (ask-capture § 9) */
+/* Under the top bar, across the main area, over the page: the page does not move. The same
+   markup in Default and Compact; the view's tokens size it. The line wraps under the box. */
+#workspace-app>.ws-capture-host{position:absolute;top:var(--ws-topbar-h);left:var(--ws-sidebar-w);right:0;z-index:40;padding:8px 20px 0 24px;pointer-events:none}
+.ws-capture{pointer-events:auto;display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"modes input add" ". line ." ". error .";align-items:center;column-gap:10px;row-gap:6px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:var(--ws-r-row);background:var(--ws-card);box-shadow:var(--ws-shadow)}
+.ws-capture-modes{grid-area:modes}
+.ws-capture-modes button[aria-checked=true]{color:var(--ws-primary-text);border-color:transparent;background:linear-gradient(var(--ws-primary-fill),var(--ws-primary-fill)) padding-box,var(--ws-primary-border) border-box}
+.ws-capture-input{grid-area:input;min-width:0}
+.ws-capture-add{grid-area:add}
+.ws-capture-line{grid-area:line;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:0;min-width:0;color:var(--ws-muted);font-size:var(--ws-fs-secondary);line-height:20px}
+.ws-capture-line>span{min-width:0;overflow-wrap:anywhere}
+.ws-capture-sep{color:var(--ws-faint)}
+.ws-capture-chip{display:inline-flex;align-items:center;gap:2px;max-width:100%;padding:0 2px 0 8px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);color:var(--ws-text)}
+.ws-capture-x{display:inline-flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;padding:0;border:0;border-radius:9px;background:transparent;color:var(--ws-muted);font-size:var(--ws-fs-body);line-height:1;cursor:pointer}
+.ws-capture-x:hover{color:var(--ws-text);background:var(--ws-raised)}
+.ws-capture-error{grid-area:error;margin:0;color:var(--ws-red);font-size:var(--ws-fs-secondary)}
+.ws-capture-error[hidden]{display:none}

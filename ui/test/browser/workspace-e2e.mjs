@@ -7,6 +7,7 @@
 // Screenshots go to output/playwright/workspace-e2e/ (git-ignored). Exit code 1 on any failure.
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates, withVoice } from '../fixtures/workspace-fixture.mjs';
@@ -29,6 +30,8 @@ import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
+// capture_parse's answers by text, for the mock (when-cases.json, written by `when::` tests).
+const WHEN_CASES = JSON.parse(readFileSync(new URL('../fixtures/contract/when-cases.json', import.meta.url), 'utf8'));
 const core = process.env.PLAYWRIGHT_CORE;
 const playwright = await import(core ? pathToFileURL(join(core, 'index.js')).href : 'playwright-core');
 const chromium = playwright.chromium || playwright.default.chromium;
@@ -113,7 +116,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [] }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -1123,6 +1126,28 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       Object.assign(stored, { data: body, revision: crypto.randomUUID(), updatedAt: at });
       return { id };
     },
+    // Quick capture (ask-capture § 9): `capture_parse` answers as when-cases.json does for the
+    // same text (its own fixed `now`), any other text unread; `note_append` adds `- <text>` (and
+    // ` (from <title>)`) at the end of Today's Notes as today.rs does, with its two refusals.
+    capture_parse: d => {
+      calls.push(['capture_parse', clone(d)]);
+      const known = whenCases.find(c => c.kind === 'parse' && c.input === d.text);
+      return known ? clone(known.expected) : { title: d.text, due: null };
+    },
+    note_append: (d, wid) => {
+      calls.push(['note_append', clone(d)]);
+      const text = String(d.text ?? '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 2000) refuse('text', 'Write the note, up to 2,000 characters.');
+      const src = d.sourceId ? s.records.find(r => r.id === d.sourceId) : null;
+      const label = src?.data?.title ? String(src.data.title).replace(/\s+/g, ' ').trim() : '';
+      const line = `- ${text}${label ? ` (from ${label})` : ''}`;
+      const note = s.records.find(r => r.kind === 'note' && r.source === 'local' && (r.workspaceId || 'personal') === (wid || 'personal'));
+      const joined = note?.data.text ? `${note.data.text.replace(/\n+$/, '')}\n${line}` : line;
+      if (joined.length > 20000) fail('validation', 'Notes on Today is full. Tidy it first.');
+      if (note) Object.assign(note, { data: { ...note.data, text: joined }, revision: crypto.randomUUID(), updatedAt: now() });
+      else s.records.push({ id: crypto.randomUUID(), kind: 'note', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { text: joined } });
+      return { id: (note || s.records.at(-1)).id };
+    },
     task_delete: d => {
       calls.push(['task_delete', clone(d)]);
       const stored = s.records.find(r => r.kind === 'commitment' && r.id === d.id);
@@ -1694,7 +1719,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary, draftVoice: voiceDraft } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);

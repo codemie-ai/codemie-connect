@@ -61,6 +61,8 @@ import { createRemovalSwitch } from './task-provider-watch.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
 import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from './inbox-open.js';
+import { captureBar, isCaptureKey, newCaptureView } from './capture-model.js';
+import { createCaptureController } from './capture-controller.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
@@ -128,6 +130,8 @@ const state = {
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
+  // Quick capture (⌘N): the bar's view state, its Task / Note choice kept for the session.
+  capture: newCaptureView(),
 };
 let pluginHost = null;
 // Connect's terminal dock (terminal-dock.js), made with the plugin host.
@@ -209,7 +213,7 @@ let layoutHolds = 0;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
+const KEEP_FOCUS = new Set(['capture-mode', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -518,6 +522,9 @@ async function render() {
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [], taskLabel: meetingsUi.taskLabel() })
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
+  // The quick-capture bar is kept through the redraw (its box, caret and words), not recreated.
+  const captureHost = root.querySelector(':scope > .ws-capture-host');
+  captureHost?.remove();
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
@@ -531,6 +538,8 @@ async function render() {
     page.className = pageClass;
     page.innerHTML = html;
   }
+  if (captureHost) root.append(captureHost);
+  drawCapture();
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
@@ -759,7 +768,7 @@ function leaveRow(id) {
 
 // ---------------------------------------------------------------- navigation
 
-async function savePendingNote() {
+export async function savePendingNote() {
   clearTimeout(noteTimer);
   const el = document.getElementById('today-note');
   if (!el || el.value === el.defaultValue) return;
@@ -1913,10 +1922,88 @@ document.addEventListener('dblclick', ev => {
   setSettingsMenu({ collapsed: false, width: SETTINGS_MENU.def }, 'Settings menu width reset').then(focusEdge).catch(fail);
 });
 
-// ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the Settings menu's edge,
-// Enter toggles it and ← → resize it.
+// ---------------------------------------------------------------- quick capture (ask-capture § 9)
+
+// The bar sits under the top bar, over the page (`.ws-capture-host`, a child of #workspace-app
+// placed by CSS), so the page never moves. `render` keeps it through a redraw; `drawCapture`
+// draws it from `state.capture`, swapping its parts in place around the box being typed in.
+let captureReturn = null;
+const captureUi = store && createCaptureController({
+  state, snap, mutate, query: (op, data) => store.query(op, data),
+  render: () => drawCapture(), toast, go: hash => goHash(hash), savePendingNote,
+  focusBack: () => {
+    const back = captureReturn;
+    captureReturn = null;
+    const el = back?.el?.isConnected ? back.el : soleMatch(root, back?.sel);
+    el?.focus({ preventScroll: true });
+  },
+});
+
+/** Opens quick capture (⌘N, or Ask's Add as task), remembering where focus was for Esc. With the
+ *  bar open already, only its box takes focus. */
+function openCapture(options) {
+  if (state.capture.open) return root.querySelector('#capture-input')?.focus();
+  const el = document.activeElement;
+  captureReturn = el && root.contains(el) ? { el, sel: controlSelector(el) } : null;
+  return captureUi?.open(options);
+}
+
+function drawCapture() {
+  let host = root.querySelector(':scope > .ws-capture-host');
+  if (!state.capture.open || recovering || !store?.get()) {
+    host?.remove();
+    return;
+  }
+  const html = captureBar(state, snap());
+  if (!host) {
+    host = document.createElement('div');
+    host.className = 'ws-capture-host';
+    host.innerHTML = html;
+    root.append(host);
+    host.querySelector('#capture-input')?.focus({ preventScroll: true });
+    return;
+  }
+  const live = host.firstElementChild;
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  const fresh = t.content.firstElementChild;
+  const focused = host.contains(document.activeElement) ? controlSelector(document.activeElement) : null;
+  for (const a of [...live.attributes]) if (!fresh.hasAttribute(a.name)) live.removeAttribute(a.name);
+  for (const a of [...fresh.attributes]) live.setAttribute(a.name, a.value);
+  for (const part of [...fresh.querySelectorAll('[data-capture-part]')]) live.querySelector(`[data-capture-part="${part.dataset.capturePart}"]`)?.replaceWith(part);
+  const input = live.querySelector('#capture-input');
+  const twin = fresh.querySelector('#capture-input');
+  for (const name of ['aria-label', 'aria-invalid']) {
+    if (twin.hasAttribute(name)) input.setAttribute(name, twin.getAttribute(name));
+    else input.removeAttribute(name);
+  }
+  if (input.value !== state.capture.text) input.value = state.capture.text;
+  // A control swapped out under focus (Task / Note, a × that went) leaves focus in the bar.
+  if (focused && !host.contains(document.activeElement)) (soleMatch(host, focused) || input).focus({ preventScroll: true });
+}
+
+// The bar's own keys, first (capture phase): Enter and ⌘↩ add, Esc clears then closes. A key it
+// handles goes no further, so the Inbox's ⌘↩ never sends a reply from under the bar.
+document.addEventListener('keydown', ev => {
+  if (captureUi && ev.target.closest?.('.ws-capture')) captureUi.key(ev);
+}, true);
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'capture-input') captureUi?.input(ev.target.value);
+}, true);
+// A click on the page closes the bar (focus stays where the click put it).
+document.addEventListener('pointerdown', ev => {
+  if (state.capture.open && !ev.target.closest?.('.ws-capture-host,.ws-toasts,.ws-modal')) captureUi?.close({ refocus: false });
+}, true);
+
+// ⌘N opens quick capture, ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the
+// Settings menu's edge, Enter toggles it and ← → resize it.
 document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || ev.isComposing) return;
+  if (isCaptureKey(ev, { modal: modalOpen(), sheet: sheetOpen() })) {
+    ev.preventDefault();
+    openCapture();
+    return;
+  }
   if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
     if (!ev.shiftKey) {
       ev.preventDefault();
@@ -2261,6 +2348,7 @@ function selectMessage(id) {
 
 async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
+  if (action.startsWith('capture-')) return captureUi.handle(action, el);
   if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
   if (action.startsWith('dock-')) return dockUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
@@ -2912,6 +3000,8 @@ document.addEventListener('change', async ev => {
 });
 
 document.addEventListener('submit', async ev => {
+  // The capture bar adds on its keys and its Add button, never by a form submission.
+  if (ev.target.closest?.('.ws-capture')) return ev.preventDefault();
   const form = ev.target.closest('form[data-form]');
   if (!form || !form.closest('#workspace-app')) return;
   ev.preventDefault();
