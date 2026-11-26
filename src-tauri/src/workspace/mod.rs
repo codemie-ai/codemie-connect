@@ -727,6 +727,13 @@ impl Core {
                 }
                 job.lease_until = None;
                 let _ = repo.save_job(&job);
+                // An answer that ended other than by its own write (cancelled by Connect, or a
+                // write that didn't land) never leaves its turn "Answering…".
+                if job.kind == ask::ops::KIND && job.state != "succeeded" {
+                    if let Err(e) = ask::ops::settle_ended(&mut repo, &job) {
+                        eprintln!("ask: settling an ended answer failed: {}", e.code);
+                    }
+                }
             }
         }
         self.emit("workspace:changed");
@@ -1486,10 +1493,17 @@ impl Core {
                     .into_iter()
                     .find(|j| {
                         j.id == jid
-                            && (j.workspace_id.as_deref() == Some(&w.id) || j.kind == "sync")
+                            && (j.workspace_id.as_deref() == Some(&w.id)
+                                // One Ask runs app-wide: Stop reaches it from any workspace.
+                                || j.kind == "sync"
+                                || j.kind == ask::ops::KIND)
                     })
                     .ok_or_else(|| WorkspaceError::new("not_found", "Job is unavailable."))?;
                 if req.op == Operation::JobRetry {
+                    // Try again on a turn asks again through `ask_start` (a new turn).
+                    if job.kind == ask::ops::KIND {
+                        return Err(WorkspaceError::new("validation", "Ask the question again."));
+                    }
                     if matches!(job.kind.as_str(), "notification" | "send" | "reminder") {
                         return Err(WorkspaceError::new(
                             "review_required",

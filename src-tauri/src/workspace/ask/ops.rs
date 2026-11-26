@@ -144,23 +144,53 @@ fn waiting(turn: &Turn) -> bool {
     matches!(turn.state, TurnState::Queued | TurnState::Running)
 }
 
-/// The turn of a job that is no longer queued or running: `stopped` for a stopped job, else
-/// `failed` with the job's own code and sentence, so Try again is offered.
+/// Whether `job` was ended because Connect stopped while it ran ([`ENDED`]).
+fn interrupted(job: &Job) -> bool {
+    job.state == "cancelled" && job.result.as_deref() == Some(ENDED)
+}
+
+/// The turn of a job that is no longer queued or running (Stop and delete settle theirs
+/// themselves): `stopped` when Connect stopped while it ran, else `failed` with the job's own
+/// code and sentence (`cancelled` for a job Connect cancelled, such as after an access change),
+/// so Try again is offered.
 fn settle_gone(turn: &mut Turn, job: Option<&Job>) {
     turn.answer = None;
-    if job.is_some_and(|j| j.state == "cancelled") {
+    if job.is_some_and(interrupted) {
         turn.state = TurnState::Stopped;
         return;
     }
+    let code = match job {
+        Some(j) if j.state == "cancelled" => "cancelled".to_string(),
+        Some(j) => j.error_code.clone().unwrap_or_else(|| "failed".into()),
+        None => "failed".into(),
+    };
     turn.state = TurnState::Failed;
     turn.error = Some(TurnError {
-        code: job
-            .and_then(|j| j.error_code.clone())
-            .unwrap_or_else(|| "failed".into()),
+        code,
         message: job
             .and_then(|j| j.result.clone())
             .unwrap_or_else(|| ENDED.into()),
     });
+}
+
+/// After an `ask` job ended other than `succeeded` (`run_claimed_job`'s last save): its turn,
+/// if it still waits, is settled by [`settle_gone`], so no turn stays "Answering…" after a
+/// job Connect cancelled or whose own write didn't land. Stop and delete settled theirs.
+pub(crate) fn settle_ended(r: &mut Repository, job: &Job) -> Result<()> {
+    let (Some(tid), Some(turn_id)) = (
+        job.payload["threadId"].as_str(),
+        job.payload["turnId"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    let Some(mut thread) = store::read(r, tid)? else {
+        return Ok(());
+    };
+    match turn_mut(&mut thread, turn_id) {
+        Some(turn) if waiting(turn) => settle_gone(turn, Some(job)),
+        _ => return Ok(()),
+    }
+    store::write(r, &thread)
 }
 
 /// `job_cancel` of an `ask` job: its turn reads `stopped` with no answer, unless it already
@@ -213,6 +243,9 @@ struct VoicePart {
     people: Vec<Person>,
     name: String,
     facts: FactsPlan,
+    provider: String,
+    /// `Core::voice_epoch` when the copy was read: a delete since then drops the voice's part.
+    epoch: usize,
 }
 
 /// What a failed answer still names: the profile and model that ran, the profile it fell back
@@ -291,7 +324,6 @@ impl Core {
             return Err(AiError::new(ErrorClass::NeedsChoice).into());
         };
         let about = about_of(&r, &w.id, w.connection_id.as_deref(), &req.data["about"]);
-        let pruned = store::prune(&mut r, at)?;
         let turn_id = format!("turn-{}", thread.turns.len() + 1);
         let key = format!("{KIND}:{}", thread.id);
         let job = new_job(
@@ -329,6 +361,8 @@ impl Core {
         r.delete_finished_jobs_keyed(&key)?;
         store::write(&mut r, &thread)?;
         r.enqueue(&job)?;
+        // After the write, so the cap of 50 counts the new thread (it is the newest).
+        let pruned = store::prune(&mut r, at)?;
         log::info!(
             "ask: queued turn {} of a thread ({} pruned)",
             thread.turns.len(),
@@ -389,6 +423,16 @@ impl Core {
     /// Doesn't assume the prune ran.
     pub(crate) fn ask_startup(&self) -> Result<usize> {
         let mut r = self.repo()?;
+        // A job claimed by the run before (its claim count says so; Repository::open put it back
+        // to queued) is not run again: Connect stopped while it answered.
+        for mut j in r.jobs()?.into_iter().filter(|j| {
+            j.kind == KIND && j.attempts > 0 && matches!(j.state.as_str(), "queued" | "running")
+        }) {
+            j.state = "cancelled".into();
+            j.result = Some(ENDED.into());
+            j.lease_until = None;
+            r.save_job(&j)?;
+        }
         let jobs = r.jobs()?;
         let mut changed = 0;
         for mut thread in store::list(&r)? {
@@ -426,6 +470,11 @@ impl Core {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        // A claim whose lease ran out is never run a second time: the answer was already being
+        // made once. The job ends cancelled and its turn reads stopped (`settle_ended`).
+        if job.attempts > 1 {
+            return Err(WorkspaceError::new("cancelled", ENDED));
+        }
         let mut ran = Ran::default();
         match self.ask_answer(job, &tid, &turn_id, &mut ran).await {
             Ok(checked) => {
@@ -478,6 +527,11 @@ impl Core {
         let _lock = self.mutations.lock().await;
         let mut r = self.repo()?;
         r.check_claim(&job.id, job.attempts)?;
+        r.check_policy(
+            job.workspace_id.as_deref(),
+            job.connection_id.as_deref(),
+            &job.policy,
+        )?;
         let mut thread = store::read(&r, tid)?.ok_or_else(no_longer)?;
         if !turn_mut(&mut thread, turn_id).is_some_and(|t| waiting(t)) {
             return Err(no_longer());
@@ -549,6 +603,22 @@ impl Core {
         if run.cancel.is_cancelled() {
             return Err(AiError::new(ErrorClass::Cancelled).into());
         }
+        // A voice Delete (or another provider) while the facts were asked: neither the copy's
+        // people nor the facts reach this answer.
+        let voice = if voice.on && !self.voice_unchanged(&voice)? {
+            log::info!("ask: the voice changed during the run, leaving it out");
+            VoicePart {
+                on: false,
+                people: Vec::new(),
+                name: String::new(),
+                facts: FactsPlan::Off,
+                provider: voice.provider,
+                epoch: voice.epoch,
+            }
+        } else {
+            voice
+        };
+        let found = if voice.on { found } else { None };
         let records = Records {
             tasks: &read.tasks,
             events: &read.events,
@@ -575,6 +645,11 @@ impl Core {
             &read.zone,
         );
         ran.about_gone = ctx.about_gone;
+        // The ids this turn hands out are the thread's from now on, however the turn ends
+        // (ruling 33): done, failed or stopped.
+        let next_ref = ctx.next_ref;
+        self.ask_write(job, tid, turn_id, |t| t.next_ref = next_ref.max(t.next_ref))
+            .await?;
         let today = prompts::local(now, prompts::time_zone(&read.zone), "%a %-d %b %Y");
         let spec = RunSpec {
             purpose: wire_name(Purpose::Ask),
@@ -661,6 +736,9 @@ impl Core {
     /// with the voice on; facts only when on and offered, as a reply draft decides).
     fn ask_voice(&self) -> Result<VoicePart> {
         let r = self.repo()?;
+        // Read under the guard every copy delete holds while it bumps the epoch (as a reply
+        // draft does).
+        let epoch = self.voice_epoch.load(std::sync::atomic::Ordering::SeqCst);
         let settings = r.settings()?.voice;
         if settings.provider == "off" {
             return Ok(VoicePart {
@@ -668,6 +746,8 @@ impl Core {
                 people: Vec::new(),
                 name: String::new(),
                 facts: FactsPlan::Off,
+                provider: settings.provider,
+                epoch,
             });
         }
         let listed = self
@@ -695,7 +775,17 @@ impl Core {
             people,
             name,
             facts,
+            provider: settings.provider,
+            epoch,
         })
+    }
+
+    /// Whether the voice read by [`Self::ask_voice`] still stands: the same provider chosen and
+    /// no copy delete since (`voice_epoch`).
+    fn voice_unchanged(&self, voice: &VoicePart) -> Result<bool> {
+        let r = self.repo()?;
+        let moved = self.voice_epoch.load(std::sync::atomic::Ordering::SeqCst) != voice.epoch;
+        Ok(!moved && r.settings()?.voice.provider == voice.provider)
     }
 
     /// The records Ask may read for the job's workspace (design § 3): the active provider's
@@ -1746,6 +1836,252 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn bump_policy(core: &Core) {
+        let mut r = core.repo().unwrap();
+        let mut w = r.workspace("personal").unwrap();
+        // A scope change moves the workspace's access revision (Repository::save_workspace).
+        w.sources = json!({"all": false, "mail": true, "chats": [], "calendars": []});
+        r.save_workspace(&w).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_system_cancel_settles_the_turn() {
+        // Queued: the access changes before the job runs.
+        let e = env(vec![Ok(cited())]);
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        bump_policy(&e.core);
+        run_jobs(&e.core).await;
+        assert_eq!(job(&e.core, &a["jobId"]).state, "cancelled");
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Failed, "{turn:?}");
+        let error = turn.error.unwrap();
+        assert_eq!(error.code, "cancelled");
+        assert!(!error.message.is_empty());
+        assert!(e.fake.calls().is_empty());
+
+        // Running: the access changes while Claude works; the answer is not kept.
+        let (runner, gate) = FakeRunner::gated(vec![Ok(cited())]);
+        let e = env_with(Arc::new(runner));
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        let core = e.core.clone();
+        run_next_with(&e.core, &gate, || async move { bump_policy(&core) }).await;
+        assert_eq!(job(&e.core, &a["jobId"]).state, "cancelled");
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Failed, "{turn:?}");
+        assert_eq!(turn.answer, None);
+        assert_eq!(turn.error.unwrap().code, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn stop_works_after_a_workspace_switch() {
+        let e = env(vec![]);
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut other = r.workspace("personal").unwrap();
+            other.id = "w2".into();
+            other.name = "Other".into();
+            other.is_default = false;
+            r.save_workspace(&other).unwrap();
+        }
+        let mut stop = mutation(&e.core, Operation::JobCancel, json!({ "id": a["jobId"] }));
+        stop.workspace_id = Some("w2".into());
+        e.core.request(stop).await.unwrap();
+        assert_eq!(job(&e.core, &a["jobId"]).state, "cancelled");
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn ids_are_never_reused_after_a_failed_or_stopped_turn() {
+        let e = env(vec![failure(
+            ErrorClass::NeedsLogin,
+            "Claude is not signed in.",
+        )]);
+        put(
+            &e.core,
+            mail("msg-1", now() - 3_600, "The Atlas budget is due Friday."),
+        );
+        let a = ask(
+            &e.core,
+            json!({"question": "When is the Atlas budget due?"}),
+        )
+        .await
+        .unwrap();
+        run_jobs(&e.core).await;
+        let t = thread_of(&e.core, a["threadId"].as_str().unwrap()).unwrap();
+        assert_eq!(t.turns[0].state, TurnState::Failed);
+        assert_eq!(t.next_ref, 2, "m1 was handed out");
+
+        let (runner, gate) = FakeRunner::gated(vec![Ok(cited())]);
+        let e = env_with(Arc::new(runner));
+        put(
+            &e.core,
+            mail("msg-1", now() - 3_600, "The Atlas budget is due Friday."),
+        );
+        let a = ask(
+            &e.core,
+            json!({"question": "When is the Atlas budget due?"}),
+        )
+        .await
+        .unwrap();
+        let core = e.core.clone();
+        let jid = a["jobId"].clone();
+        run_next_with(&e.core, &gate, || async move {
+            op(&core, Operation::JobCancel, json!({ "id": jid }))
+                .await
+                .unwrap();
+        })
+        .await;
+        let t = thread_of(&e.core, a["threadId"].as_str().unwrap()).unwrap();
+        assert_eq!(t.turns[0].state, TurnState::Stopped);
+        assert_eq!(t.next_ref, 2, "m1 was handed out");
+    }
+
+    #[tokio::test]
+    async fn the_cap_of_50_holds_after_ask_start() {
+        let e = env(vec![]);
+        let at = now() - 60;
+        for n in 0..store::MAX_THREADS {
+            let at = at - n as i64;
+            store::write(
+                &mut e.core.repo().unwrap(),
+                &thread(
+                    &format!("ask-{n:02}"),
+                    at,
+                    vec![turn(1, at, "Q?", TurnState::Done)],
+                ),
+            )
+            .unwrap();
+        }
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        let left = store::list(&e.core.repo().unwrap()).unwrap();
+        assert_eq!(left.len(), store::MAX_THREADS);
+        assert_eq!(left[0].id, a["threadId"].as_str().unwrap());
+        assert!(left.iter().all(|t| t.id != "ask-49"), "the oldest went");
+    }
+
+    #[tokio::test]
+    async fn an_ask_left_running_by_a_previous_run_is_stopped_not_rerun() {
+        // Start-up: a job claimed before Connect quit (Repository::open puts it back to queued).
+        let e = env(vec![Ok(cited())]);
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut j = r.claim(now()).unwrap().unwrap();
+            j.state = "queued".into();
+            j.lease_until = None;
+            r.save_job(&j).unwrap();
+        }
+        assert_eq!(e.core.ask_startup().unwrap(), 1);
+        let j = job(&e.core, &a["jobId"]);
+        assert_eq!(j.state, "cancelled");
+        assert_eq!(
+            j.result.as_deref(),
+            Some("Connect stopped before it answered.")
+        );
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Stopped);
+        run_jobs(&e.core).await;
+        assert!(e.fake.calls().is_empty(), "never run again");
+
+        // A claim whose lease ran out is not run a second time either.
+        let e = env(vec![Ok(cited())]);
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut j = r.claim(now()).unwrap().unwrap();
+            j.lease_until = Some(now() - 1);
+            r.save_job(&j).unwrap();
+        }
+        run_jobs(&e.core).await;
+        assert!(e.fake.calls().is_empty(), "never run again");
+        let j = job(&e.core, &a["jobId"]);
+        assert_eq!(j.state, "cancelled");
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn job_retry_is_refused_for_an_ask() {
+        let e = env(vec![failure(
+            ErrorClass::NeedsLogin,
+            "Claude is not signed in.",
+        )]);
+        let a = ask(&e.core, json!({"question": "When is the QBR?"}))
+            .await
+            .unwrap();
+        run_jobs(&e.core).await;
+        let refused = op(&e.core, Operation::JobRetry, json!({ "id": a["jobId"] }))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "validation");
+        assert_ne!(job(&e.core, &a["jobId"]).state, "queued");
+    }
+
+    #[tokio::test]
+    async fn a_voice_delete_during_the_run_leaks_no_people() {
+        let e = env(vec![Ok(outcome(
+            json!({"answer": "Not in Connect.", "cites": [], "actions": []}),
+        ))]);
+        let voice = ready_voice(&e.core, "");
+        voice.answer("facts", json!({"facts": []}));
+        voice.delay("facts", Duration::from_millis(400));
+        ask(&e.core, json!({"question": "What does Marek Novak own?"}))
+            .await
+            .unwrap();
+        let core = e.core.clone();
+        let deleting = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            core.voice_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        run_jobs(&e.core).await;
+        deleting.await.unwrap();
+        let context = context_of(&e.fake.calls()[0]);
+        assert!(!context.contains("kind=\"person\""), "{context}");
+
+        // Without a delete, the same question reads Marek's page.
+        let e = env(vec![Ok(outcome(
+            json!({"answer": "Not in Connect.", "cites": [], "actions": []}),
+        ))]);
+        let voice = ready_voice(&e.core, "");
+        voice.answer("facts", json!({"facts": []}));
+        ask(&e.core, json!({"question": "What does Marek Novak own?"}))
+            .await
+            .unwrap();
+        run_jobs(&e.core).await;
+        let context = context_of(&e.fake.calls()[0]);
+        assert!(context.contains("kind=\"person\""), "{context}");
     }
 
     /// `ask-thread.json` (an `ask_read` answer: a done turn with cites of every kind, three
