@@ -172,7 +172,10 @@ pub(crate) fn note_append(
     source: Option<&Record>,
     at: i64,
 ) -> Result<Value> {
-    let trimmed = text.trim();
+    // A note is one line (ask-capture design § 9, the capture bar's single-line field): collapse
+    // whitespace, newlines included, so a pasted line or a mail subject can never fake another
+    // bullet (review round 1).
+    let trimmed = super::when::collapse_whitespace(text);
     if trimmed.is_empty() || trimmed.chars().count() > NOTE_TEXT_MAX {
         let mut e = WorkspaceError::new("validation", "Write the note, up to 2,000 characters.");
         e.field = Some("text".into());
@@ -181,7 +184,7 @@ pub(crate) fn note_append(
     let mut line = format!("- {trimmed}");
     if let Some(label) = source
         .and_then(|s| s.data["title"].as_str())
-        .map(str::trim)
+        .map(super::when::collapse_whitespace)
         .filter(|s| !s.is_empty())
     {
         line.push_str(&format!(" (from {label})"));
@@ -478,6 +481,48 @@ mod tests {
             notes[0].data["text"],
             json!("- Follow up (from Atlas budget)")
         );
+    }
+
+    #[tokio::test]
+    async fn note_append_collapses_newlines_in_the_label_and_the_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        {
+            let mut r = core.repo().unwrap();
+            let mut w = r.workspace("personal").unwrap();
+            w.connection_id = Some("c1".into());
+            r.save_workspace(&w).unwrap();
+            r.put_record(&Record {
+                id: "m1".into(),
+                kind: "message".into(),
+                connection_id: Some("c1".into()),
+                workspace_id: None,
+                source: "mail:c1".into(),
+                revision: "r1".into(),
+                updated_at: 1,
+                data: json!({"title": "Atlas\n- fake budget"}),
+            })
+            .unwrap();
+        }
+        core.request(mutation(
+            &core,
+            Operation::NoteAppend,
+            json!({"text": "Follow up\n- fake", "sourceId": "m1"}),
+        ))
+        .await
+        .unwrap();
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        // One line, one bullet: a subject or a typed line holding a newline can't fake another.
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].data["text"],
+            json!("- Follow up - fake (from Atlas - fake budget)")
+        );
+        assert_eq!(notes[0].data["text"].as_str().unwrap().lines().count(), 1);
     }
 
     #[tokio::test]

@@ -804,20 +804,14 @@ fn resolve_window(token: Token, today: NaiveDate) -> (NaiveDate, NaiveDate) {
     }
 }
 
-/// The title with `removed` (the matched phrase, if any) excised, whitespace collapsed to
-/// single spaces, trimmed, and one trailing `,`, `-`, `–` or `—` tidied away.
-fn tidy_title(chars: &[char], removed: Option<(usize, usize)>) -> String {
-    let kept: Vec<char> = match removed {
-        Some((s, e)) => chars[..s]
-            .iter()
-            .chain(chars[e..].iter())
-            .copied()
-            .collect(),
-        None => chars.to_vec(),
-    };
-    let mut collapsed = String::with_capacity(kept.len());
+/// Collapses every run of whitespace (newlines included) to a single space and trims the
+/// ends — shared by `tidy_title` and by `note_append`'s label and text (ask-capture design
+/// § 10 review, round 1): a note is one line, so a subject or a typed line holding `\n` can
+/// never fake another bullet.
+pub(crate) fn collapse_whitespace(s: &str) -> String {
+    let mut collapsed = String::with_capacity(s.len());
     let mut last_space = false;
-    for c in kept {
+    for c in s.chars() {
         if c.is_whitespace() {
             if !last_space {
                 collapsed.push(' ');
@@ -828,7 +822,17 @@ fn tidy_title(chars: &[char], removed: Option<(usize, usize)>) -> String {
             last_space = false;
         }
     }
-    let mut title = collapsed.trim().to_string();
+    collapsed.trim().to_string()
+}
+
+/// The title with `removed` (the matched phrase, if any) excised, whitespace collapsed to
+/// single spaces, trimmed, and one trailing `,`, `-`, `–` or `—` tidied away.
+fn tidy_title(chars: &[char], removed: Option<(usize, usize)>) -> String {
+    let kept: String = match removed {
+        Some((s, e)) => chars[..s].iter().chain(chars[e..].iter()).collect(),
+        None => chars.iter().collect(),
+    };
+    let mut title = collapse_whitespace(&kept);
     if matches!(
         title.chars().last(),
         Some(',' | '-' | '\u{2013}' | '\u{2014}')
