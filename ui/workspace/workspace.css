@@ -768,6 +768,10 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-row-action span{max-width:0;opacity:0;overflow:hidden;transition:max-width .16s ease,opacity .12s ease,margin .16s ease}
 .ws-msg-item:hover .ws-row-action,.ws-row-action:focus-visible{border-color:transparent;background:var(--ws-magic);color:#fff}
 .ws-row-action:hover span,.ws-row-action:focus-visible span{max-width:96px;opacity:1;margin:0 4px 0 6px}
+/* Today's open row (reply design ruling 19): the thread and the composer under it, inside the
+   widget, whose body scrolls. */
+.ws-msg-open{border-radius:8px;background:var(--ws-card-2)}
+.ws-attention .ws-crow-body{padding:0 8px 10px}
 .ws-msg-avatar{position:relative;flex-shrink:0}
 .ws-msg-glyph{position:absolute;right:-4px;bottom:-3px;width:16px;height:16px;border-radius:5px;background:var(--ws-card);display:grid;place-items:center}
 .ws-msg-glyph .ws-product{width:13px;height:13px}

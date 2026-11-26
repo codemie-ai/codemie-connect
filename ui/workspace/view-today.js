@@ -7,6 +7,7 @@ import { attentionMessages, records, active, connectionState, messageTitle, deci
 import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 import { automationResultsCard } from './view-automations.js';
+import { openRow } from './view-inbox.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
 import { activeProvider, isMine, meOf, ownerOf, sortTasks, taskStatus, tasksOf } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
@@ -149,7 +150,7 @@ export function today(s, ctx) {
     brief: o => upNextCard(s, m, connected, o),
     focus: o => glanceCard(s, m, connected, o),
     calendar: o => scheduleCard(s, m, connected, o),
-    inbox: o => attentionCard(s, m, connected, ctx.state?.ai, o),
+    inbox: o => attentionCard(s, m, connected, ctx.state || {}, o),
     commitments: o => commitmentsCard(s, m, o),
     notes: o => notesCard(s, m, w, o),
     meetings: o => todayMeetingsCard(s, m.nowMs, { needsMe: o.needsMe, hidden: ctx.meetingsHidden }),
@@ -435,19 +436,23 @@ function scheduleCard(s, m, connected, o) {
 
 // ---------------------------------------------------------------- Attention
 
-function messageRow(s, msg, zone, canDraft) {
+/** A "Needs your reply" row. A click opens it in place (`isOpen`): the last messages of the thread,
+ *  then the same composer and action line as the Inbox (`openRow`); a click again closes it. */
+function messageRow(s, msg, zone, canDraft, state, isOpen) {
   const d = msg.data;
   const glyph = d.channel === 'chat' ? teamsGlyph : outlookGlyph;
-  // Own Outlook messages cannot be answered through Review & send, so they get no draft.
-  const draft = canDraft && (d.channel === 'chat' || !d.isMine)
+  const body = `today-reply-${msg.id}`;
+  // Own Outlook messages cannot be answered through Review & send, so they get no draft. The open
+  // row's ✦ is the composer's own link.
+  const draft = canDraft && !isOpen && (d.channel === 'chat' || !d.isMine)
     ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
     : '';
-  return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}"><button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
+  return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}${isOpen ? ' ws-msg-open' : ''}"><button type="button" class="ws-msg-row" data-action="attention-open" data-id="${e(msg.id)}" aria-expanded="${isOpen}" aria-controls="${e(body)}">
     <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 32, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
     <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
     <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
-  </button>${draft}</div>`;
+  </button>${draft}${isOpen ? openRow(s, msg, zone, state, body) : ''}</div>`;
 }
 
 /** 1:1 Teams chats are titled with the other person, so show the channel instead of a repeat. */
@@ -457,16 +462,16 @@ export function listTitle(msg, s) {
   return title;
 }
 
-function attentionCard(s, m, connected, ai, o) {
+function attentionCard(s, m, connected, state, o) {
   if (!connected) {
     return card({ title: 'Needs your reply', iconName: 'reply', className: 'ws-attention', body: emptyState({ iconName: 'inbox', title: 'Replies you owe, in one list', text: 'Direct questions from Outlook and Teams, with the newest first.' }) });
   }
   const items = m.attention.filter(msg => o.sources.includes(msg.data.channel === 'chat' ? 'chat' : 'mail')).slice(0, Number(o.max));
-  const canDraft = claudeAvailable(ai);
+  const canDraft = claudeAvailable(state.ai);
   return card({
     title: 'Needs your reply', iconName: 'reply', className: 'ws-attention',
     actions: button(m.attention.length ? `Inbox · ${m.attention.length}` : 'Inbox', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'inbox', 'data-lane': 'reply' } }),
-    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone, canDraft)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
+    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone, canDraft, state, msg.id === state.todayOpen)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
   });
 }
 

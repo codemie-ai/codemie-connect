@@ -140,9 +140,10 @@ function compactRow(s, m, zone, state, { isSelected, isOpen, count = 0, drafting
   </button>${isOpen ? openRow(s, m, zone, state, body) : ''}</div>`;
 }
 
-/** The open Compact row's body: the unavailable note, the summary, the last messages, then the
- *  composer and its action line (the same as the Default reader's). */
-function openRow(s, m, zone, state, bodyId) {
+/** The open Compact row's body, and Today's open "Needs your reply" row: the unavailable note, the
+ *  summary, the last messages, then the composer and its action line (the same as the Default
+ *  reader's). */
+export function openRow(s, m, zone, state, bodyId) {
   const d = m.data;
   const fullThread = conversation(s, m);
   const all = state.threadAll?.has(m.id);

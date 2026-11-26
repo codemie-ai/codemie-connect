@@ -35,7 +35,8 @@ const openRow = async (page, settled, view, id) => {
   await page.waitForSelector(view === 'compact' ? `.ws-crow-body[data-message-id="${id}"] .ws-reply-bar` : `.ws-read[data-message-id="${id}"] .ws-reply-bar`);
 };
 const barSelector = (view, id) => (view === 'compact' ? `.ws-crow-body[data-message-id="${id}"] .ws-reply-bar` : `.ws-read[data-message-id="${id}"] .ws-reply-bar`);
-const rowContainer = (view, id) => (view === 'compact' ? `.ws-crow-body[data-message-id="${id}"]` : `.ws-read[data-message-id="${id}"]`);
+/** Today's open "Needs your reply" row body. */
+const TODAY_ROW = id => `.ws-attention .ws-crow-body[data-message-id="${id}"]`;
 
 /** No element the user would see at this width is clipped: CLIP_SELECTORS plus the hint and the
  *  change line (compact-checks.mjs's own algorithm, with those two added). */
@@ -499,16 +500,17 @@ export async function replyChecks({ open, check, assert, shot, settled, calls, O
     await context.close().catch(() => {});
   }
 
-  // R10: Today's "Needs your reply" › Draft reply opens the conversation with a draft running (the
-  // row open in Compact); ⌘↩ right after prepares nothing (no touch yet).
+  // R10: Today's "Needs your reply" › Draft reply opens the row in place on Today (both views)
+  // with a draft running; ⌘↩ right after prepares nothing (no touch yet).
   for (const view of ['default', 'compact']) {
     const { page, context } = await open({ theme: 'dark', hash: '#/today', enable: ['chat_send', 'mail_send'], settings: view === 'compact' ? { view: 'compact' } : null });
-    await check(`reply R10 (${view}): Today Draft reply opens the conversation with a draft running`, async () => {
+    await check(`reply R10 (${view}): Today Draft reply opens the row in place with a draft running`, async () => {
       await plan(page, { outcome: 'hold' });
       await page.waitForSelector('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"]');
       const before = (await calls(page, 'action_prepare')).length;
       await page.click('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"]');
-      await page.waitForSelector(`${rowContainer(view, 'c-reply-2')} .ws-draft-running`);
+      await page.waitForSelector(`${TODAY_ROW('c-reply-2')} .ws-draft-running`);
+      assert(await page.evaluate(() => location.hash) === '#/today', 'Draft reply left Today');
       await page.waitForTimeout(300);
       await page.keyboard.press('Meta+Enter');
       await page.waitForTimeout(300);
@@ -516,6 +518,82 @@ export async function replyChecks({ open, check, assert, shot, settled, calls, O
       await shot(page, `reply-today-${view}`);
     });
     await context.close().catch(() => {});
+  }
+
+  // R16 (reply design ruling 19, amended): a Today row opens in place with the thread, the
+  // composer and the named Send; ✦ draft runs there, a Teams Send sends once on the click, a mail
+  // Send asks the short confirm, one row is open at a time, a click again or Esc closes it, and
+  // nothing overflows. Both views, both themes, 1000 and 1440.
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      for (const width of [1000, 1440]) {
+        const { page, context, errors } = await open({ theme, width, height: 900, hash: '#/today', enable: ['chat_send', 'mail_send'], settings: view === 'compact' ? { view: 'compact' } : null });
+        await check(`reply R16: ${theme} ${view} ${width}: a Today row opens in place, drafts and sends`, async () => {
+          const jordan = TODAY_ROW('c-reply-1');
+          await page.click('.ws-attention .ws-msg-row[data-id="c-reply-1"]');
+          await page.waitForSelector(`${jordan} .ws-reply-bar`);
+          assert(await page.locator('.ws-attention .ws-msg-row[data-id="c-reply-1"][aria-expanded="true"]').count() === 1, 'the row is not marked open');
+          assert(await page.locator(`${jordan} .ws-thread-compact .ws-bubble`).count() > 0, 'no thread under the row');
+          assert(await page.locator('#reply-body').count() === 1, 'not exactly one reply box');
+          assert(await text(page, `${jordan} [data-action="reply-send"]`) === 'Send to Jordan', await text(page, `${jordan} [data-action="reply-send"]`));
+          const hint = await page.locator(`${jordan} .ws-reply-hint`).evaluate(el => el.textContent.replace(/\s+/g, ' ').trim());
+          assert(hint === 'Write a reply, or ✦ draft with AI', hint);
+          assert(await page.evaluate(() => location.hash) === '#/today', 'opening the row left Today');
+          await noOverflow(page, assert, 'Today with a row open');
+          const tileOverflow = await page.locator('.ws-attention').evaluate(el => {
+            const body = el.querySelector('.ws-tile-body') || el;
+            return body.scrollWidth - body.clientWidth;
+          });
+          assert(tileOverflow <= 0, `the widget scrolls sideways by ${tileOverflow}px`);
+          await shot(page, `reply-today-open-${theme}-${view}-${width}`);
+
+          // ✦ draft in place; an untouched draft never sends on ⌘↩, the click sends it once.
+          await plan(page, { outcome: 'hold' });
+          await page.click(`${jordan} .ws-reply-hint [data-action="ai-draft-quick"]`);
+          await page.waitForSelector(`${jordan} .ws-draft-running`, { timeout: 4000 });
+          assert((await lastCall(page, 'ai_draft'))?.sourceId === 'c-reply-1', JSON.stringify(await lastCall(page, 'ai_draft')));
+          await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, the notes are attached.', questions: [] }));
+          await page.waitForFunction(() => document.getElementById('reply-body')?.value.length > 0, null, { timeout: 4000 });
+          const before = (await calls(page, 'action_prepare')).length;
+          await page.focus('#reply-body');
+          await page.keyboard.press('Meta+Enter');
+          await page.waitForTimeout(350);
+          assert((await calls(page, 'action_prepare')).length === before, 'an untouched draft was sent by ⌘↩');
+          await page.click(`${jordan} [data-action="reply-send"]`);
+          await page.waitForSelector(`${jordan} .ws-reply-status:has-text("Sent to Jordan.")`, { timeout: 4000 });
+          await page.waitForTimeout(300);
+          assert(await sent(page, calls) === 1, `Teams Send sent ${await sent(page, calls)} times`);
+
+          // Another row opens and the first closes; the mail reply autosaves and Send asks first.
+          const priya = TODAY_ROW('m-reply-1');
+          await page.click('.ws-attention .ws-msg-row[data-id="m-reply-1"]');
+          await page.waitForSelector(`${priya} .ws-reply-bar`);
+          assert(await page.locator('.ws-attention .ws-crow-body').count() === 1, 'more than one row open');
+          await page.click('#reply-body');
+          await page.keyboard.type('Looks good.');
+          await page.waitForTimeout(1600);
+          assert((await calls(page, 'draft_save')).some(d => d.text === 'Looks good.'), 'no autosave of the Today reply');
+          await page.click(`${priya} [data-action="reply-send"]`);
+          await page.waitForSelector('.ws-modal[open]:has-text("Send this reply?")');
+          assert((await text(page, '.ws-modal[open] .ws-modal-body')).includes('To: priya.n@example.test'), await text(page, '.ws-modal[open] .ws-modal-body'));
+          await page.click('.ws-modal[open] button:has-text("Cancel")');
+          await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+          assert(await sent(page, calls) === 1, 'the mail confirm sent on Cancel');
+
+          // A click again closes the row; Esc closes it too.
+          await page.click('.ws-attention .ws-msg-row[data-id="m-reply-1"]');
+          await page.waitForSelector(`${priya}`, { state: 'detached' });
+          await page.click('.ws-attention .ws-msg-row[data-id="m-reply-1"]');
+          await page.waitForSelector(`${priya} .ws-reply-bar`);
+          await page.focus('.ws-attention .ws-msg-row[data-id="m-reply-1"]');
+          await page.keyboard.press('Escape');
+          await page.waitForSelector('.ws-attention .ws-crow-body', { state: 'detached' });
+          assert(await page.evaluate(() => document.activeElement?.dataset.id) === 'm-reply-1', 'focus did not go back to the row');
+          assert(errors.length === 0, errors.join(' | '));
+        });
+        await context.close().catch(() => {});
+      }
+    }
   }
 
   // R11: an unacknowledged critical item's bar is Send, Acknowledge and ⋯; ⋯ holds Snooze and its

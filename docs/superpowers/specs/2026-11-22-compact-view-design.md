@@ -86,7 +86,7 @@ Needs reply 12 · Critical 2 · Waiting 3 · FYI 30 · Low · Decisions 1     Al
 
 - Header: date (meta size) above the summary line (body size). No avatar, no greeting. The ⋯ menu sits at the right.
 - Widgets keep the grid, its 56 px row height (`GRID.rowHeight`) and the user's saved layouts; only their content uses the compact sizes, so nothing can get shorter or clip.
-- The "Needs your reply" widget (the Inbox list pinned to Today) keeps its current rows in compact sizes; open-in-place is only on the Inbox page.
+- The "Needs your reply" widget (the Inbox list pinned to Today) keeps its current rows in compact sizes. Its rows open in place too, in both views, with the thread and the same composer (amended 2026-11-26; reply design ruling 19).
 
 ### Today's toolbar (both views)
 

@@ -456,7 +456,7 @@ test('Schedule draws an agenda list for narrow sizes', () => {
 
 test('Needs your reply shows the number of messages its options ask for', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
-  const ids = html => [...tileOf(html, 'inbox').matchAll(/class="ws-msg-row" data-action="open-message" data-id="([^"]+)"/g)].map(m => m[1]);
+  const ids = html => [...tileOf(html, 'inbox').matchAll(/class="ws-msg-row" data-action="attention-open" data-id="([^"]+)"/g)].map(m => m[1]);
   const waiting = attentionMessages(s);
   assert.ok(waiting.length > 3, 'the fixture has more than 3 to show');
   assert.equal(ids(today(s, ctx())).length, Math.min(6, waiting.length), '6 by default');
@@ -466,6 +466,30 @@ test('Needs your reply shows the number of messages its options ask for', () => 
   const chats = ids(today(s, ctx()));
   assert.ok(chats.length > 0);
   assert.ok(chats.every(id => s.records.find(r => r.id === id).data.channel === 'chat'), 'Teams only');
+});
+
+test('Needs your reply opens a row in place with the thread, the composer and Send', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  // The whole tile, to the next one (the open row holds sections of its own).
+  const tile = html => html.slice(html.indexOf('data-tile="inbox"'), html.indexOf('data-tile=', html.indexOf('data-tile="inbox"') + 1));
+  const closed = tile(today(s, ctx()));
+  assert.match(closed, /class="ws-msg-row" data-action="attention-open" data-id="c-reply-2" aria-expanded="false" aria-controls="today-reply-c-reply-2"/);
+  assert.doesNotMatch(closed, /data-form="reply"|ws-thread-compact|today-reply-body/);
+  const open = tile(today(s, ctx({ todayOpen: 'c-reply-2', threadAll: new Set() })));
+  assert.match(open, /data-action="attention-open" data-id="c-reply-2" aria-expanded="true"/);
+  assert.equal((open.match(/aria-expanded="true"/g) || []).length, 1, 'one row open');
+  assert.match(open, /<div class="ws-crow-body" id="today-reply-c-reply-2" data-message-id="c-reply-2">/);
+  assert.match(open, /<div class="ws-thread ws-thread-compact" data-id="c-reply-2">/);
+  assert.equal((open.match(/<form class="ws-reply[^"]*" data-form="reply"/g) || []).length, 1, 'one composer');
+  assert.match(open, /data-form="reply" data-id="c-reply-2"/);
+  assert.match(open, /id="reply-body"/);
+  assert.match(open, /data-action="ai-draft-quick"|data-action="ai-open-settings"/);
+  assert.match(open, /data-action="reply-(send|copy)"/);
+  // The open row's ✦ is the composer's: no hover pill over it.
+  assert.doesNotMatch(open, /data-action="draft-reply" data-id="c-reply-2"/);
+  assert.match(open, /data-action="draft-reply" data-id="m-reply-1"/);
+  // A row no longer listed is not drawn open.
+  assert.doesNotMatch(tile(today(s, ctx({ todayOpen: 'gone', threadAll: new Set() }))), /aria-expanded="true"|data-form="reply"/);
 });
 
 test('Tasks no longer draws Notes; Notes keeps the textarea id today-note', () => {

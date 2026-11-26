@@ -2496,7 +2496,7 @@ for (const theme of ['dark', 'light']) {
     assert(await page.evaluate(onMore), 'focus returns to ⋯');
   });
 
-  await check(`${theme}: Today Draft reply opens the conversation and starts a draft`, async () => {
+  await check(`${theme}: Today Draft reply opens the row in place and starts a draft`, async () => {
     await plan(page, { outcome: 'hold' });
     await page.click('.ws-nav button[data-route=today]');
     await page.waitForSelector('.ws-attention [data-action="draft-reply"]');
@@ -2514,11 +2514,12 @@ for (const theme of ['dark', 'light']) {
     assert(geo.card - geo.time <= 12, `the time left the card edge ${JSON.stringify(geo)}`);
     await shot(page, `${theme}-today-draft-reply`);
     await action.click();
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-running');
+    await page.waitForSelector('.ws-attention .ws-crow-body[data-message-id="c-reply-2"] .ws-draft-running');
+    assert(await page.evaluate(() => location.hash) === '#/today', 'Draft reply left Today');
     const call = await lastCall(page, 'ai_draft');
     assert(call.sourceId === 'c-reply-2' && call.intent === 'propose_times' && call.tone === 'friendly', `remembered options not used ${JSON.stringify(call)}`);
     await page.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-provenance', { timeout: 5000 });
+    await page.waitForSelector('.ws-attention .ws-crow-body[data-message-id="c-reply-2"] .ws-draft-provenance', { timeout: 5000 });
   });
 
   await check(`${theme}: ai draft no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));

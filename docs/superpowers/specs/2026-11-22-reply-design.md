@@ -27,7 +27,6 @@ The reference app does the same job with one named Send button, a ✦ link that 
 - A signature setting or a signature added by Connect.
 - Rewrite / Shorter / Fix grammar presets (the reference app's ⋯ › Rewrite). "Tell AI what to change" covers them in the user's own words.
 - Quoting the replied-to message (an earlier ruling, Decision 40).
-- A reply box on Today's rows. Today keeps its Draft reply entry, which opens the conversation.
 - Row checkboxes, "Close all" or "N done today" (rejected in the overview).
 - The reply in the user's voice (`reply-context`), which is step 8.
 
@@ -142,7 +141,7 @@ Signature: none — Connect sends your text as written
 - no modal, popover, sheet or menu is open,
 - and the primary is a Send.
 
-A box the app focused (Today's Draft reply, a draft arriving) is not touched. The touch resets after a send, when the box is drawn for another conversation, and on a view switch. With the mail confirm open, ⌘↩ does nothing.
+A box the app focused (Today's Draft reply, a draft arriving) is not touched. The touch resets after a send, when the box is drawn for another conversation, on a view switch, and on a page change (a box touched on Today does not arm the Inbox's box for the same conversation, or the other way round). With the mail confirm open, ⌘↩ does nothing.
 
 **The Decisions lane's prepared actions and new events** keep today's "Review before sending" dialog (`reviewAction`), which now also lets Return cancel.
 
@@ -158,8 +157,13 @@ A box the app focused (Today's Draft reply, a draft arriving) is not touched. Th
 
 ### Today: "Needs your reply"
 
-- The row's hover pill stays, labelled "Draft reply" with the ✦ icon (`draft-reply`). It opens the conversation (in Compact, opened in place) and starts a draft with the remembered options, as today.
-- The box gets focus so the user can type. That focus is the app's, so ⌘↩ stays unarmed until the user clicks or types. Today never sends.
+Amended 2026-11-26 at the user's request (ruling 19).
+
+- A click on a row opens it in place inside the widget, in both views; a click again or Esc closes it. One row is open at a time, and leaving Today closes it.
+- The open row shows the Compact open row's body (`openRow`): the unavailable note, the summary, the thread (260 px, Earlier), then the same composer and action line as the Inbox: the ✦ draft link and one Send named for its target. A Teams Send sends on the click; a mail Send asks the short confirm with To and Cc. Autosave, the change line and ⋯ work as in the Inbox, through the same send and save paths and the store's `mutate`.
+- The widget keeps its grid cell: its body scrolls when the open row is taller than the cell, never sideways.
+- The row's hover pill stays, labelled "Draft reply" with the ✦ icon (`draft-reply`). It opens the row in place and starts a draft there with the remembered options. The open row has no pill (its ✦ is the composer's link).
+- The box gets focus so the user can type. That focus is the app's, so ⌘↩ stays unarmed until the user clicks or types (ruling 16). Only the open row has a composer, so there is one ⌘↩ target on the screen.
 
 ### Settings → Microsoft 365 → Allow actions
 
@@ -216,7 +220,7 @@ Because a Teams reply now goes on the click, the copy says so before the user tu
 16. **⌘↩ is armed per conversation** by the user's click or keystroke in that box, and resets after a send and on any other conversation. A box the app focused does not count. *Why:* an earlier review ruling (Review Focus 6), so an auto-advance or Today's Draft reply cannot turn ⌘↩ into a send of the wrong reply.
 17. **After a send the row stays where it is.** No automatic Done or lane move, and the box empties. *Why:* moving a conversation is the user's decision. The next sync files a replied thread as it does today.
 18. **The Allow actions copy changes** to say a Teams reply goes on the click. *Why:* the user turns on `chat_send` knowing what it now does, and the gate itself is unchanged.
-19. **Today keeps its Draft reply pill and gets no reply box.** *Why:* Today's rows are a list of what needs you. The reply happens in the conversation, where the thread and the named Send are.
+19. **Today's Needs your reply rows open in place with the thread and the same composer and Send as Inbox (amended 2026-11-26 at the user's request).** *Why:* the user answers from Today without leaving it; the thread and the named Send come along, so nothing about sending changes.
 
 ## Left to the builder
 

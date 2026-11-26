@@ -6,7 +6,7 @@ import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
-import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
+import { active, attentionMessages, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, drawnGrid, tileDefs } from './view-today.js';
@@ -104,6 +104,8 @@ const state = {
   // to select after a decision takes the open one away, threads shown whole ("Earlier"), and
   // reply text typed in a box that left the screen, per draft key (both views).
   openMessage: null, openKey: null, selectAfter: null, threadAll: new Set(), replyCarry: {},
+  // Today's "Needs your reply": the row shown open in place (both views) and its conversation.
+  todayOpen: null, todayOpenKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, chosen: {}, usage: null, error: '', tests: {}, testModels: {} },
   // Settings → General → Data location: the `data_location_get` answer (null until read).
@@ -520,6 +522,7 @@ async function render() {
     minutesPlugins: pluginHost?.minutesPlugins?.() || [],
   };
   if (state.route === 'inbox') ensureSelection(s);
+  if (state.route === 'today') followTodayRow(s);
   // The hash names the meeting shown, also when the list picked it, and its pane
   // (`#/meetings/<id>/<pane>`), or the tab chosen last, one in view (`#/automations/<tab>`).
   if (state.route === 'meetings') meetingsUi.ensureSelection();
@@ -540,7 +543,7 @@ async function render() {
           : state.route === 'plugin' ? pluginPageHtml()
           : state.route === 'ask' ? askPage(state, s, askUi?.thread(), { wide: (state.ask.wide = askWide(s)), now: Date.now(), profiles: state.ai.profiles, ai: state.ai })
             : settings(s, ctx);
-  const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
+  const next = keepReply && ['inbox', 'today'].includes(state.route) ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
     Object.assign(next.querySelector('#workspace-page'), { className: pageClass, innerHTML: html });
@@ -577,7 +580,7 @@ async function render() {
   if (changeWords && freshChange && freshKey === replyKey) freshChange.value = changeWords;
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   root.querySelectorAll('.ws-mtg-strip > .ws-menu[open]').forEach(fitSectionMenu);
-  if (state.route === 'inbox') rememberDraftBaseline(s);
+  if (['inbox', 'today'].includes(state.route)) rememberDraftBaseline(s);
   restoreScroll(saved);
   measureToday();
   // A background update keeps keyboard focus on the same control, and only on that one: when
@@ -763,6 +766,20 @@ const retrySourceOf = (sourceId, el) => retrySource({
   compact: compactView(), selected: state.selectedMessage, open: state.openMessage,
 });
 
+/** Today's open row on the "Needs your reply" list, followed like the Compact one (`followOpen`). */
+function followTodayRow(s) {
+  const { open, openKey } = followOpen(attentionMessages(s), { open: state.todayOpen, openKey: state.todayOpenKey }, messageKey);
+  Object.assign(state, { todayOpen: open, todayOpenKey: openKey });
+}
+
+/** Opens Today's row `id` in place (null closes it); one row is open at a time. */
+function openTodayRow(id) {
+  flushReplySave();
+  const m = id && getRecord('message', id);
+  Object.assign(state, { todayOpen: m ? id : null, todayOpenKey: m ? messageKey(m) : null });
+  return render().then(() => root.querySelector('.ws-attention .ws-msg-open')?.scrollIntoView({ block: 'nearest' }));
+}
+
 /** Closes the open Compact row. */
 function closeRow() {
   state.openMessage = null;
@@ -820,8 +837,11 @@ async function route(name, tab, pluginPath = null) {
   await savePendingNote();
   flushReplySave();
   state.meetings.rowMenu = null;
-  // Arriving at the Inbox without a target finds every row closed.
+  // Arriving at the Inbox without a target finds every row closed; Today's row closes the same way.
   if (state.route === 'inbox' && name !== 'inbox') closeRow();
+  if (state.route === 'today' && name !== 'today') Object.assign(state, { todayOpen: null, todayOpenKey: null });
+  // A box touched on one page is not the one another page draws (⌘↩ waits for a new touch there).
+  if (state.route !== name) state.replyTouched = null;
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   if (state.route === 'ask') state.ask.threadId = askThreadOf(tab);
@@ -1299,9 +1319,10 @@ function renderAround(container, next, keep) {
 
 const draftUi = key => (state.drafts[key] ||= {});
 const rememberedOptions = channel => readOptions(localPref(optionsKey(channel), null), channel);
-/** The message whose reply box is on screen: the open row in Compact, the selected one in Default. */
+/** The message whose reply box is on screen: Today's open row; in the Inbox the open row in
+ *  Compact, the selected one in Default. */
 const inboxMessage = s => {
-  const id = state.route !== 'inbox' ? null : viewOf(s.settings) === 'compact' ? state.openMessage : state.selectedMessage;
+  const id = state.route === 'today' ? state.todayOpen : state.route !== 'inbox' ? null : viewOf(s.settings) === 'compact' ? state.openMessage : state.selectedMessage;
   return id ? s.records.find(r => r.kind === 'message' && r.id === id) : null;
 };
 
@@ -2776,6 +2797,8 @@ async function handle(action, el, ev) {
       }
       return route('inbox');
     }
+    // Today's "Needs your reply": a click opens the row in place, a click again closes it.
+    case 'attention-open': return openTodayRow(state.todayOpen === id ? null : id);
     case 'inbox-more': state.inboxLimit += 200; return render();
     case 'inbox-earlier': state.threadAll.add(id); return render();
     case 'show-archived': state.showArchived = el.checked; return render();
@@ -2818,12 +2841,11 @@ async function handle(action, el, ev) {
     case 'message-ack': await decideRow(id, { action: 'acknowledge' }); return;
     case 'commitment': return commitmentDialog(id ? getRecord('message', id) : null);
     // Reply drafts with Claude
+    // Today's Draft reply: the row opens in place and the draft starts there.
     case 'draft-reply': {
       const m = getRecord('message', id);
       if (!m) return toast('This message is no longer available. Refresh and try again.', 'error');
-      Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: id, selectedKey: messageKey(m) });
-      if (compactView()) Object.assign(state, { openMessage: id, openKey: messageKey(m) });
-      await route('inbox');
+      await openTodayRow(id);
       await startDraft(m, rememberedOptions(m.data.channel));
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
@@ -3369,15 +3391,17 @@ document.addEventListener('keydown', ev => {
   touchReply(ev.target);
 }, true);
 
-// ⌘↩ in the Inbox runs the visible Send as a click would (DESIGN 6.4), only once the user has
-// clicked or typed in this reply box, never on a held key, and never with a confirm, popover,
-// sheet or menu open. Otherwise it does nothing. The change line and the draft popover keep
+// ⌘↩ in the Inbox (and in Today's open row) runs the visible Send as a click would (DESIGN 6.4),
+// only once the user has clicked or typed in this reply box, never on a held key, and never with a
+// confirm, popover, sheet or menu open. Otherwise it does nothing. The change line and the draft popover keep
 // their own ⌘↩ (they handle it first, in capture).
 document.addEventListener('keydown', ev => {
-  if (!ready || state.route !== 'inbox' || ev.key !== 'Enter' || !(ev.metaKey || ev.ctrlKey) || ev.isComposing) return;
+  if (!ready || !['inbox', 'today'].includes(state.route) || ev.key !== 'Enter' || !(ev.metaKey || ev.ctrlKey) || ev.isComposing) return;
   if (ev.defaultPrevented) return;
-  ev.preventDefault();
   const form = root.querySelector('form[data-form="reply"]');
+  // Today leaves ⌘↩ alone while no row is open (its other fields keep their own Return).
+  if (state.route === 'today' && !form) return;
+  ev.preventDefault();
   const m = form && getRecord('message', form.dataset.id);
   const send = form?.querySelector('[data-action="reply-send"]');
   if (!m || !send || send.disabled) return;
@@ -3632,6 +3656,14 @@ document.addEventListener('keydown', ev => {
     // ↵ opens the selected row (a focused control keeps its own Enter: a row button toggles once).
     ev.preventDefault();
     moveRows(enterRow({ selected: state.selectedMessage, open: state.openMessage })).catch(fail);
+  } else if (state.route === 'today' && ev.key === 'Escape' && state.todayOpen) {
+    // Esc closes Today's open row; focus inside it goes back to its line.
+    ev.preventDefault();
+    const openId = state.todayOpen;
+    const inside = root.querySelector('.ws-attention .ws-crow-body')?.contains(document.activeElement);
+    openTodayRow(null)
+      .then(() => { if (inside) root.querySelector(`.ws-attention .ws-msg-row[data-id="${CSS.escape(openId)}"]`)?.focus({ preventScroll: true }); })
+      .catch(fail);
   } else if (state.route === 'inbox' && compactView() && ev.key === 'Escape' && state.openMessage) {
     // Esc closes the open row (an open ⋯ menu has already taken Escape for itself).
     ev.preventDefault();
