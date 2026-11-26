@@ -29,6 +29,10 @@ mod today;
 #[allow(dead_code)]
 // the role and host, the operations and the refresh job wire this in (later tasks)
 pub(crate) mod voice;
+#[allow(dead_code)]
+// `window` and `Window` are Ask's date span; Ask's own task wires them in (this task only
+// wires `capture_parse`, which uses `parse`).
+pub mod when;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -953,6 +957,19 @@ impl Core {
         // Read-only: one person's profile from Connect's copy of the voice.
         if req.op == Operation::VoiceRead {
             return self.voice_read(&req);
+        }
+        // Read-only, pure (ask-capture design § 9): the date parser reads `text` and nothing
+        // stored; no operation id, no revision bump.
+        if req.op == Operation::CaptureParse {
+            let text = req.data["text"].as_str().unwrap_or("");
+            if text.chars().count() > 2000 {
+                return Err(WorkspaceError::new(
+                    "validation",
+                    "Write what needs doing (up to 2,000 characters).",
+                ));
+            }
+            let zone = self.repo()?.settings()?.time_zone;
+            return Ok(serde_json::to_value(when::parse(text, now(), &zone)).unwrap());
         }
         // Read-style: the skill import's scan reads the folder the user picked, and its Shorten
         // with AI runs Claude (up to 120 s) — both before the mutation lock, nothing stored but

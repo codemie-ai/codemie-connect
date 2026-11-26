@@ -1,0 +1,640 @@
+[
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 8,
+      "phrase": "tomorrow",
+      "start": 0,
+      "title": ""
+    },
+    "input": "tomorrow",
+    "kind": "parse",
+    "name": "tomorrow",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 4,
+      "phrase": "tmrw",
+      "start": 0,
+      "title": ""
+    },
+    "input": "tmrw",
+    "kind": "parse",
+    "name": "tmrw",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-26",
+      "end": 7,
+      "phrase": "tonight",
+      "start": 0,
+      "title": ""
+    },
+    "input": "tonight",
+    "kind": "parse",
+    "name": "tonight",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 22,
+      "phrase": "the day after tomorrow",
+      "start": 0,
+      "title": ""
+    },
+    "input": "the day after tomorrow",
+    "kind": "parse",
+    "name": "the day after tomorrow",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 20,
+      "phrase": "by fri",
+      "start": 14,
+      "title": "send the deck"
+    },
+    "input": "send the deck by fri",
+    "kind": "parse",
+    "name": "by fri",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-07",
+      "end": 19,
+      "phrase": "next mon",
+      "start": 11,
+      "title": "call Priya"
+    },
+    "input": "call Priya next mon",
+    "kind": "parse",
+    "name": "next mon",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-04",
+      "end": 9,
+      "phrase": "on Friday",
+      "start": 0,
+      "title": ""
+    },
+    "input": "on Friday",
+    "kind": "parse",
+    "name": "on Friday said on a Friday-now case",
+    "now": 1795766400,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-29",
+      "end": 9,
+      "phrase": "in 3 days",
+      "start": 0,
+      "title": ""
+    },
+    "input": "in 3 days",
+    "kind": "parse",
+    "name": "in 3 days",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-10",
+      "end": 10,
+      "phrase": "in 2 weeks",
+      "start": 0,
+      "title": ""
+    },
+    "input": "in 2 weeks",
+    "kind": "parse",
+    "name": "in 2 weeks",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 9,
+      "phrase": "next week",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next week",
+    "kind": "parse",
+    "name": "next week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 3,
+      "phrase": "eow",
+      "start": 0,
+      "title": ""
+    },
+    "input": "eow",
+    "kind": "parse",
+    "name": "eow",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-04",
+      "end": 11,
+      "phrase": "end of week",
+      "start": 0,
+      "title": ""
+    },
+    "input": "end of week",
+    "kind": "parse",
+    "name": "end of week on a Saturday-now case",
+    "now": 1795852800,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 3,
+      "phrase": "eom",
+      "start": 0,
+      "title": ""
+    },
+    "input": "eom",
+    "kind": "parse",
+    "name": "eom",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-01",
+      "end": 10,
+      "phrase": "next month",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next month",
+    "kind": "parse",
+    "name": "next month",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 10,
+      "phrase": "2026-11-28",
+      "start": 0,
+      "title": ""
+    },
+    "input": "2026-11-28",
+    "kind": "parse",
+    "name": "2026-11-28",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 5,
+      "phrase": "28.11",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28.11",
+    "kind": "parse",
+    "name": "28.11",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 5,
+      "phrase": "28/11",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28/11",
+    "kind": "parse",
+    "name": "28/11",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 10,
+      "phrase": "28.11.2026",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28.11.2026",
+    "kind": "parse",
+    "name": "28.11.2026",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 6,
+      "phrase": "28 Nov",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28 Nov",
+    "kind": "parse",
+    "name": "28 Nov",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 6,
+      "phrase": "Nov 28",
+      "start": 0,
+      "title": ""
+    },
+    "input": "Nov 28",
+    "kind": "parse",
+    "name": "Nov 28",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 13,
+      "phrase": "November 28th",
+      "start": 0,
+      "title": ""
+    },
+    "input": "November 28th",
+    "kind": "parse",
+    "name": "November 28th",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 6,
+      "phrase": "завтра",
+      "start": 0,
+      "title": ""
+    },
+    "input": "завтра",
+    "kind": "parse",
+    "name": "завтра",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 11,
+      "phrase": "послезавтра",
+      "start": 0,
+      "title": ""
+    },
+    "input": "послезавтра",
+    "kind": "parse",
+    "name": "послезавтра",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 10,
+      "phrase": "до пятницы",
+      "start": 0,
+      "title": ""
+    },
+    "input": "до пятницы",
+    "kind": "parse",
+    "name": "до пятницы",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-29",
+      "end": 11,
+      "phrase": "через 3 дня",
+      "start": 0,
+      "title": ""
+    },
+    "input": "через 3 дня",
+    "kind": "parse",
+    "name": "через 3 дня",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 9,
+      "phrase": "28 ноября",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28 ноября",
+    "kind": "parse",
+    "name": "28 ноября",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-26",
+      "end": 8,
+      "phrase": "сьогодні",
+      "start": 0,
+      "title": ""
+    },
+    "input": "сьогодні",
+    "kind": "parse",
+    "name": "сьогодні",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 11,
+      "phrase": "післязавтра",
+      "start": 0,
+      "title": ""
+    },
+    "input": "післязавтра",
+    "kind": "parse",
+    "name": "післязавтра",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 10,
+      "phrase": "у п'ятницю",
+      "start": 0,
+      "title": ""
+    },
+    "input": "у п'ятницю",
+    "kind": "parse",
+    "name": "у п'ятницю",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-10",
+      "end": 13,
+      "phrase": "через 2 тижні",
+      "start": 0,
+      "title": ""
+    },
+    "input": "через 2 тижні",
+    "kind": "parse",
+    "name": "через 2 тижні",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-28",
+      "end": 12,
+      "phrase": "28 листопада",
+      "start": 0,
+      "title": ""
+    },
+    "input": "28 листопада",
+    "kind": "parse",
+    "name": "28 листопада",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "31.02"
+    },
+    "input": "31.02",
+    "kind": "parse",
+    "name": "31.02 is never read",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "\"tomorrow\""
+    },
+    "input": "\"tomorrow\"",
+    "kind": "parse",
+    "name": "a quoted tomorrow is never read",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "every monday"
+    },
+    "input": "every monday",
+    "kind": "parse",
+    "name": "every monday is a recurrence, not a date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 14,
+      "phrase": "tomorrow",
+      "start": 6,
+      "title": "10:00"
+    },
+    "input": "10:00 tomorrow",
+    "kind": "parse",
+    "name": "10:00 tomorrow",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 20,
+      "phrase": "tomorrow",
+      "start": 12,
+      "title": "Call Priya"
+    },
+    "input": "Call Priya, tomorrow",
+    "kind": "parse",
+    "name": "a trailing comma is tidied",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-27",
+      "end": 21,
+      "phrase": "tomorrow",
+      "start": 13,
+      "title": "Call Priya"
+    },
+    "input": "Call Priya - tomorrow",
+    "kind": "parse",
+    "name": "a trailing dash is tidied",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-26",
+      "phrase": "today",
+      "to": "2026-11-26"
+    },
+    "input": "today",
+    "kind": "window",
+    "name": "today",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-25",
+      "phrase": "yesterday",
+      "to": "2026-11-25"
+    },
+    "input": "yesterday",
+    "kind": "window",
+    "name": "yesterday",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-23",
+      "phrase": "this week",
+      "to": "2026-11-29"
+    },
+    "input": "this week",
+    "kind": "window",
+    "name": "this week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-30",
+      "phrase": "next week",
+      "to": "2026-12-06"
+    },
+    "input": "next week",
+    "kind": "window",
+    "name": "next week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-16",
+      "phrase": "last week",
+      "to": "2026-11-22"
+    },
+    "input": "last week",
+    "kind": "window",
+    "name": "last week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-01",
+      "phrase": "this month",
+      "to": "2026-11-30"
+    },
+    "input": "this month",
+    "kind": "window",
+    "name": "this month",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-12-01",
+      "phrase": "next month",
+      "to": "2026-12-31"
+    },
+    "input": "next month",
+    "kind": "window",
+    "name": "next month",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-27",
+      "phrase": "on Friday",
+      "to": "2026-11-27"
+    },
+    "input": "on Friday",
+    "kind": "window",
+    "name": "on Friday",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-28",
+      "phrase": "28 Nov",
+      "to": "2026-11-28"
+    },
+    "input": "28 Nov",
+    "kind": "window",
+    "name": "28 Nov",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-19",
+      "phrase": null,
+      "to": "2026-12-03"
+    },
+    "input": "what's urgent?",
+    "kind": "window",
+    "name": "no date means the default span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  }
+]
