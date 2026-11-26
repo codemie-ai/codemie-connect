@@ -36,6 +36,9 @@ export const SEED_IDS = {
   checkWithTask: 'task-marek',
   triageRun: 'run-triage',
   fallbackRun: 'run-triage',
+  askDone: 'ask-7f2c',
+  askFailed: 'ask-3a9e',
+  askQueued: 'ask-51bd',
 };
 
 /** The heights and widths the tour sizes its window to (the browser run's widths). */
@@ -59,6 +62,7 @@ export const SEED_AI = {
   routes: {
     triage: { profile: 'codemie:local-ollama', model: null, fallback: 'claude' },
     commitments: { profile: 'codemie:local-ollama', model: null, fallback: null },
+    ask: { profile: 'claude', model: null, fallback: null },
   },
   plugins: {},
 };
@@ -73,7 +77,7 @@ const settings = data => ({ name: 'mutate', arg: { op: 'settings_update', data }
 /** Stops added after spec § 6's first table (Task 6's fix rounds): every built feature of steps
  *  0–7 that T01–T31 didn't check. They change state only through in-app clicks and store actions.
  *  Most put back what they changed (`after`); T50 (tasks accepted), T54 (a task added) and T61
- *  (the Todoist plugin removed) leave it changed, and T61 runs last. */
+ *  (the Todoist plugin removed, `REMOVING_TODOIST` below) leave it changed, and T61 runs last. */
 const MORE = [
   // ---------------------------------------------------------------- step 0 (marketplace plan, plugins-checks.mjs)
   {
@@ -374,28 +378,6 @@ const MORE = [
     ],
     covers: ['tp4.delete-ask'],
   },
-
-  // ---------------------------------------------------------------- step 4, last: removing the plugin (settings-tasks-checks.mjs)
-  {
-    id: 'T61', step: [4], title: 'Removing the Todoist plugin puts tasks back in Connect', route: '#/settings/plugins/todoist',
-    view: 'default', theme: 'light', width: 1440,
-    // Removing deletes the plugin's files, all inside the tour's own test folder; this one stop
-    // allows that control and that request, and runs last.
-    allow: ['plugin-remove', 'plugins_request:remove'],
-    // The dialog ignores a submit in its first moments (ui.js `COMMIT_GUARD_MS`), as a person's
-    // double click would be; the click comes after it.
-    action: [click('[data-action="plugin-remove"][data-plugin-id="todoist"]'), until('.ws-modal[open] button[type="submit"]'), { name: 'wait', arg: 900 },
-      click('.ws-modal[open] button[type="submit"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'back in Connect' } }],
-    checks: [
-      // Exactly one toast says it, and it says exactly this (never the removal's own "Todoist is
-      // removed. Its data is kept." success toast beside it): joining the text of every `.ws-toast`
-      // (as a plain `text` check does) would still pass with three of this one shown at once.
-      { name: '"Todoist was removed, so tasks are back in Connect." — exactly one toast', selector: '.ws-toast.ws-toast-info', count: 1, exact: 'Todoist was removed, so tasks are back in Connect.' },
-      // Design §11 ruling 16: removing a provider switches to Local once.
-      { name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 },
-    ],
-    covers: ['tp4.removed-local'],
-  },
 ];
 
 /** Settings › Your voice (rollout step 8, voice-checks.mjs's selectors). */
@@ -547,6 +529,233 @@ const VOICE_STOPS = [
     covers: ['v8.import-skipped'],
   },
 ];
+
+/** Ask and quick capture (rollout step 9, ask-checks.mjs's selectors): the seeded threads'
+ *  pages. Ask runs no AI on the tour: the done, failed and stopped turns are seeded, and the
+ *  queued one waits on a job the tour's stopped background loop never claims, so its answer
+ *  shows running from T01 on (the field reads "Answering…" in every stop). */
+const ASK = id => `#/ask/${id}`;
+const ASK_DONE = ASK(SEED_IDS.askDone);
+/** Settings › AI's "Ask" group heading: the row group right above the Ask row. */
+const AI_ASK_GROUP = 'tr.ws-ai-group:has(+ [data-ai-route-row="ask"])';
+const TURN = id => `article[data-ask-turn="${id}"]`;
+const CAPTURE_BOX = '#capture-input';
+const key = (k, extra = {}) => ({ name: 'key', arg: { key: k, ...extra } });
+/** Esc twice in the capture bar: the first clears its words, the second closes it. */
+const CLOSE_CAPTURE = [key('Escape', { on: CAPTURE_BOX }), key('Escape', { on: CAPTURE_BOX })];
+const NO_ASK = { name: 'no ask_start', op: 'ask_start', count: 0 };
+/** A toast fades in: its picture waits for it. */
+const TOAST_IN = { name: 'wait', arg: 600 };
+
+/** Step 9's stops. They change state only through in-app clicks, DOM keys and store actions,
+ *  and put back what they changed, except T79 (a task added to Todoist; its Undo is a delete)
+ *  and T80 (a line added to Today's Notes); no later stop counts either. */
+const ASK_STOPS = [
+  {
+    id: 'T71', step: [9], title: 'The Ask field first in the menu', route: '#/today',
+    view: 'default', theme: 'light', width: 1440,
+    checks: [
+      { name: 'the field comes before Today in the menu', selector: '.ws-ask-field', before: '.ws-nav-home' },
+      { name: 'its box answers ⌘K', selector: '#ask-input', attr: ['aria-keyshortcuts', 'Meta+K'] },
+      // The seeded queued answer runs for the whole tour, so the box says so where it would say
+      // "Ask…" with its "⌘K" hint (the browser run's ask Q2 shows those).
+      { name: 'its box says an answer runs: "Answering… ⌘. to stop"', selector: '#ask-input', attr: ['placeholder', 'Answering… ⌘. to stop'] },
+      { name: 'the main area still shows Today', selector: '.ws-today-page', count: 1 },
+      { name: 'no panel over it', selector: '.ws-ask-recent, .ws-ask-page', absent: true },
+    ],
+    covers: ['a9.field'],
+  },
+  {
+    id: 'T72', step: [9], title: '⌘K with Priya’s mail open: the About chip and Recent', route: '#/inbox',
+    view: 'compact', theme: 'dark', width: 1440,
+    action: [{ name: 'openRow', arg: SEED_IDS.priyaMail }, key('k', { meta: true }), until('.ws-ask-recent')],
+    after: key('Escape', { on: '#ask-input' }),
+    checks: [
+      { name: 'the box has focus', selector: '#ask-input', focused: true },
+      { name: '"About: Priya N. …"', selector: '[data-ask-about]', text: 'About: Priya N.' },
+      { name: 'Recent with the seeded questions', selector: '.ws-ask-recent', text: ['What did I promise Priya this week?', 'When is the QBR?'] },
+      NO_ASK,
+    ],
+    covers: ['a9.field', 'a9.cmd-k'],
+  },
+  {
+    id: 'T73', step: [9], title: 'The Ask page: a done thread with its cites and actions', route: ASK_DONE,
+    view: 'default', theme: 'light', width: 1440, action: until(`${TURN('turn-2')} .ws-ask-answer`),
+    checks: [
+      { name: 'both turns', selector: 'article[data-ask-turn]', count: 2 },
+      { name: 'the answer as text', selector: `${TURN('turn-1')} .ws-ask-answer`, text: 'You told Priya you would send the Atlas budget by Friday' },
+      { name: 'its cite marks', selector: `${TURN('turn-1')} .ws-ask-answer .ws-ask-mark`, count: 3 },
+      { name: 'three cite chips', selector: '[data-action="ask-cite"]', count: 3 },
+      { name: '"+ Add as task"', selector: '[data-action="ask-task"]', exact: '+ Add as task' },
+      { name: '"Open …"', selector: '[data-action="ask-go"]', text: 'Open Meeting · Roadmap review' },
+      { name: '"✦ Draft a reply to Priya N."', selector: '[data-action="ask-reply"]', exact: '✦ Draft a reply to Priya N.' },
+      { name: 'the meta line "Claude Code · 14 s · from …"', selector: `${TURN('turn-1')} .ws-ask-meta summary`, text: 'Claude Code · 14 s · from' },
+      { name: 'the follow-up box', selector: '#ask-follow-up', count: 1 },
+      { name: 'the history column', selector: '.ws-ask-cols .ws-ask-history', count: 1 },
+      NO_ASK,
+    ],
+    covers: ['a9.thread'],
+  },
+  {
+    id: 'T74', step: [9], title: 'The Ask page in Compact at 1000: one column and History ▾', route: ASK_DONE,
+    view: 'compact', theme: 'dark', width: 1000, action: until(`${TURN('turn-2')} .ws-ask-answer`),
+    checks: [
+      { name: 'one column', selector: '.ws-ask-cols', absent: true },
+      { name: '"History ▾"', selector: '.ws-ask-hmenu > summary', text: 'History' },
+      { name: '"New ask"', selector: '[data-action="ask-new"]', exact: 'New ask' },
+    ],
+    covers: ['a9.compact'],
+  },
+  {
+    id: 'T75', step: [9], title: 'Add as task fills the capture bar and saves nothing', route: ASK_DONE,
+    view: 'default', theme: 'dark', width: 1440,
+    action: [until('[data-action="ask-task"]'), click('[data-action="ask-task"]'), until('.ws-capture')],
+    after: CLOSE_CAPTURE,
+    checks: [
+      { name: 'the action’s words', selector: CAPTURE_BOX, value: 'Send Priya the Atlas budget' },
+      { name: '"Due Fri …"', selector: '[data-capture-due]', text: 'Due Fri' },
+      { name: '"Task in Todoist"', selector: '[data-capture-target]', exact: 'Task in Todoist' },
+      { name: 'no task_save', op: 'task_save', count: 0 },
+    ],
+    covers: ['a9.add-as-task'],
+  },
+  {
+    id: 'T76', step: [9], title: 'Priya’s cite chip opens her mail, with the way back', route: ASK_DONE,
+    view: 'default', theme: 'light', width: 1440,
+    action: [until('[data-action="ask-cite"][data-ask-cite="a1"]'), click('[data-action="ask-cite"][data-ask-cite="a1"]'), until(`.ws-inbox-row.ws-selected[data-id="${SEED_IDS.priyaMail}"]`), TOAST_IN],
+    checks: [
+      { name: 'Priya’s mail is selected', selector: `.ws-inbox-row.ws-selected[data-id="${SEED_IDS.priyaMail}"]`, count: 1 },
+      { name: 'and in the reading pane', selector: read(SEED_IDS.priyaMail), count: 1 },
+      { name: '"← Back to Ask" in the toast', selector: '.ws-toast', text: '← Back to Ask' },
+    ],
+    covers: ['a9.open-cite'],
+  },
+  {
+    id: 'T77', step: [9], title: 'A failed turn and a stopped turn', route: ASK(SEED_IDS.askFailed),
+    view: 'default', theme: 'light', width: 1440, action: until(`${TURN('turn-2')} .ws-ask-stopped`),
+    checks: [
+      { name: '"Couldn’t answer: Claude Code isn\'t signed in."', selector: `${TURN('turn-1')} .ws-ask-failed`, exact: '✕ Couldn’t answer: Claude Code isn\'t signed in.' },
+      { name: 'Try again', selector: `${TURN('turn-1')} [data-action="ask-retry"]`, exact: 'Try again' },
+      { name: 'Check Settings › AI', selector: `${TURN('turn-1')} [data-action="ask-settings"]`, exact: 'Check Settings › AI' },
+      { name: '"Stopped."', selector: `${TURN('turn-2')} .ws-ask-stopped`, exact: 'Stopped.' },
+      { name: 'Ask again', selector: `${TURN('turn-2')} [data-action="ask-again"]`, exact: 'Ask again' },
+    ],
+    covers: ['a9.failed-stopped'],
+  },
+  {
+    id: 'T78', step: [9], title: 'Answering with Claude Code, with Stop', route: ASK(SEED_IDS.askQueued),
+    view: 'compact', theme: 'light', width: 1440,
+    // The live status line is drawn by the page's one-second tick.
+    action: [until('[data-ask-run]'), { name: 'untilText', arg: { selector: '#ask-live', text: 'Answering with Claude Code' } }],
+    checks: [
+      { name: '"Answering with Claude Code · … s"', selector: '[data-ask-tick]', text: 'Answering with Claude Code · ' },
+      { name: 'the status for screen readers', selector: '#ask-live[role="status"]', any: true, text: 'Answering with Claude Code' },
+      { name: 'Stop', selector: '.ws-ask-stop', text: 'Stop' },
+      { name: 'the menu field reads "Answering…"', selector: '#ask-input', attr: ['placeholder', 'Answering… ⌘. to stop'] },
+      { name: 'no job_cancel', op: 'job_cancel', count: 0 },
+    ],
+    covers: ['a9.answering'],
+  },
+  {
+    id: 'T79', step: [9], title: '⌘N on Priya’s mail: a task due Friday, from her mail', route: '#/inbox',
+    view: 'default', theme: 'light', width: 1440,
+    action: [{ name: 'selectRow', arg: SEED_IDS.priyaMail }, key('n', { meta: true }), until('.ws-capture'),
+      { name: 'type', arg: { selector: CAPTURE_BOX, text: 'Send the deck by fri' } }, until('.ws-capture-item:not([data-stale]) [data-capture-due]')],
+    // Adding sends one task_save to the tour's Todoist stand-in; its Undo would delete it, which
+    // the deny-list refuses, so it stays (no later stop counts tasks).
+    next: {
+      title: 'Add: "Added to Todoist · Undo"',
+      action: [click('[data-action="capture-add"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'Added to Todoist' } }, TOAST_IN],
+      checks: [
+        { name: '"Added to Todoist"', selector: '.ws-toast', text: 'Added to Todoist' },
+        { name: 'with Undo', selector: '.ws-toast .ws-toast-action', text: 'Undo' },
+        { name: 'one task_save', op: 'task_save', count: 1 },
+      ],
+    },
+    checks: [
+      { name: '"From: Atlas budget"', selector: '[data-capture-source]', text: 'From: Atlas budget' },
+      { name: '"Task in Todoist · Due Fri …"', selector: '#capture-line', text: ['Task in Todoist', 'Due Fri'], order: true },
+      { name: 'no task_save yet', op: 'task_save', count: 0 },
+    ],
+    covers: ['c9.cmd-n', 'c9.due', 'c9.source', 'c9.task-undo'],
+  },
+  {
+    id: 'T80', step: [9], title: '⌘N, Note: a line added to Today’s Notes', route: '#/today',
+    view: 'compact', theme: 'light', width: 1440, scroll: '#today-note',
+    action: [key('n', { meta: true }), until('.ws-capture'), click('[data-capture-mode="note"]'),
+      { name: 'type', arg: { selector: CAPTURE_BOX, text: 'Ask Marek about the Q1 headcount' } }],
+    next: {
+      title: 'Add: the line in Notes on Today',
+      action: [click('[data-action="capture-add"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'Added to Notes on Today' } }, TOAST_IN],
+      checks: [
+        { name: 'the line at the end of the Notes widget', selector: '#today-note', text: '- Ask Marek about the Q1 headcount' },
+        { name: '"Added to Notes on Today"', selector: '.ws-toast', text: 'Added to Notes on Today' },
+        { name: 'one note_append', op: 'note_append', count: 1 },
+      ],
+    },
+    checks: [
+      { name: '"Adds a line to Notes on Today"', selector: '[data-capture-target]', exact: 'Adds a line to Notes on Today' },
+      { name: 'Note is chosen', selector: '[data-capture-mode="note"][aria-checked="true"]', count: 1 },
+      { name: 'no note_append yet', op: 'note_append', count: 0 },
+    ],
+    covers: ['c9.note'],
+  },
+  {
+    id: 'T81', step: [9], title: 'Settings › AI: the Ask group and row', route: '#/settings/ai',
+    view: 'default', theme: 'light', width: 1440, scroll: AI_ASK_GROUP,
+    checks: [
+      { name: 'the group "Ask", just above its row', selector: AI_ASK_GROUP, exact: 'Ask' },
+      { name: 'the row "Ask": "Questions you type in ⌘K."', selector: '[data-ai-route-row="ask"]', text: ['Ask', 'Questions you type in ⌘K.'], order: true },
+      { name: 'its status', selector: '[data-ai-route-row="ask"] [data-ai-route-state]', count: 1 },
+    ],
+    covers: ['a9.settings-ai'],
+  },
+  {
+    id: 'T82', step: [9], title: 'Settings › Layout: the shortcuts and "Ask in the menu"', route: '#/settings/layout',
+    view: 'compact', theme: 'dark', width: 1440, scroll: '.ws-card:has(kbd.ws-kbd)',
+    checks: [
+      { name: '"⌘K — Ask", "⌘N — Quick capture", "⌘. — Stop an answer"', selector: '.ws-setting-row:has(kbd.ws-kbd)', text: ['Ask⌘K', 'Quick capture⌘N', 'Stop an answer⌘.'], order: true },
+      { name: '"Ask in the menu", "⌘K works either way."', selector: '.ws-setting-row:has([data-setting="askInMenu"])', text: ['Ask in the menu', '⌘K works either way.'], order: true },
+      { name: 'it is on', selector: '[data-setting="askInMenu"]:checked', any: true, count: 1 },
+    ],
+    covers: ['a9.shortcuts-switch'],
+  },
+  {
+    id: 'T83', step: [9], title: 'The menu as a rail: its ✦ Ask button', route: '#/today',
+    view: 'default', theme: 'dark', width: 1000,
+    action: [click('.ws-sidebar [data-action="sidebar-toggle"]'), until('[data-action="ask-rail"]')],
+    after: click('.ws-sidebar [data-action="sidebar-toggle"]'),
+    checks: [
+      { name: 'the rail’s ✦ button', selector: '[data-action="ask-rail"]', count: 1 },
+      { name: 'labelled "Ask"', selector: '[data-action="ask-rail"]', attr: ['aria-label', 'Ask'] },
+      { name: 'its tooltip "Ask (⌘K)"', selector: '[data-action="ask-rail"]', attr: ['data-tip', 'Ask (⌘K)'] },
+    ],
+    covers: ['a9.rail'],
+  },
+];
+
+/** Step 4, last: removing the Todoist plugin (settings-tasks-checks.mjs). It leaves Todoist
+ *  removed, so it runs after every other stop, step 9's quick capture into Todoist included. */
+const REMOVING_TODOIST = {
+  id: 'T61', step: [4], title: 'Removing the Todoist plugin puts tasks back in Connect', route: '#/settings/plugins/todoist',
+  view: 'default', theme: 'light', width: 1440,
+  // Removing deletes the plugin's files, all inside the tour's own test folder; this one stop
+  // allows that control and that request, and runs last.
+  allow: ['plugin-remove', 'plugins_request:remove'],
+  // The dialog ignores a submit in its first moments (ui.js `COMMIT_GUARD_MS`), as a person's
+  // double click would be; the click comes after it.
+  action: [click('[data-action="plugin-remove"][data-plugin-id="todoist"]'), until('.ws-modal[open] button[type="submit"]'), { name: 'wait', arg: 900 },
+    click('.ws-modal[open] button[type="submit"]'), { name: 'untilText', arg: { selector: '.ws-toast', text: 'back in Connect' } }],
+  checks: [
+    // Exactly one toast says it, and it says exactly this (never the removal's own "Todoist is
+    // removed. Its data is kept." success toast beside it): joining the text of every `.ws-toast`
+    // (as a plain `text` check does) would still pass with three of this one shown at once.
+    { name: '"Todoist was removed, so tasks are back in Connect." — exactly one toast', selector: '.ws-toast.ws-toast-info', count: 1, exact: 'Todoist was removed, so tasks are back in Connect.' },
+    // Design §11 ruling 16: removing a provider switches to Local once.
+    { name: 'exactly one task_provider_set', op: 'task_provider_set', count: 1 },
+  ],
+  covers: ['tp4.removed-local'],
+};
 
 export const STOPS = [
   // ---------------------------------------------------------------- step 0 (plugins-checks.mjs)
@@ -954,4 +1163,6 @@ export const STOPS = [
   },
   ...MORE,
   ...VOICE_STOPS,
+  ...ASK_STOPS,
+  REMOVING_TODOIST,
 ];

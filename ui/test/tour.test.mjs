@@ -114,7 +114,8 @@ test('every browser feature names a check file that exists', () => {
   // Ruling 12: amber only for what needs a real send or the desktop (or a provider state the seed
   // doesn't hold), each naming its browser check.
   assert.deepEqual(browser.map(f => f.id).sort(), ['mb6.row-click', 'mb6.seen-marks', 'pm7.chooser-ollama', 'r2.cmd-enter', 'r2.mail-confirm', 'r2.teams-send', 'tp4.banners',
-    'v8.import-distil', 'v8.import-pick', 'v8.import-save', 'v8.refresh', 'v8.save-through-provider', 'v8.sheet-line']);
+    'v8.import-distil', 'v8.import-pick', 'v8.import-save', 'v8.refresh', 'v8.save-through-provider', 'v8.sheet-line',
+    'a9.answer-follow-up', 'a9.chooser', 'a9.delete-clear', 'a9.draft-reply', 'a9.stop'].sort());
   for (const f of browser) {
     const file = new URL(f.browserCheck.file, repo);
     assert.ok(existsSync(file), `${f.id}: ${f.browserCheck.file} is missing`);
@@ -123,8 +124,11 @@ test('every browser feature names a check file that exists', () => {
   }
 });
 
-test('stops are T01..T70 in order, widths in {1000,1440,1680}, views and themes both used for steps 1–5, 7 and 8', () => {
-  assert.deepEqual(STOPS.map(s => s.id), Array.from({ length: 70 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`));
+test('stops are T01..T83 in order (removing the Todoist plugin, T61, runs last), widths in {1000,1440,1680}, views and themes both used for steps 1–5 and 7–9', () => {
+  const ids = Array.from({ length: 83 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`);
+  // T61 removes the Todoist plugin and leaves it removed, so it runs after every stop that needs
+  // Todoist (step 9's quick capture adds to it): last, the others in id order.
+  assert.deepEqual(STOPS.map(s => s.id), [...ids.filter(id => id !== 'T61'), 'T61']);
   for (const s of STOPS) {
     assert.ok(s.checks.length > 0, `${s.id} has no checks`);
     if (s.capture === false) continue;
@@ -132,7 +136,7 @@ test('stops are T01..T70 in order, widths in {1000,1440,1680}, views and themes 
     assert.ok(['default', 'compact'].includes(s.view) && ['light', 'dark'].includes(s.theme), `${s.id} ${s.view} ${s.theme}`);
     assert.match(s.route, /^#\//, `${s.id} route`);
   }
-  for (const step of [1, 2, 3, 4, 5, 7, 8]) {
+  for (const step of [1, 2, 3, 4, 5, 7, 8, 9]) {
     const of = STOPS.filter(s => s.step.includes(step) && s.capture !== false);
     assert.deepEqual([...new Set(of.map(s => s.view))].sort(), ['compact', 'default'], `step ${step} views`);
     assert.deepEqual([...new Set(of.map(s => s.theme))].sort(), ['dark', 'light'], `step ${step} themes`);
@@ -643,10 +647,7 @@ test('allowing the Delete control opens its ask but never lets task_delete throu
   assert.deepEqual(refused, [{ kind: 'op', name: 'task_delete' }]);
   const stop60 = STOPS.find(s => s.covers.includes('tp4.delete-ask'));
   assert.deepEqual(stop60.allow, ['task-delete']);
-  // Removing the Todoist plugin stays the last stop that needs Todoist: only step 8's voice stops
-  // come after it.
-  const removing = STOPS.findIndex(s => s.covers.includes('tp4.removed-local'));
-  assert.ok(STOPS.slice(removing + 1).every(s => s.step.every(n => n === 8)), 'only voice stops come after removing the plugin');
+  assert.ok(STOPS.at(-1).covers.includes('tp4.removed-local'), 'removing the plugin stays last');
 });
 
 test('the seed’s AI settings are the ones the chooser stop saves back', async () => {
@@ -693,4 +694,63 @@ test('the deny-list refuses Shorten with AI (an AI run) up front, and still lets
   assert.equal(denied('op', 'voice_import_distil'), true);
   assert.equal(denied('op', 'voice_import_scan'), false);
   assert.equal(denied('action', 'voice-import-cancel'), false);
+});
+
+test('the key action dispatches a DOM keydown on the document and nothing else', async () => {
+  const events = [];
+  const doc = fakeDoc({ '.ws-inbox-row': [node()] });
+  doc.defaultView.KeyboardEvent = class { constructor(type, init) { Object.assign(this, { type, ...init }); } };
+  doc.dispatchEvent = ev => { events.push(ev); return true; };
+  const invoke = fakeInvoke();
+  const h = harness({ doc, invoke, stops: [stop('T72', { action: { name: 'key', arg: { key: 'k', meta: true } } })] });
+  const [r] = (await h.run()).stops;
+  assert.equal(r.error, null, r.error);
+  assert.equal(events.length, 1);
+  assert.deepEqual({ type: events[0].type, key: events[0].key, metaKey: events[0].metaKey, ctrlKey: events[0].ctrlKey, bubbles: events[0].bubbles }, { type: 'keydown', key: 'k', metaKey: true, ctrlKey: false, bubbles: true });
+  assert.deepEqual(h.mutations, [], 'no op');
+  assert.deepEqual(invoke.calls.map(([cmd]) => cmd).filter(cmd => !cmd.startsWith('tour_')), [], 'no invoke');
+});
+
+test('the key action sends Esc to a named control, and refuses a key it does not know (⌘↩ sends in the Inbox)', async () => {
+  const box = node();
+  const seen = [];
+  box.dispatchEvent = ev => { seen.push(ev.key); return true; };
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '#capture-input': [box] });
+  doc.defaultView.KeyboardEvent = class { constructor(type, init) { Object.assign(this, { type, ...init }); } };
+  doc.dispatchEvent = () => { throw new Error('the document got it'); };
+  const ok = harness({ doc, stops: [stop('T75', { action: { name: 'key', arg: { key: 'Escape', on: '#capture-input' } } })] });
+  assert.equal((await ok.run()).stops[0].error, null);
+  assert.deepEqual(seen, ['Escape']);
+  const bad = harness({ doc, stops: [stop('T79', { action: { name: 'key', arg: { key: 'Enter', meta: true } } })] });
+  assert.match((await bad.run()).stops[0].error, /not a key the tour presses/);
+});
+
+test('a `next` phase counts its own ops', async () => {
+  const ops = [];
+  const doc = fakeDoc({ '.ws-inbox-row': [node()], '.add': [node({ attrs: { 'data-action': 'capture-add' }, onClick: () => ops.push('task_save') })] });
+  const h = harness({ doc, ops, stops: [stop('T79', {
+    checks: [{ name: 'nothing saved yet', op: 'task_save', count: 0 }],
+    next: { title: 'Add', action: { name: 'click', arg: '.add' }, checks: [{ name: 'one task_save', op: 'task_save', count: 1 }] },
+  })] });
+  const [r] = (await h.run()).stops;
+  assert.equal(r.pass, true, JSON.stringify(r.checks));
+  assert.ok(r.checks.some(c => c.name === 'next: one task_save' && c.pass));
+});
+
+test('ask-cite and ask-go pass the deny-list; ask-delete and ask-clear do not', () => {
+  for (const name of ['ask-cite', 'ask-go', 'ask-task', 'ask-reply', 'ask-stop', 'capture-add', 'capture-mode', 'sidebar-toggle']) assert.equal(denied('action', name), false, name);
+  for (const op of ['task_save', 'note_append', 'job_cancel']) assert.equal(denied('op', op), false, op);
+  for (const name of ['ask-delete', 'ask-clear']) assert.equal(denied('action', name), true, name);
+  assert.equal(denied('op', 'ask_delete'), true);
+});
+
+test('step 9 stops route to the seeded Ask threads and never ask', () => {
+  const ask = STOPS.filter(s => s.step.includes(9));
+  assert.deepEqual(ask.map(s => s.id), Array.from({ length: 13 }, (_, i) => `T${71 + i}`));
+  for (const id of ['askDone', 'askFailed', 'askQueued']) assert.ok(ask.some(s => s.route === `#/ask/${SEED_IDS[id]}`), id);
+  // No action clicks a control that asks, drafts or stops, or mutates an op that does.
+  const actions = ask.flatMap(s => [s.action, s.next?.action, s.after].flat().filter(Boolean));
+  const named = actions.map(a => (a.name === 'click' ? a.arg : a.name === 'mutate' ? a.arg.op : '')).join(' ');
+  assert.ok(!/ask_start|job_cancel|ai_draft|data-action="ask-(follow-up|again|retry|reply|stop|example|recent)"/.test(named), named);
+  assert.ok(ask.every(s => !s.allow), 'no allow');
 });

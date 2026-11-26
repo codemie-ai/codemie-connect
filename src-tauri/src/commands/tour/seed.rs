@@ -3,10 +3,15 @@
 //! `Err`, and otherwise hands the returned `FakeProvider` to `Core::set_task_providers` and the
 //! returned `FakeVoice` to `Core::set_voice_providers`.
 //!
+//! Ask's threads (rollout step 9) are written as `ask::store` writes them, and the queued `ask`
+//! job the queued thread waits on is enqueued as `ask_start` enqueues one; the tour starts no
+//! background loop, so nothing claims it and no AI runs.
+//!
 //! The seed holds no secret and no path outside the test folder (design § 4); [`import`] refuses
 //! both before writing anything, so a refused import leaves no database behind.
+use crate::workspace::ask::store::{self as ask_store, Thread, TurnState};
 use crate::workspace::models::{
-    id, now, Connection, Record, Result, Settings, Workspace, WorkspaceError,
+    id, now, Connection, Job, Record, Result, Settings, Workspace, WorkspaceError,
 };
 use crate::workspace::repository::Repository;
 use crate::workspace::task_provider::{fake::FakeProvider, ProviderInfo};
@@ -47,6 +52,20 @@ pub struct Seed {
     /// and the skills folder the import stops scan.
     #[serde(default)]
     pub voice: Option<VoiceSeed>,
+    /// Ask (rollout step 9): finished threads, and the queued job a queued thread waits on.
+    #[serde(default)]
+    pub ask: Option<AskSeed>,
+}
+
+/// The seeded Ask threads (`ask-thread.json`'s shape) and the `ask` jobs their queued turns wait
+/// on, each still `queued` and never claimed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskSeed {
+    #[serde(default)]
+    pub threads: Vec<Thread>,
+    #[serde(default)]
+    pub jobs: Vec<Job>,
 }
 
 /// The seeded reply-context provider: what `available` answers, the copy as its `export`
@@ -351,6 +370,75 @@ fn check_paths(seed: &Seed, test_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// An id the store keeps as a record id and a route segment: `ask-` and then letters, digits
+/// and dashes, at most 64 characters.
+fn plain_ask_id(id: &str) -> bool {
+    id.len() <= 64
+        && id.strip_prefix("ask-").is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+
+/// The seeded Ask (step 9): each thread's id plain and its turns between 1 and
+/// `ask_store::MAX_TURNS`; each job an `ask` job still `queued` and never claimed, keyed
+/// `ask:<thread>`, whose payload names a seeded turn that is `queued` and names that job back
+/// (what `ask_start` would have written). Nothing an Ask run would add is accepted: no answer on
+/// a waiting turn.
+fn check_ask(ask: &AskSeed) -> Result<()> {
+    for (i, t) in ask.threads.iter().enumerate() {
+        if !plain_ask_id(&t.id) {
+            return Err(refused(
+                "A seeded Ask thread needs an id like ask-7f2c.",
+                format!("ask.threads[{i}].id"),
+            ));
+        }
+        if t.turns.is_empty() || t.turns.len() > ask_store::MAX_TURNS {
+            return Err(refused(
+                "A seeded Ask thread holds 1 to 20 turns.",
+                format!("ask.threads[{i}].turns"),
+            ));
+        }
+        let waiting = |turn: &&crate::workspace::ask::store::Turn| {
+            matches!(turn.state, TurnState::Queued | TurnState::Running)
+        };
+        if t.turns
+            .iter()
+            .filter(waiting)
+            .any(|turn| turn.answer.is_some())
+        {
+            return Err(refused(
+                "A seeded Ask turn that waits has no answer.",
+                format!("ask.threads[{i}].turns"),
+            ));
+        }
+    }
+    for (i, j) in ask.jobs.iter().enumerate() {
+        let thread = j.payload["threadId"].as_str().unwrap_or_default();
+        let turn = j.payload["turnId"].as_str().unwrap_or_default();
+        let waits_on_it = ask
+            .threads
+            .iter()
+            .find(|t| t.id == thread)
+            .and_then(|t| t.turns.iter().find(|u| u.id == turn))
+            .is_some_and(|u| u.state == TurnState::Queued && u.job_id.as_deref() == Some(&j.id));
+        let shaped = j.kind == "ask"
+            && j.state == "queued"
+            && j.attempts == 0
+            && j.lease_until.is_none()
+            && j.key == format!("ask:{thread}")
+            && j.payload["purpose"] == "ask"
+            && !j.id.is_empty()
+            && !j.id.contains(['/', '\\']);
+        if !(shaped && waits_on_it) {
+            return Err(refused(
+                "A seeded Ask job is a queued ask job its queued turn waits on.",
+                format!("ask.jobs[{i}]"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A seeded plugin's id is a valid plugin id, its version one plain folder name, and each of its
 /// files one plain name in that folder: nothing it names lands outside
 /// `<test dir>/plugins/installed/<id>/<version>/`.
@@ -492,6 +580,9 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>, Arc<Fak
     })?;
     check_paths(&seed, test_dir)?;
     check_plugins(&seed.plugins)?;
+    if let Some(ask) = &seed.ask {
+        check_ask(ask)?;
+    }
 
     let paths = CorePaths {
         data: test_dir.to_path_buf(),
@@ -530,6 +621,15 @@ pub fn import(test_dir: &Path) -> Result<(SeedCounts, Arc<FakeProvider>, Arc<Fak
                 now(),
             )?;
             voice.answer_every("export", v.copy);
+        }
+    }
+
+    if let Some(ask) = &seed.ask {
+        for thread in &ask.threads {
+            ask_store::write(&mut repository, thread)?;
+        }
+        for job in &ask.jobs {
+            repository.enqueue(job)?;
         }
     }
 
@@ -615,6 +715,7 @@ mod tests {
             },
             plugins: vec![],
             voice: None,
+            ask: None,
         }
     }
 
@@ -703,6 +804,104 @@ mod tests {
                 .unwrap();
             assert_eq!(answer, voice_copy());
         }
+    }
+
+    /// One turn in `ask-thread.json`'s shape.
+    fn ask_turn(id: &str, state: &str, job: &str) -> Value {
+        json!({"id": id, "at": 1_795_000_400i64, "question": "Who is Marek Novak?", "about": null, "state": state,
+               "answer": if state == "done" { json!("Finance contact [p1].") } else { Value::Null },
+               "cites": [], "actions": [], "searched": null, "cut": false, "took": null, "profile": "claude",
+               "model": null, "fellBackFrom": null, "fallbackReason": null, "error": null, "jobId": job})
+    }
+
+    /// The seed's `ask`: a done thread, and a thread whose turn is queued with its queued job.
+    fn ask_seed() -> AskSeed {
+        serde_json::from_value(json!({
+            "threads": [
+                {"id": "ask-7f2c", "createdAt": 1_795_000_000i64, "updatedAt": 1_795_000_100i64, "nextRef": 2,
+                 "turns": [ask_turn("turn-1", "done", "job-old")]},
+                {"id": "ask-51bd", "createdAt": 1_795_000_400i64, "updatedAt": 1_795_000_400i64, "nextRef": 1,
+                 "turns": [ask_turn("turn-1", "queued", "job-tour-ask")]}
+            ],
+            "jobs": [{"id": "job-tour-ask", "workspaceId": "personal", "connectionId": null, "kind": "ask",
+                      "key": "ask:ask-51bd", "state": "queued", "dueAt": 1_795_000_400i64, "leaseUntil": null,
+                      "attempts": 0, "policy": {"workspaceRevision": 1},
+                      "payload": {"threadId": "ask-51bd", "turnId": "turn-1", "purpose": "ask", "profile": "claude",
+                                  "model": null, "runModel": null, "startedAt": 1_795_000_400i64, "hiddenCalendars": []},
+                      "result": null}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn import_writes_the_ask_threads_and_the_queued_job() {
+        use crate::workspace::ask::{self, store};
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        seed.ask = Some(ask_seed());
+        write_seed(dir.path(), &seed);
+        import(dir.path()).unwrap();
+
+        let repository = Repository::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let threads = store::list(&repository).unwrap();
+        assert_eq!(
+            threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["ask-51bd", "ask-7f2c"]
+        );
+        let snapshot = ask::snapshot(&threads, &repository.settings().unwrap());
+        assert_eq!(snapshot["running"]["threadId"], "ask-51bd");
+        assert_eq!(snapshot["running"]["turnId"], "turn-1");
+        assert_eq!(snapshot["running"]["jobId"], "job-tour-ask");
+        let jobs = repository.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            (
+                jobs[0].kind.as_str(),
+                jobs[0].state.as_str(),
+                jobs[0].key.as_str()
+            ),
+            ("ask", "queued", "ask:ask-51bd")
+        );
+        drop(repository);
+
+        // Were the start-up check to run (a tour starts no background work), it would leave the
+        // queued turn queued: its job is still queued and was never claimed.
+        let core = crate::workspace::test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        assert_eq!(core.ask_startup().unwrap(), 0);
+        let r = core.repo().unwrap();
+        let queued = store::read(&r, "ask-51bd").unwrap().unwrap();
+        assert_eq!(queued.turns[0].state, store::TurnState::Queued);
+        assert_eq!(r.jobs().unwrap()[0].state, "queued");
+    }
+
+    #[test]
+    fn import_refuses_an_ask_job_whose_turn_is_not_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        let mut ask = ask_seed();
+        ask.jobs[0].payload["threadId"] = json!("ask-7f2c");
+        ask.jobs[0].key = "ask:ask-7f2c".into();
+        seed.ask = Some(ask);
+        write_seed(dir.path(), &seed);
+        let e = expect_refusal(dir.path());
+        assert_eq!(e.field.as_deref(), Some("ask.jobs[0]"));
+        assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_an_ask_thread_id_that_is_not_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        let mut ask = ask_seed();
+        ask.threads[0].id = "../ask-7f2c".into();
+        seed.ask = Some(ask);
+        write_seed(dir.path(), &seed);
+        let e = expect_refusal(dir.path());
+        assert_eq!(e.field.as_deref(), Some("ask.threads[0].id"));
     }
 
     #[test]

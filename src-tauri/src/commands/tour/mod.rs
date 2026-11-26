@@ -517,17 +517,15 @@ mod tests {
     }
 
     /// Final review I1: a value that selects no stop would run nothing and pass. A stop id the
-    /// script doesn't have, or a step none of its stops belongs to (9 today), is refused at
-    /// parse time, naming it.
+    /// script doesn't have is refused at parse time, naming it. (A rollout step none of its
+    /// stops belongs to is refused the same way; since step 9's stops, every step 0–9 has some.)
     #[test]
     fn parse_refuses_a_stop_or_step_with_nothing_to_run() {
         for (value, named) in [
-            ("T71", "T71"),
+            ("T84", "T84"),
             ("T99", "T99"),
             ("T00", "T00"),
-            ("T05,T71", "T71"),
-            ("9", "step 9"),
-            ("0,9", "step 9"),
+            ("T05,T84", "T84"),
         ] {
             let env = TourEnv {
                 tour: Some(value.into()),
@@ -543,12 +541,13 @@ mod tests {
     #[test]
     fn script_stops_are_read_from_script_js() {
         let stops = script_stops();
-        assert_eq!(stops.len(), 70);
+        assert_eq!(stops.len(), 83);
         assert_eq!(stops[0], ("T32".to_string(), vec![0]));
         assert!(stops.contains(&("T12".to_string(), vec![1, 4, 5])));
         assert!(stops.contains(&("T61".to_string(), vec![4])));
         assert!(stops.contains(&("T70".to_string(), vec![8])));
-        for step in 0..=8 {
+        assert!(stops.contains(&("T83".to_string(), vec![9])));
+        for step in 0..=9 {
             assert!(stops.iter().any(|(_, s)| s.contains(&step)), "step {step}");
         }
     }

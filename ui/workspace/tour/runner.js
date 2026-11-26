@@ -14,9 +14,9 @@
 import { STOPS, HEIGHT } from './script.js';
 
 /** What sends, writes elsewhere or installs (design § 5's deny-list, with `refresh`: a
- *  marketplace's Fetch button is `market-refresh`; and `distil`: the import's Shorten with AI is
- *  an AI run). */
-const SENDS = /send|confirm|prepare|fetch|install(?!ed)|update|remove|delete|sign|login|test|refresh|distil/i;
+ *  marketplace's Fetch button is `market-refresh`; `distil`: the import's Shorten with AI is
+ *  an AI run; and `clear`: Ask's Clear history deletes every thread). */
+const SENDS = /send|confirm|prepare|fetch|install(?!ed)|update|remove|delete|sign|login|test|refresh|distil|clear/i;
 /** What opens something on the user's desktop: Finder, Terminal, a browser, a picker, a download. */
 const OPENS = /open|reveal|pick|link|terminal|download/i;
 /** The same for the window's own commands; its terminal dock's list and resize stay in the window. */
@@ -31,6 +31,10 @@ const ALWAYS_DENIED = new Set(['launchAtLogin']);
 const NEVER = /send|confirm|prepare/i;
 /** The commands the runner may invoke: `plugins_request` only to read. */
 const INVOKE_OK = new Set(['workspace_request', 'plugins_request:markets', 'plugins_request:installed', 'smoke_mode', 'get_app_version']);
+
+/** The keys the `key` action presses: ⌘K and ⌘N open Ask and quick capture, Esc closes them.
+ *  No other key: ⌘↩ runs the Inbox's visible Send. */
+const KEYS = new Set(['k', 'n', 'Escape']);
 
 const SETTLE_MS = 8000;
 const SEND_REFUSAL = 'The tour sends nothing.';
@@ -239,7 +243,7 @@ const LANE_OF = { 'c-reply-1': 'reply', 'c-reply-2': 'reply', 'm-reply-1': 'repl
 
 /**
  * The in-app steps a stop can take: DOM clicks on the app's own controls, an `input` event on a
- * text box, a `mutate` of a settings or task op, or a read (`query`). Each gets `ctx` (`click`,
+ * text box, a `keydown` DOM event, a `mutate` of a settings or task op, or a read (`query`). Each gets `ctx` (`click`,
  * `mutate`, `query`, `find`, `settle`, `invoke`, `wait`, `doc`, `store`, `voice`) and the stop's
  * argument; `ctx.click`, `ctx.mutate` and `ctx.query` refuse what the deny-list names before
  * anything is dispatched.
@@ -262,6 +266,15 @@ export const ACTIONS = {
     box.focus?.();
     box.value = text;
     box.dispatchEvent(new (ctx.doc.defaultView?.Event || Event)('input', { bubbles: true }));
+    await ctx.settle();
+  },
+  /** A key pressed in the window: one `keydown` DOM event (never an OS one) on the document, as
+   *  a shortcut reaches it, or on the control `on` names (Esc in a text box). Only `KEYS`. */
+  key: async (ctx, { key, meta = false, ctrl = false, on = null }) => {
+    if (!KEYS.has(key)) throw new Error(`"${key}" is not a key the tour presses`);
+    const target = on ? ctx.find(on) : ctx.doc;
+    const KeyboardEventOf = ctx.doc.defaultView?.KeyboardEvent || KeyboardEvent;
+    target.dispatchEvent(new KeyboardEventOf('keydown', { key, metaKey: !!meta, ctrlKey: !!ctrl, bubbles: true, cancelable: true }));
     await ctx.settle();
   },
   /** Waits until `selector` shows (at most 8 s). */
@@ -560,11 +573,13 @@ export async function runTour({
       }
       if (s.next) {
         // A second picture of the same stop: its own action, checks and capture (`<id>-next`).
+        const opsBeforeNext = ops.length;
         await step(s.next.action, 'next');
+        const sentInNext = ops.slice(opsBeforeNext);
         for (const c of s.next.checks) {
           let verdict;
           try {
-            verdict = judge(doc, c);
+            verdict = c.op !== undefined ? judgeOps(sentInNext, c) : judge(doc, c);
           } catch (e) {
             verdict = { pass: false, detail: String(e?.message || e) };
           }

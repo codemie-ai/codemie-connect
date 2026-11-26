@@ -194,6 +194,8 @@ Seed ids are named in the plan. 61 stops: every stop but T28 is captured, and T2
 
 Step 8 (reply in the user's voice) added T62–T70 (`T68-next` the Delete ask), on a seed that chooses Knowledge (an offline stand-in plugin and a `FakeVoice` holding voice-states.json's ready copy) and copies the invented skills folder into the test folder; Refresh now, saving through the provider, the sheet line, the folder pick, Shorten with AI and the import's save stay the browser run's (amber).
 
+Step 9 (Ask and quick capture) added T71–T83 (`T79-next` and `T80-next` the task's and the note's Add), on a seed with three Ask threads written in ask-thread.json's shape (a done thread of two turns citing Priya's mail, the Roadmap review meeting and a Todoist task, with three actions; a failed then stopped thread; a queued thread with its queued `ask` job, which nothing claims, so its answer shows running in every stop and the field reads "Answering…"), Ask's route on Claude Code and Priya's mail from "Priya N." about the "Atlas budget". A new `key` action dispatches ⌘K, ⌘N or Esc as a DOM `keydown`. T61 (removing the Todoist plugin) now runs last, after step 9's capture into Todoist. An answer arriving and a follow-up, Stop, Draft a reply, the chooser from Ask, and Delete / Clear history stay the browser run's (amber); `clear` joined the deny-list.
+
 | Stop | Step | Route | View · theme · width | Action | Must be visible |
 |---|---|---|---|---|---|
 | T01 | 0 | settings/plugins | default · light · 1440 | none | `codemie` with Built-in, listed before `onetest`; no remove button on either; `codemie` "Not fetched yet" |

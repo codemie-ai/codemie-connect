@@ -1,6 +1,6 @@
 // Builds the tour's seed (design docs/superpowers/specs/2026-11-24-real-app-tour-design.md § 4)
 // from the browser run's own fixture builders and contract JSON, so every implemented screen of
-// rollout steps 0-8 shows real, invented content — the same people and records the browser run
+// rollout steps 0-9 shows real, invented content — the same people and records the browser run
 // itself uses. `commands::tour::seed::import` (Task 3, src-tauri/src/commands/tour/seed.rs) reads
 // what this writes (`tour-seed.json`) into a fresh `workspace.sqlite` before `Core::open_tour`
 // opens it.
@@ -98,7 +98,95 @@ export const SEED_IDS = {
   checkWithTask: 'task-marek',
   triageRun: 'run-triage',
   fallbackRun: 'run-triage',
+  askDone: 'ask-7f2c',
+  askFailed: 'ask-3a9e',
+  askQueued: 'ask-51bd',
 };
+
+/** A day as native's Ask labels write it, in the seed's zone (UTC): "Wed 25 Nov". */
+function askDay(value) {
+  const d = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(d).replace(',', '');
+}
+
+/** The next Friday after `nowMs`'s day (a week on when it is a Friday), as quick capture reads
+ *  "by fri": `YYYY-MM-DD` in UTC. */
+function seedFriday(nowMs) {
+  const d = new Date(nowMs);
+  const ahead = ((5 - d.getUTCDay() + 7) % 7) || 7;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + ahead)).toISOString().slice(0, 10);
+}
+
+/** One turn in ask-thread.json's shape, with nothing filled in. */
+const askTurn = (id, at, question, state, extra = {}) => ({
+  id, at, question, about: null, state, answer: null, cites: [], actions: [], searched: null, cut: false, took: null,
+  profile: 'claude', model: null, fellBackFrom: null, fallbackReason: null, error: null, jobId: null, ...extra,
+});
+
+/**
+ * Ask (step 9, ask-capture design § 13), written in ask-thread.json's shape: a done thread of two
+ * turns whose cites point at Priya's mail, a meeting and a Todoist task, with three actions; a
+ * thread whose turns failed and stopped; and a thread whose only turn is queued, with its queued
+ * `ask` job, which the tour's stopped background loop never claims. Each finished turn names a
+ * job id no longer kept, as an old thread's do.
+ */
+function askSeed(records, nowMs) {
+  const now = Math.floor(nowMs / 1000);
+  const find = (kind, id) => records.find(r => r.kind === kind && r.id === id);
+  const mail = find('message', SEED_IDS.priyaMail);
+  const task = find('commitment', 'commit-1');
+  const meeting = find('meeting', 'mtg-roadmap');
+  const mailLabel = `${mail.data.from} · mail · ${askDay(mail.data.at)}`;
+  const cites = [
+    { id: 'a1', kind: 'message', recordId: mail.id, label: mailLabel, title: null },
+    { id: 't2', kind: 'task', recordId: task.id, label: `Task · ${task.data.text}`, title: null },
+    { id: 'n3', kind: 'meeting', recordId: meeting.id, label: `Meeting · ${meeting.data.title} · ${askDay(meeting.data.start)}`, title: null },
+  ];
+  const doneAt = now - 3600;
+  const done = {
+    id: SEED_IDS.askDone, createdAt: doneAt, updatedAt: doneAt + 60, nextRef: 4,
+    turns: [
+      askTurn('turn-1', doneAt, 'What did I promise Priya this week?', 'done', {
+        about: { kind: 'message', recordId: mail.id, label: mailLabel },
+        answer: 'You told Priya you would send the **Atlas budget** by Friday [a1].\n\n- The roadmap comments for her are in Todoist [t2].\n- You agreed both in the roadmap review [n3].',
+        cites,
+        actions: [
+          { kind: 'task', text: 'Send Priya the Atlas budget', due: seedFriday(nowMs) },
+          { kind: 'open', ref: 'n3', recordId: meeting.id, label: cites[2].label },
+          { kind: 'draft', ref: 'a1', recordId: mail.id, label: mailLabel, hint: 'Say the budget comes Friday.' },
+        ],
+        searched: 'tasks 12 (Todoist) · events 7 · messages 9 · meetings 2',
+        took: 14, model: 'claude-sonnet-4-5', jobId: 'job-tour-ask-1',
+      }),
+      askTurn('turn-2', doneAt + 60, 'Is anything else due on Friday?', 'done', {
+        answer: 'Nothing else in Connect is due on Friday.',
+        searched: 'tasks 12 (Todoist) · messages 9',
+        took: 6, model: 'claude-sonnet-4-5', jobId: 'job-tour-ask-2',
+      }),
+    ],
+  };
+  const failedAt = now - 7200;
+  const failedStopped = {
+    id: SEED_IDS.askFailed, createdAt: failedAt, updatedAt: failedAt + 60, nextRef: 1,
+    turns: [
+      askTurn('turn-1', failedAt, 'When is the QBR?', 'failed', { error: { code: 'needs_login', message: "Claude Code isn't signed in." }, jobId: 'job-tour-ask-3' }),
+      askTurn('turn-2', failedAt + 60, 'When is the QBR?', 'stopped', { jobId: 'job-tour-ask-4' }),
+    ],
+  };
+  const queuedAt = now - 60;
+  const job = {
+    id: 'job-tour-ask-5', workspaceId: 'personal', connectionId: null, kind: 'ask', key: `ask:${SEED_IDS.askQueued}`, state: 'queued',
+    dueAt: queuedAt, leaseUntil: null, attempts: 0,
+    policy: { generation: null, policyRevision: null, sourceRevision: null, workspaceRevision: 1 },
+    payload: { threadId: SEED_IDS.askQueued, turnId: 'turn-1', purpose: 'ask', profile: 'claude', model: null, runModel: null, startedAt: queuedAt, hiddenCalendars: [] },
+    result: null,
+  };
+  const queued = {
+    id: SEED_IDS.askQueued, createdAt: queuedAt, updatedAt: queuedAt, nextRef: 1,
+    turns: [askTurn('turn-1', queuedAt, 'Who is Marek Novak?', 'queued', { profile: null, jobId: job.id })],
+  };
+  return { threads: [done, failedStopped, queued], jobs: [job] };
+}
 
 /**
  * Builds the tour's seed for a run starting at `nowMs`, with every meeting folder moved from the
@@ -231,6 +319,14 @@ export function buildSeed(testDir, nowMs) {
     },
   });
 
+  // Ask (step 9): the field in the menu, Ask's route on Claude Code (set with `ai` below), and
+  // Priya's mail from "Priya N." about the Atlas budget, as the ask-capture design's mock-ups
+  // and the seeded threads name it (`ask` below).
+  s.settings.askInMenu = true;
+  const priya = s.records.find(r => r.id === SEED_IDS.priyaMail);
+  priya.data.from = 'Priya N.';
+  priya.data.title = 'Atlas budget';
+
   // Menu bar: every source counted (spec § 4 "Menu bar").
   s.settings.menuBar = { replies: true, tasks: true, meetings: true, automations: true };
 
@@ -244,6 +340,7 @@ export function buildSeed(testDir, nowMs) {
     routes: {
       triage: { profile: 'codemie:local-ollama', model: null, fallback: 'claude' },
       commitments: { profile: 'codemie:local-ollama', model: null, fallback: null },
+      ask: { profile: 'claude', model: null, fallback: null },
     },
     plugins: {},
   };
@@ -281,6 +378,7 @@ export function buildSeed(testDir, nowMs) {
       copy: voiceCopy(),
       skillsFolder: path.join(testDir, 'voice-skills'),
     },
+    ask: askSeed(s.records, nowMs),
   };
 
   return { seed, folders };

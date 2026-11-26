@@ -1,5 +1,5 @@
 // The real-app tour's coverage matrix (design docs/superpowers/specs/2026-11-24-real-app-tour-design.md
-// § 7): every user-visible feature of rollout steps 0–8, each with the design it comes from. A
+// § 7): every user-visible feature of rollout steps 0–9, each with the design it comes from. A
 // stop of `script.js` names the features it shows in `covers`. The report colours each row:
 // - `built`: green when a passing stop covers it, red with no stop or when all its stops failed;
 // - `browser`: amber, for what the real app can't show without sending or without the desktop;
@@ -19,6 +19,8 @@ const MENU_BAR = 'docs/superpowers/specs/2026-11-24-menu-bar-count-design.md';
 const PROFILES = 'docs/superpowers/specs/2026-11-24-profiles-models-design.md';
 const VOICE = 'docs/superpowers/specs/2026-11-25-reply-voice-design.md';
 const VOICE_CHECKS = 'ui/test/browser/voice-checks.mjs';
+const ASK = 'docs/superpowers/specs/2026-11-26-ask-capture-design.md';
+const ASK_CHECKS = 'ui/test/browser/ask-checks.mjs';
 
 export const FEATURES = [
   // step 0: the Connect marketplace
@@ -212,6 +214,46 @@ export const FEATURES = [
     browserCheck: { file: VOICE_CHECKS, check: 'voice V12', set: 'voice' },
   },
 
-  // planned
-  { id: 's9.ask-inline', step: 9, text: 'Ask, inline in the window', spec: `${ROLLOUT} § Order, step 9`, status: 'planned' },
+  // step 9: Ask and quick capture
+  { id: 'a9.field', step: 9, text: 'The Ask field first in the menu, and its About chip', spec: `${ASK} § 2`, status: 'built' },
+  { id: 'a9.cmd-k', step: 9, text: '⌘K focuses the field, with Recent', spec: `${ASK} § 11`, status: 'built' },
+  { id: 'a9.thread', step: 9, text: 'The Ask page: a thread’s turns, cite marks and chips, actions, the meta line and the follow-up box', spec: `${ASK} § 7`, status: 'built' },
+  { id: 'a9.compact', step: 9, text: 'The Ask page in Compact: one column and History ▾', spec: `${ASK} § 12`, status: 'built' },
+  { id: 'a9.add-as-task', step: 9, text: '+ Add as task fills quick capture with the action’s words and due date', spec: `${ASK} § 8`, status: 'built' },
+  { id: 'a9.open-cite', step: 9, text: 'A cite chip opens its record, with "← Back to Ask"', spec: `${ASK} § 8`, status: 'built' },
+  { id: 'a9.failed-stopped', step: 9, text: 'A failed turn (Try again, Check Settings › AI) and a stopped turn (Ask again)', spec: `${ASK} § 7`, status: 'built' },
+  { id: 'a9.answering', step: 9, text: 'Answering with its profile, Stop shown, the field reading "Answering…"', spec: `${ASK} § 7`, status: 'built' },
+  { id: 'a9.settings-ai', step: 9, text: 'Settings › AI’s Ask group and row', spec: `${ASK} § 6`, status: 'built' },
+  { id: 'a9.shortcuts-switch', step: 9, text: 'Settings › Layout: ⌘K, ⌘N and ⌘. in the shortcuts, and "Ask in the menu"', spec: `${ASK} § 11`, status: 'built' },
+  { id: 'a9.rail', step: 9, text: 'The menu as a rail: its ✦ Ask button', spec: `${ASK} § Copy`, status: 'built' },
+  { id: 'c9.cmd-n', step: 9, text: '⌘N opens quick capture', spec: `${ASK} § 9`, status: 'built' },
+  { id: 'c9.due', step: 9, text: 'Quick capture reads the due date and shows it', spec: `${ASK} § 9`, status: 'built' },
+  { id: 'c9.source', step: 9, text: 'Quick capture’s source chip: the selected message', spec: `${ASK} § 9`, status: 'built' },
+  { id: 'c9.task-undo', step: 9, text: 'Add saves the task through the provider: "Added to Todoist · Undo"', spec: `${ASK} § 9`, status: 'built' },
+  { id: 'c9.note', step: 9, text: 'Note adds a line to Notes on Today', spec: `${ASK} § 10`, status: 'built' },
+  {
+    id: 'a9.answer-follow-up', step: 9, text: 'An answer arrives with its cites and actions, then a follow-up', spec: `${ASK} § 7`, status: 'browser',
+    reason: 'An answer is an AI run, and the tour’s job loop is off; the tour never asks.',
+    browserCheck: { file: ASK_CHECKS, check: 'ask Q4', set: 'ask' },
+  },
+  {
+    id: 'a9.stop', step: 9, text: 'Stop (and ⌘.) stops a running answer', spec: `${ASK} § 7`, status: 'browser',
+    reason: 'Nothing runs on the tour to stop: the seeded answer waits on a job no loop claims.',
+    browserCheck: { file: ASK_CHECKS, check: 'ask Q5', set: 'ask' },
+  },
+  {
+    id: 'a9.draft-reply', step: 9, text: '✦ Draft a reply opens the message and starts a draft with the action’s hint', spec: `${ASK} § 8`, status: 'browser',
+    reason: 'A draft is an AI run; the tour runs no AI.',
+    browserCheck: { file: ASK_CHECKS, check: 'ask Q6', set: 'ask' },
+  },
+  {
+    id: 'a9.chooser', step: 9, text: 'Ask with no profile chosen opens the chooser, then asks again', spec: `${ASK} § 7`, status: 'browser',
+    reason: 'It asks again once a profile is chosen; the tour never asks.',
+    browserCheck: { file: ASK_CHECKS, check: 'ask Q5', set: 'ask' },
+  },
+  {
+    id: 'a9.delete-clear', step: 9, text: 'History: Delete a thread, and Clear history', spec: `${ASK} § 7`, status: 'browser',
+    reason: 'Both delete; the deny-list refuses deletes.',
+    browserCheck: { file: ASK_CHECKS, check: 'ask Q7', set: 'ask' },
+  },
 ];

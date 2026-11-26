@@ -101,7 +101,9 @@ test('commitments are both Local and Todoist, Local spanning more than one Board
 test("SEED_IDS all exist in the seed's records", () => {
   const { seed } = buildSeed(TEST_DIR, NOW);
   for (const [name, id] of Object.entries(SEED_IDS)) {
-    assert.ok(seed.records.some(r => r.id === id), `${name} -> "${id}" is missing from the seed's records`);
+    // The Ask ids name threads, which the seed holds in `ask`.
+    const held = name.startsWith('ask') ? seed.ask.threads.some(t => t.id === id) : seed.records.some(r => r.id === id);
+    assert.ok(held, `${name} -> "${id}" is missing from the seed`);
   }
 });
 
@@ -214,4 +216,58 @@ test('copying the skills folder skips symlinks, so nothing outside it comes alon
   assert.ok(existsSync(join(to, 'reply-style', 'SKILL.md')));
   assert.ok(!existsSync(join(to, 'linked')), 'a linked folder is skipped');
   assert.ok(!existsSync(join(to, 'reply-style', 'extra.md')), 'a linked file is skipped');
+});
+
+test('the seed holds three Ask threads, one queued ask job, askInMenu true and Ask on Claude Code', () => {
+  // Thu 26 Nov 2026: the seed's Friday is the next day.
+  const { seed } = buildSeed('/tmp/connect-tour-x/workspace', Date.parse('2026-11-26T10:00:00Z'));
+  assert.equal(seed.settings.askInMenu, true);
+  assert.deepEqual(seed.settings.ai.routes.ask, { profile: 'claude', model: null, fallback: null });
+  const { threads, jobs } = seed.ask;
+  assert.deepEqual(threads.map(t => t.id), [SEED_IDS.askDone, SEED_IDS.askFailed, SEED_IDS.askQueued]);
+  assert.deepEqual(threads.map(t => t.turns.map(u => u.state)), [['done', 'done'], ['failed', 'stopped'], ['queued']]);
+  assert.deepEqual(threads.map(t => t.turns[0].question), ['What did I promise Priya this week?', 'When is the QBR?', 'Who is Marek Novak?']);
+  // The done thread: cites on the seeded Priya mail, a meeting and a Todoist task, three actions.
+  const [done] = threads;
+  const first = done.turns[0];
+  const record = (id, kind) => seed.records.find(r => r.id === id && (!kind || r.kind === kind));
+  const KIND = { message: 'message', task: 'commitment', meeting: 'meeting' };
+  assert.deepEqual(first.cites.map(c => c.kind), ['message', 'task', 'meeting']);
+  for (const c of first.cites) assert.ok(record(c.recordId, KIND[c.kind]), `${c.id} names a seeded ${KIND[c.kind]}`);
+  assert.equal(first.cites[0].recordId, SEED_IDS.priyaMail);
+  assert.equal(record(first.cites[1].recordId).data.provider, 'plugin:todoist');
+  for (const c of first.cites) assert.ok(first.answer.includes(`[${c.id}]`), `the answer marks ${c.id}`);
+  assert.deepEqual(first.actions.map(a => a.kind), ['task', 'open', 'draft']);
+  assert.equal(first.actions[0].due, '2026-11-27');
+  assert.equal(first.actions[2].recordId, SEED_IDS.priyaMail);
+  assert.equal(first.about.recordId, SEED_IDS.priyaMail);
+  assert.ok(first.about.label.startsWith('Priya N. · mail · '));
+  assert.equal(done.turns[1].cites.length, 0);
+  assert.ok(done.nextRef > first.cites.length);
+  // Priya's mail is the one the spec's mock-ups name.
+  assert.equal(record(SEED_IDS.priyaMail).data.from, 'Priya N.');
+  assert.equal(record(SEED_IDS.priyaMail).data.title, 'Atlas budget');
+  const [failed, stopped] = threads[1].turns;
+  assert.equal(failed.error.code, 'needs_login');
+  assert.equal(stopped.answer, null);
+  // The queued turn and its job, which the tour's stopped background loop never claims.
+  assert.equal(jobs.length, 1);
+  const [job] = jobs;
+  const queued = threads[2].turns[0];
+  assert.deepEqual({ kind: job.kind, state: job.state, key: job.key, attempts: job.attempts }, { kind: 'ask', state: 'queued', key: `ask:${SEED_IDS.askQueued}`, attempts: 0 });
+  assert.equal(queued.jobId, job.id);
+  assert.deepEqual({ threadId: job.payload.threadId, turnId: job.payload.turnId, purpose: job.payload.purpose, profile: job.payload.profile }, { threadId: SEED_IDS.askQueued, turnId: queued.id, purpose: 'ask', profile: 'claude' });
+  const payload = JSON.stringify(job.payload);
+  for (const words of ['Marek', 'answer', 'question']) assert.ok(!payload.includes(words), `the job payload holds "${words}"`);
+  const text = JSON.stringify(seed.ask);
+  assert.ok(!/token|secret|password/i.test(text), 'no secret in the ask seed');
+  const addresses = text.match(/[\w.+-]+@[\w.-]+/g) || [];
+  assert.ok(addresses.every(a => a.endsWith('@example.test')), `addresses: ${addresses}`);
+});
+
+test('the seed’s Friday is the next one after today, a week on when today is Friday', () => {
+  const due = now => buildSeed('/tmp/connect-tour-x/workspace', Date.parse(now)).seed.ask.threads[0].turns[0].actions[0].due;
+  assert.equal(due('2026-11-26T10:00:00Z'), '2026-11-27');
+  assert.equal(due('2026-11-27T10:00:00Z'), '2026-12-04');
+  assert.equal(due('2026-11-29T10:00:00Z'), '2026-12-04');
 });
