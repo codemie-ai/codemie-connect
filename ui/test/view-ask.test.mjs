@@ -3,7 +3,7 @@
 // history and its groups, the empty page, Back, the follow-up box, the privacy line.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { askPage, turnBlock, metaLine, historyList, historyGroups, emptyPage, answeringLine } from '../workspace/view-ask.js';
+import { askPage, turnBlock, metaLine, historyList, historyGroups, emptyPage, answeringLine, nextAskStatus } from '../workspace/view-ask.js';
 import { askThread, buildSnapshot, withAsk, withVoice } from './fixtures/workspace-fixture.mjs';
 
 // The fixtures' own clock: ask-states.json's newest thread was updated at 1795000400.
@@ -34,7 +34,9 @@ test('a done turn: the question with its About chip, the answer through renderMa
   // Markdown: bold and bullets; the marks are links named by the chip's label.
   assert.match(html, /<strong>Atlas budget<\/strong>/);
   assert.match(html, /<ul><li>The QBR/);
-  assert.match(html, /<sup><a class="ws-ask-mark" role="link" tabindex="0" data-action="ask-mark" data-ask-mark="ask-cite-turn-1-a1" aria-label="Priya N\. · mail · Tue 24 Nov">1<\/a><\/sup>/);
+  // M1: a mark is a button (Enter and Space work), named by the chip's label.
+  assert.match(html, /<sup><button type="button" class="ws-ask-mark" data-action="ask-mark" data-ask-mark="ask-cite-turn-1-a1" aria-label="Priya N\. · mail · Tue 24 Nov">1<\/button><\/sup>/);
+  assert.doesNotMatch(html, /role="link"/);
   assert.doesNotMatch(html, /\[a1\]|\[t2\]/);
   // The chips, in cite order; a fact and a person are not links.
   assert.match(html, /id="ask-cite-turn-1-a1"[^>]*>Priya N\. · mail · Tue 24 Nov</);
@@ -47,8 +49,13 @@ test('a done turn: the question with its About chip, the answer through renderMa
   assert.equal(metaLine({ ...turnOf(t, 'turn-1'), searched: 'tasks 12 (Todoist) · messages 9 · meetings 2', cut: false }, { profiles: PROFILES }), 'Claude Code · 14 s · from 12 tasks, 9 messages, 2 meetings');
   assert.match(metaLine({ ...turnOf(t, 'turn-1'), cut: true }), /Shortened to fit\.$/);
   // A fallback says which profile ran and why.
-  const fell = turnBlock({ ...turnOf(t, 'turn-1'), profile: 'codemie:prod', fellBackFrom: 'claude' }, opts(s, { profiles: [...PROFILES.slice(0, 1).map(p => ({ ...p, state: 'needs_login' })), PROFILES[1]] }));
+  // M4: the reason is the turn's stored class, never the profile's live state or message.
+  const live = [{ ...PROFILES[0], state: 'not_installed', message: 'Something <b>live</b>.' }, PROFILES[1]];
+  const fell = turnBlock({ ...turnOf(t, 'turn-1'), profile: 'codemie:prod', fellBackFrom: 'claude', fallbackReason: 'needs_login' }, opts(s, { profiles: live }));
   assert.match(fell, /Ran on CodeMie · prod because Claude Code wasn’t signed in\./);
+  const unknown = turnBlock({ ...turnOf(t, 'turn-1'), profile: 'codemie:prod', fellBackFrom: 'claude', fallbackReason: null }, opts(s, { profiles: live }));
+  assert.match(unknown, /Ran on CodeMie · prod because Claude Code couldn’t run\./);
+  assert.doesNotMatch(unknown, /live|wasn’t installed/);
   // Nothing in the answer is a time button or a link anywhere.
   assert.doesNotMatch(html, /ws-md-ts|<a [^>]*href/);
 });
@@ -74,8 +81,10 @@ test('answering: role="status" "Answering with Claude Code · 9 s" from the job\
   s.jobs = [{ id: 'job-9', kind: 'ask', state: 'running', payload: { threadId: 'ask-7f2c', turnId: 'turn-2', profile: 'claude', startedAt: 1795000401 } }];
   const turn = { id: 'turn-2', at: 1795000390, question: 'When is the QBR?', about: null, state: 'running', answer: null, cites: [], actions: [], searched: null, cut: false, took: null, profile: null, model: null, fellBackFrom: null, error: null, jobId: 'job-9' };
   const html = turnBlock(turn, opts(s, { running: true }));
-  assert.match(html, /<span class="ws-sr" role="status" data-ask-sr data-secs="9">Answering with Claude Code · 9 s<\/span>/);
-  assert.match(html, /data-ask-since="1795000401"/);
+  // M3: the turn draws the visible line; the one live status node lives outside the page.
+  assert.match(html, /<p class="ws-ask-status" data-ask-run="turn-2" data-ask-since="1795000401" data-ask-profile="Claude Code">/);
+  assert.match(html, /<span data-ask-tick aria-hidden="true">Answering with Claude Code · 9 s<\/span>/);
+  assert.doesNotMatch(html, /role="status"/);
   assert.match(html, /<button type="button" class="ws-btn ws-btn-secondary ws-ask-stop" data-action="ask-stop" data-job="job-9" aria-keyshortcuts="Meta\+Period">Stop/);
   assert.equal(answeringLine('Claude Code', 9), 'Answering with Claude Code · 9 s');
   // A queued turn shows the same, from its own time when no job is known.
@@ -204,4 +213,19 @@ test('Default and Compact draw the same turn markup', () => {
   const s = snapshot();
   const compact = { ...s, settings: { ...s.settings, view: 'compact' } };
   for (const turn of t.turns) assert.equal(turnBlock(turn, opts(s)), turnBlock(turn, opts(compact)));
+});
+
+test('M3: the live status changes only when the answer\'s state changes, its seconds every 5 s at most', () => {
+  const run = { turnId: 'turn-2', profile: 'Claude Code', since: 100 };
+  const a = nextAskStatus(null, run, 109);
+  assert.deepEqual(a, { turnId: 'turn-2', secs: 9, text: 'Answering with Claude Code · 9 s' });
+  assert.equal(nextAskStatus(a, run, 110), a, 'a redraw a second later changes nothing');
+  assert.equal(nextAskStatus(a, run, 113), a);
+  assert.equal(nextAskStatus(a, run, 114).text, 'Answering with Claude Code · 14 s');
+  const other = nextAskStatus(a, { ...run, turnId: 'turn-3' }, 110);
+  assert.equal(other.turnId, 'turn-3');
+  const idle = nextAskStatus(a, null, 120);
+  assert.deepEqual(idle, { turnId: null, secs: 0, text: '' });
+  assert.equal(nextAskStatus(idle, null, 130), idle);
+  assert.equal(nextAskStatus(null, null, 130), null);
 });

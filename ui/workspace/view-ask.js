@@ -4,7 +4,9 @@
 // takes the window's view state, the snapshot and the thread `ask_read` answered, returns HTML.
 // ask-controller.js owns the thread and the actions; app.js draws this for route `ask`. Every
 // question, label and searched line goes through `escapeHtml`, the answer through `renderMarkdown`
-// in its Ask mode. Cite chips and actions become controls in Task 11 (`ask-cite`, `ask-go`).
+// in its Ask mode. Cite chips and actions become controls in Task 11 (`ask-cite`, `ask-go`). The
+// answering line is drawn here; the one live status a screen reader hears is app.js's, outside
+// the page, so a redraw never says it again (`nextAskStatus`).
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { renderMarkdown } from './markdown.js';
@@ -14,7 +16,8 @@ import { BUSY } from './ask-model.js';
 const NAV_NAMES = { today: 'Today', inbox: 'Inbox', calendar: 'Calendar', meetings: 'Meetings', tasks: 'Tasks', automations: 'Automations', analytics: 'Analytics', settings: 'Settings' };
 /** The failures a profile's own state explains (Settings › AI fixes them). */
 const PROFILE_PROBLEMS = new Set(['needs_login', 'not_installed', 'too_old', 'not_configured', 'rate_limited']);
-/** "Ran on <fallback> because <profile> <reason>." from the first profile's state now. */
+/** "Ran on <fallback> because <profile> <reason>." from the turn's stored class (`fallbackReason`),
+ *  a fixed code native keeps, never a message or the profile's state now. */
 const FALLBACK_REASON = { needs_login: 'wasn’t signed in', not_installed: 'wasn’t installed', too_old: 'needed an update', not_configured: 'wasn’t fully set up', rate_limited: 'reached its usage limit' };
 const NOT_CONNECTED = 'Microsoft 365 isn\'t connected';
 const EXAMPLES = ['What’s due this week?', 'What did I agree in my last meeting?', 'Who’s waiting on me?'];
@@ -35,6 +38,20 @@ export function profileLabel(id, profiles = []) {
 
 /** "Answering with Claude Code · 9 s" (or "Answering · 9 s" with no profile known). */
 export const answeringLine = (profile, seconds) => (profile ? `Answering with ${profile} · ${seconds} s` : `Answering · ${seconds} s`);
+
+/**
+ * What the window's one live status says next (ask-capture § Accessibility). `prev` is what it
+ * says now (`{turnId, secs, text}` or null), `run` the answer drawn as running (`{turnId,
+ * profile, since}`) or null, `nowSec` the time in seconds. The same object comes back while
+ * nothing should be said: the words change when an answer starts, ends or is another one, and its
+ * seconds at most every 5 s, never on a redraw.
+ */
+export function nextAskStatus(prev, run, nowSec) {
+  if (!run) return prev?.text ? { turnId: null, secs: 0, text: '' } : prev;
+  const secs = Math.max(0, Math.floor(nowSec - run.since));
+  if (prev?.turnId === run.turnId && secs - prev.secs < 5) return prev;
+  return { turnId: run.turnId, secs, text: answeringLine(run.profile, secs) };
+}
 
 /** The provider the facts came from, as the searched line names it ("facts 1 (Knowledge)"). */
 function factsProvider(turn, snap) {
@@ -86,8 +103,7 @@ export function metaLine(turn, { profiles = [] } = {}) {
 
 function fallbackLine(turn, profiles) {
   if (!turn.fellBackFrom) return '';
-  const from = (profiles || []).find(p => p.id === turn.fellBackFrom);
-  const reason = FALLBACK_REASON[from?.state] || from?.message?.replace(/\.$/, '') || 'couldn’t run';
+  const reason = (Object.hasOwn(FALLBACK_REASON, turn.fallbackReason || '') && FALLBACK_REASON[turn.fallbackReason]) || 'couldn’t run';
   return `<p class="ws-ask-fallback">${e(`Ran on ${profileLabel(turn.profile, profiles)} because ${profileLabel(turn.fellBackFrom, profiles)} ${reason}.`)}</p>`;
 }
 
@@ -106,7 +122,7 @@ function answerBlock(turn, snap) {
     const n = index.get(id);
     const linkable = RECORD_KINDS[cite.kind] && !citeGone(cite, snap);
     return linkable
-      ? `<sup><a class="ws-ask-mark" role="link" tabindex="0" data-action="ask-mark" data-ask-mark="${e(citeId(turn, cite))}" aria-label="${e(citeText(cite, turn, snap))}">${n}</a></sup>`
+      ? `<sup><button type="button" class="ws-ask-mark" data-action="ask-mark" data-ask-mark="${e(citeId(turn, cite))}" aria-label="${e(citeText(cite, turn, snap))}">${n}</button></sup>`
       : `<sup class="ws-ask-mark">${n}</sup>`;
   };
   const chips = cites.map(c => {
@@ -126,7 +142,7 @@ function runningBlock(turn, { snap, now, profiles, ai }) {
   const line = answeringLine(profile, secs);
   const jobId = turn.jobId || running?.jobId || '';
   return `<div class="ws-ask-running">
-      <p class="ws-ask-status" data-ask-since="${since}" data-ask-profile="${e(profile)}"><span class="ws-ask-spin" aria-hidden="true"></span><span data-ask-tick aria-hidden="true">${e(line)}</span><span class="ws-sr" role="status" data-ask-sr data-secs="${secs}">${e(line)}</span></p>
+      <p class="ws-ask-status" data-ask-run="${e(turn.id)}" data-ask-since="${since}" data-ask-profile="${e(profile)}"><span class="ws-ask-spin" aria-hidden="true"></span><span data-ask-tick aria-hidden="true">${e(line)}</span></p>
       <button type="button" class="ws-btn ws-btn-secondary ws-ask-stop" data-action="ask-stop" data-job="${e(jobId)}" aria-keyshortcuts="Meta+Period">Stop <kbd aria-hidden="true">⌘.</kbd></button>
     </div>`;
 }

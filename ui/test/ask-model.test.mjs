@@ -146,4 +146,7 @@ test('⌘. is Stop: Meta only, not with ⌥ ⇧ ⌃ or mid-composition', () => {
   const ev = over => ({ key: '.', code: 'Period', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...over });
   assert.equal(isStopKey(ev()), true);
   for (const o of [{ metaKey: false }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { isComposing: true }, { key: ',', code: 'Comma' }]) assert.equal(isStopKey(ev(o)), false, JSON.stringify(o));
+  // M2: never under a dialog or the setup sheet.
+  assert.equal(isStopKey(ev(), { modal: true }), false);
+  assert.equal(isStopKey(ev(), { sheet: true }), false);
 });

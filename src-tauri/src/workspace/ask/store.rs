@@ -69,6 +69,11 @@ pub struct Turn {
     pub profile: Option<String>,
     pub model: Option<String>,
     pub fell_back_from: Option<String>,
+    /// Why it fell back: the chosen profile's class (`needs_login`, `not_installed`, `too_old`,
+    /// `not_configured`, `rate_limited`, …), a fixed code the window words itself, never a
+    /// message; older records read `null`.
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
     pub error: Option<TurnError>,
     pub job_id: Option<String>,
 }
@@ -226,6 +231,7 @@ pub(crate) mod tests {
             profile: None,
             model: None,
             fell_back_from: None,
+            fallback_reason: None,
             error: None,
             job_id: None,
         }

@@ -255,6 +255,7 @@ struct Ran {
     profile: Option<String>,
     model: Option<String>,
     fell_back_from: Option<String>,
+    fallback_reason: Option<String>,
     about_gone: bool,
 }
 
@@ -354,6 +355,7 @@ impl Core {
             profile: None,
             model: None,
             fell_back_from: None,
+            fallback_reason: None,
             error: None,
             job_id: Some(job.id.clone()),
         });
@@ -505,6 +507,7 @@ impl Core {
                             turn.profile = ran.profile;
                             turn.model = ran.model;
                             turn.fell_back_from = ran.fell_back_from;
+                            turn.fallback_reason = ran.fallback_reason;
                             if let Some(about) = turn.about.as_mut() {
                                 about.gone |= ran.about_gone;
                             }
@@ -577,6 +580,7 @@ impl Core {
         ran.profile = Some(resolved.profile.id.clone());
         ran.model = resolved.model.clone();
         ran.fell_back_from = resolved.fell_back_from.clone();
+        ran.fallback_reason = resolved.pre_run_reason.map(wire_name);
         let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let thread = self.ask_running(job, tid, turn_id).await?;
         let at = thread
@@ -670,7 +674,7 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let (outcome, checked, used, _) = self
+        let (outcome, checked, used, reason) = self
             .run_claude_reported(&run, spec, &resolved, tid, |raw| {
                 answer::check(raw, &ctx.refs, &ctx.facts).ok()
             })
@@ -683,12 +687,14 @@ impl Core {
             .or_else(|| used.model.clone())
             .or_else(|| profile.default_model.clone());
         ran.fell_back_from = resolved.fallback_from(&used);
+        ran.fallback_reason = ran.fell_back_from.as_ref().and(reason.map(wire_name));
         let checked = checked.map_err(WorkspaceError::from)?;
         let done = checked.clone();
-        let (profile, model, fell_back_from) = (
+        let (profile, model, fell_back_from, fallback_reason) = (
             ran.profile.clone(),
             ran.model.clone(),
             ran.fell_back_from.clone(),
+            ran.fallback_reason.clone(),
         );
         self.ask_write(job, tid, turn_id, |t| {
             t.next_ref = ctx.next_ref.max(t.next_ref);
@@ -703,6 +709,7 @@ impl Core {
                 turn.profile = profile;
                 turn.model = model;
                 turn.fell_back_from = fell_back_from;
+                turn.fallback_reason = fallback_reason;
                 turn.error = None;
                 if let Some(about) = turn.about.as_mut() {
                     about.gone |= ctx.about_gone;
@@ -1580,6 +1587,8 @@ mod tests {
         assert_eq!(error.message, "CodeMie is not signed in.");
         assert_eq!(turn.profile.as_deref(), Some("codemie:prod"));
         assert_eq!(turn.fell_back_from.as_deref(), Some("claude"));
+        // Why it fell back, as a fixed class code the window maps to its own words.
+        assert_eq!(turn.fallback_reason.as_deref(), Some("needs_login"));
         assert_eq!(ai_runs(&e.core).len(), 2, "both attempts are in the ledger");
         let j = job(&e.core, &a["jobId"]);
         assert_eq!(j.error_class.as_deref(), Some("needs_login"));
@@ -1600,6 +1609,7 @@ mod tests {
         assert_eq!(turn.error.unwrap().code, "invalid_output");
         assert_eq!(turn.profile.as_deref(), Some("claude"));
         assert_eq!(turn.fell_back_from, None);
+        assert_eq!(turn.fallback_reason, None);
     }
 
     #[tokio::test]
@@ -2158,6 +2168,7 @@ mod tests {
         });
         failed.profile = Some("codemie:prod".into());
         failed.fell_back_from = Some("claude".into());
+        failed.fallback_reason = Some("needs_login".into());
         failed.job_id = Some("job-2".into());
         let mut stopped = turn(3, AT, "Who is Marek Novak?", TurnState::Stopped);
         stopped.profile = Some("claude".into());

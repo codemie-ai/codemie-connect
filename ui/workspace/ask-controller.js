@@ -34,10 +34,11 @@ export function createAskController({ state, snap, mutate, query = async () => n
   let focusTurn = false;
   let stopping = false;
 
-  /** Opens an Ask hash, remembering the page it was opened from (the first `#/ask` step). */
-  async function goAsk(target) {
+  /** Opens an Ask hash, remembering the page it was opened from and where focus was before ⌘K
+   *  (`back`, taken before the field forgets it) on the first `#/ask` step. */
+  async function goAsk(target, back = ask().focusBack) {
     const here = String(hash() || '');
-    if (!here.startsWith('#/ask')) ask().from = here || null;
+    if (!here.startsWith('#/ask')) Object.assign(ask(), { from: here || null, backFocus: back || ask().backFocus || null });
     await go(target);
   }
 
@@ -78,6 +79,9 @@ export function createAskController({ state, snap, mutate, query = async () => n
    *  field not on screen, the Ask page's box. */
   async function focusField({ from = null } = {}) {
     if (from) ask().focusBack = from;
+    // The page's own copy: a close while the field is drawn (or a click away) forgets `focusBack`,
+    // never this; Esc giving focus back, a press elsewhere and another page drop it.
+    ask().backFocus = from || null;
     if (!fieldShown()) return openPage();
     Object.assign(ask(), { open: true, active: -1 });
     render();
@@ -122,8 +126,9 @@ export function createAskController({ state, snap, mutate, query = async () => n
       ask().busy = false;
     }
     if (!result?.threadId) return null;
+    const back = ask().focusBack;
     reset();
-    await goAsk(`#/ask/${encodeURIComponent(result.threadId)}`);
+    await goAsk(`#/ask/${encodeURIComponent(result.threadId)}`, back);
     return result;
   }
 
@@ -248,8 +253,8 @@ export function createAskController({ state, snap, mutate, query = async () => n
   /** Back (and Esc on the page): the page Ask was opened from, focus where it was before ⌘K. */
   async function back() {
     const target = ask().from || '#/today';
-    const sel = ask().focusBack;
-    ask().focusBack = null;
+    const sel = ask().backFocus;
+    ask().backFocus = null;
     await go(target);
     focusBack(sel);
   }
@@ -282,8 +287,9 @@ export function createAskController({ state, snap, mutate, query = async () => n
 
   async function openRecent(threadId) {
     if (!threadId) return;
+    const back = ask().focusBack;
     reset();
-    await goAsk(`#/ask/${encodeURIComponent(threadId)}`);
+    await goAsk(`#/ask/${encodeURIComponent(threadId)}`, back);
   }
 
   /** The field's own keys, from app.js's capture-phase listener for an event in the field.
@@ -328,7 +334,7 @@ export function createAskController({ state, snap, mutate, query = async () => n
         Object.assign(a, { open: false, active: -1, error: '' });
         render();
         focusBack(a.focusBack);
-        a.focusBack = null;
+        Object.assign(a, { focusBack: null, backFocus: null });
       }
       return handled();
     }

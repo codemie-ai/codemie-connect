@@ -64,7 +64,7 @@ import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from '
 import { captureBar, isCaptureKey, newCaptureView } from './capture-model.js';
 import { createCaptureController } from './capture-controller.js';
 import { isAskKey, isStopKey, newAskView } from './ask-model.js';
-import { askPage, answeringLine } from './view-ask.js';
+import { askPage, answeringLine, nextAskStatus } from './view-ask.js';
 import { createAskController } from './ask-controller.js';
 
 const ROUTES = HASH_ROUTES;
@@ -220,6 +220,8 @@ let pressing = false;
 // The Ask field opened or closed while the button was down (a click into it, or elsewhere): drawn
 // once the button is up, so the press isn't redrawn away (the field keeps its focus and caret).
 let askHeld = false;
+// What the Ask page's one live status says now (`nextAskStatus`), outside the page.
+let askStatus = null;
 // A focus the Ask field asked for while the button was down (a click into it selects its words):
 // applied after that render, once the click has placed its caret.
 let askFocusHeld = null;
@@ -552,6 +554,7 @@ async function render() {
   }
   // The quick-capture bar lives outside #workspace-app (not redrawn): laid over the new main area.
   drawCapture();
+  syncAskStatus();
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
@@ -821,8 +824,9 @@ async function route(name, tab, pluginPath = null) {
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   if (state.route === 'ask') state.ask.threadId = askThreadOf(tab);
-  // Leaving for another page forgets where ⌘K came from (the Ask page keeps it for its Back).
-  else state.ask.focusBack = null;
+  // Leaving for another page forgets where ⌘K came from (the Ask page keeps it for its Back,
+  // which reads it before it leaves).
+  else Object.assign(state.ask, { focusBack: null, backFocus: null });
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
   state.pluginPath = onPluginsTab ? pluginPath : null;
   state.pluginPage = null;
@@ -2036,19 +2040,37 @@ function askWide(s) {
 window.addEventListener('resize', () => {
   if (ready && state.route === 'ask' && askWide(snap()) !== state.ask.wide && !modalOpen()) render().catch(fail);
 });
-// The answering line's seconds tick on screen every second; the status a screen reader hears
-// moves at most every 5 s (ask-capture § Accessibility).
-setInterval(() => {
-  if (!ready || state.route !== 'ask') return;
-  const now = Date.now() / 1000;
-  for (const el of root.querySelectorAll('[data-ask-since]')) {
-    const secs = Math.max(0, Math.floor(now - Number(el.dataset.askSince)));
-    const line = answeringLine(el.dataset.askProfile, secs);
-    const tick = el.querySelector('[data-ask-tick]');
-    if (tick && tick.textContent !== line) tick.textContent = line;
-    const sr = el.querySelector('[data-ask-sr]');
-    if (sr && secs - Number(sr.dataset.secs || 0) >= 5) Object.assign(sr, { textContent: line }).dataset.secs = String(secs);
+// The answering line's seconds tick on screen every second. What a screen reader hears is one
+// status node outside the page (a redraw never recreates it), changed only when an answer starts,
+// ends or moves on, and its seconds at most every 5 s (ask-capture § Accessibility).
+function syncAskStatus() {
+  const el = ready && state.route === 'ask' ? root.querySelector('[data-ask-run]') : null;
+  const run = el ? { turnId: el.dataset.askRun, profile: el.dataset.askProfile, since: Number(el.dataset.askSince) } : null;
+  const next = nextAskStatus(askStatus, run, Date.now() / 1000);
+  if (next === askStatus) return;
+  askStatus = next;
+  let live = document.getElementById('ask-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'ask-live';
+    live.className = 'ws-sr';
+    live.setAttribute('role', 'status');
+    live.setAttribute('aria-live', 'polite');
+    document.body.append(live);
   }
+  live.textContent = next?.text || '';
+}
+setInterval(() => {
+  if (!ready) return;
+  if (state.route === 'ask') {
+    const now = Date.now() / 1000;
+    for (const el of root.querySelectorAll('[data-ask-since]')) {
+      const line = answeringLine(el.dataset.askProfile, Math.max(0, Math.floor(now - Number(el.dataset.askSince))));
+      const tick = el.querySelector('[data-ask-tick]');
+      if (tick && tick.textContent !== line) tick.textContent = line;
+    }
+  }
+  syncAskStatus();
 }, 1000);
 // Focus into the field opens its list; focus or a press anywhere else closes it.
 document.addEventListener('focusin', ev => {
@@ -2059,7 +2081,8 @@ document.addEventListener('focusin', ev => {
 // A press elsewhere is drawn after the button is up (a redraw now would swallow its click).
 document.addEventListener('pointerdown', ev => {
   if (!askUi || !state.ask.open || ev.target.closest?.('.ws-ask-field')) return;
-  Object.assign(state.ask, { open: false, active: -1, focusBack: null });
+  // A press elsewhere: focus goes where it lands, so Back has nowhere older to return to.
+  Object.assign(state.ask, { open: false, active: -1, focusBack: null, backFocus: null });
   askHeld = true;
 }, true);
 
@@ -2160,7 +2183,7 @@ document.addEventListener('keydown', ev => {
     return;
   }
   // ⌘.: Stop the running answer, on the Ask page or in the field.
-  if (isStopKey(ev) && (state.route === 'ask' || ev.target.closest?.('.ws-ask-field')) && snap().ask?.running) {
+  if (isStopKey(ev, { modal: modalOpen(), sheet: sheetOpen() }) && (state.route === 'ask' || ev.target.closest?.('.ws-ask-field')) && snap().ask?.running) {
     ev.preventDefault();
     askUi?.stop().catch(fail);
     return;

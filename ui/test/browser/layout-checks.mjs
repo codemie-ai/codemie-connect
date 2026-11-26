@@ -866,6 +866,13 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await check(`layout E11 (${theme} ${view}): the Ask page's turns, states, history and Back`, async () => {
         await page.click('.ws-inbox-row[data-id="m-reply-1"]');
         await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        // Priya's cite points at her seeded mail, so its mark and chip are live.
+        await page.evaluate(thread => {
+          const t = structuredClone(thread);
+          t.turns[0].cites[0].recordId = 'm-reply-1';
+          window.__askThreads = { 'ask-7f2c': t };
+        }, askThread());
+        const before = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id || document.activeElement?.tagName);
         await page.keyboard.press('ControlOrMeta+KeyK');
         await page.click('#ask-recent-0');
         await page.waitForSelector('[data-ask-turn="turn-3"]');
@@ -893,6 +900,10 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
         assert(seen.current === 'ask-7f2c', `aria-current: ${seen.current}`);
         assert((await calls(page, 'ask_read')).length >= 1 && (await calls(page, 'ask_start')).length === 0, 'opening sent a write');
         await sizes(page, `${name}-thread`, view);
+        // M1: a mark is a button; Enter on it focuses its chip.
+        await page.focus('[data-ask-mark="ask-cite-turn-1-a1"]');
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(() => document.activeElement?.id === 'ask-cite-turn-1-a1');
         // The meta line's ▾ shows the whole searched line.
         await page.click('[data-ask-turn="turn-1"] .ws-ask-meta summary');
         await page.waitForSelector('.ws-ask-searched:has-text("events 7, Thu 19 Nov – Thu 3 Dec")');
@@ -900,20 +911,28 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
         await page.evaluate(({ thread, running }) => {
           const t = structuredClone(thread);
           t.turns = [{ ...t.turns[0], searched: `${t.turns[0].searched} · Microsoft 365 isn't connected` }, { ...t.turns[2], id: 'turn-2', state: 'running', jobId: 'job-9' }];
+          t.turns[0].cites[0].recordId = 'm-reply-1';
           window.__askThreads = { 'ask-7f2c': t };
           const startedAt = Math.floor(Date.now() / 1000) - 9;
           window.__lastAsk = { ...running, running: { ...running.running, startedAt } };
           window.__askSet(window.__lastAsk, [{ id: 'job-9', kind: 'ask', key: 'ask:ask-7f2c', state: 'running', dueAt: startedAt, attempts: 1, connectionId: null, policy: {}, payload: { threadId: 'ask-7f2c', turnId: 'turn-2', purpose: 'ask', profile: 'claude', startedAt }, result: null }]);
         }, { thread: askThread(), running: askStates().running });
         await page.waitForSelector('.ws-ask-stop[aria-keyshortcuts="Meta+Period"]');
-        const status = await page.locator('[data-ask-sr][role=status]').innerText();
-        assert(/^Answering with Claude Code · \d+ s$/.test(status), status);
+        // M3: one live status outside the page; a redraw keeps the node and its words.
+        await page.waitForFunction(() => /^Answering with Claude Code · \d+ s$/.test(document.getElementById('ask-live')?.textContent || ''));
+        const said = await page.evaluate(() => { const n = document.getElementById('ask-live'); n.__kept = true; return { role: n.getAttribute('role'), text: n.textContent, inPage: !!n.closest('#workspace-app') }; });
+        assert(said.role === 'status' && !said.inPage, JSON.stringify(said));
+        assert(await page.locator('#workspace-app [role=status]:has-text("Answering")').count() === 0, 'a status inside the page');
+        await page.evaluate(() => window.__askSet(window.__lastAsk));
+        await page.waitForTimeout(150);
+        const kept = await page.evaluate(() => { const n = document.getElementById('ask-live'); return { kept: n.__kept === true, text: n.textContent }; });
+        assert(kept.kept && kept.text === said.text, `the status changed on a redraw: ${JSON.stringify(kept)} vs ${said.text}`);
         assert(await page.locator('#ask-follow-up').isDisabled(), 'the box asks while an answer runs');
         assert(await page.locator('#ask-box-why:text-is("Connect is still answering. Stop it or wait.")').count() === 1, 'no reason');
         assert(await page.locator('.ws-ask-note:has-text("Microsoft 365 isn’t connected, so this answer leaves out your mail, Teams and calendar.")').count() === 1, 'no Microsoft line');
         // The seconds tick on screen.
-        const before = await page.locator('[data-ask-tick]').innerText();
-        await page.waitForFunction(was => document.querySelector('[data-ask-tick]')?.textContent !== was, before, { timeout: 3000 });
+        const ticked = await page.locator('[data-ask-tick]').innerText();
+        await page.waitForFunction(was => document.querySelector('[data-ask-tick]')?.textContent !== was, ticked, { timeout: 3000 });
         await page.setViewportSize({ width: 1000, height: 900 });
         await noOverflow(page, `${name} running at 1000`);
         await shot(page, `${name}-running-1000`);
@@ -935,10 +954,44 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
         await page.click('.ws-ask-back');
         await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
         assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        // I1: focus is back where it was before ⌘K.
+        const after = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id || document.activeElement?.tagName);
+        assert(before === 'm-reply-1' && after === before, `focus before ⌘K ${before}, after Back ${after}`);
+        assert(await page.evaluate(() => document.getElementById('ask-live')?.textContent) === '', 'the status still says Answering');
         assert(errors.length === 0, errors.join(' | '));
       });
       await context.close().catch(() => {});
     }
+  }
+  // I1 and M5: from an Inbox row, ⌘K and Enter open the page; Esc on the page (focus on the
+  // newest heading, not in the box) goes Back, and focus returns to that row. With words in the
+  // box, Esc there clears them first and stays.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/inbox' });
+    await check('layout E11: ⌘K, Enter, then Esc on the page goes Back with focus on the row it came from', async () => {
+      await page.click('.ws-inbox-row[data-id="m-reply-2"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-2"]');
+      const before = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id);
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.keyboard.type('what did Elena ask?');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => location.hash.startsWith('#/ask/ask-'));
+      await page.waitForSelector('#ask-follow-up');
+      // Esc in the box with words: cleared, still on the page.
+      await page.fill('#ask-follow-up', 'and Jordan?');
+      await page.keyboard.press('Escape');
+      assert(await page.inputValue('#ask-follow-up') === '', 'Esc kept the words');
+      assert(new URL(page.url()).hash.startsWith('#/ask/'), 'Esc with words left the page');
+      // Esc outside the box: Back.
+      await page.evaluate(() => { const h = document.querySelector('.ws-ask-page h1'); h.setAttribute('tabindex', '-1'); h.focus(); });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-2"]');
+      assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+      const after = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id);
+      assert(before === 'm-reply-2' && after === before, `focus before ⌘K ${before}, after Esc ${after}`);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
   }
   // The empty page: the line and three examples that fill the box without asking.
   for (const theme of ['dark', 'light']) {

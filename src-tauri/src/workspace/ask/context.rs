@@ -1607,6 +1607,7 @@ mod tests {
             profile: None,
             model: None,
             fell_back_from: None,
+            fallback_reason: None,
             error: None,
             job_id: None,
         };

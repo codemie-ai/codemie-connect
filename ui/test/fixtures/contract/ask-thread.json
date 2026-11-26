@@ -84,6 +84,7 @@
       ],
       "cut": true,
       "error": null,
+      "fallbackReason": null,
       "fellBackFrom": null,
       "id": "turn-1",
       "jobId": "job-1",
@@ -105,6 +106,7 @@
         "code": "needs_login",
         "message": "CodeMie is not signed in."
       },
+      "fallbackReason": "needs_login",
       "fellBackFrom": "claude",
       "id": "turn-2",
       "jobId": "job-2",
@@ -123,6 +125,7 @@
       "cites": [],
       "cut": false,
       "error": null,
+      "fallbackReason": null,
       "fellBackFrom": null,
       "id": "turn-3",
       "jobId": "job-3",

@@ -271,7 +271,7 @@ test('every close forgets where focus came from: Esc, Enter, a click away', asyn
 function pageHarness({ askState = 'idle', threadId = 'ask-7f2c', threads = { 'ask-7f2c': askThread() }, from = '#/inbox', focusBack = '[data-id="m-priya"]', refuse = null } = {}) {
   const s = withAsk(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), askState);
   const calls = { mutate: [], query: [], go: [], focus: [], focusBack: [], render: 0, announce: [], confirm: [], failed: [] };
-  const state = { route: 'ask', ask: { from, focusBack, threadId } };
+  const state = { route: 'ask', ask: { from, backFocus: focusBack, focusBack: null, threadId } };
   let refusal = refuse;
   let hash = threadId ? `#/ask/${threadId}` : '#/ask';
   const ctl = createAskController({
@@ -475,4 +475,45 @@ test('History, New ask and Check Settings › AI navigate; a mark focuses its ch
   assert.deepEqual(calls.focus.find(([sel]) => sel === '#ask-follow-up'), ['#ask-follow-up', null]);
   await ctl.handle('ask-mark', el({ askMark: 'ask-cite-turn-1-a1' }));
   assert.deepEqual(calls.focus.at(-1), ['#ask-cite-turn-1-a1', null]);
+});
+
+test('I1: Back returns focus to where it was before ⌘K, though the field forgot it when it closed', async () => {
+  // ⌘K on an Inbox row, a question, Enter: the field closes (and forgets), the page opens.
+  const { ctl, state, calls } = harness();
+  await ctl.focusField({ from: '[data-id="m-priya"]' });
+  ctl.input('what did I promise?');
+  await ctl.submitField();
+  assert.equal(state.ask.focusBack, null, 'the field forgot');
+  assert.equal(state.ask.backFocus, '[data-id="m-priya"]', 'the page kept it');
+  state.route = 'ask';
+  await ctl.handle('ask-back', { dataset: {} });
+  assert.deepEqual(calls.go.at(-1), '#/inbox');
+  assert.deepEqual(calls.focusBack, ['[data-id="m-priya"]']);
+  assert.equal(state.ask.backFocus, null, 'used once');
+  // Through a Recent row too.
+  const recent = harness();
+  await recent.ctl.focusField({ from: '[data-id="m-jordan"]' });
+  await recent.ctl.handle('ask-recent', { dataset: { askRecent: 'ask-3a9e' } });
+  assert.equal(recent.state.ask.backFocus, '[data-id="m-jordan"]');
+  // Moving between threads keeps it; a later ⌘K from another page replaces it.
+  await recent.ctl.handle('ask-history', { dataset: { askThread: 'ask-7f2c' } });
+  assert.equal(recent.state.ask.backFocus, '[data-id="m-jordan"]');
+});
+
+test('I1: a close while ⌘K draws the field (focus put back on the row a moment) keeps Back\'s focus; Esc giving focus back drops it', async () => {
+  const { ctl, state, calls } = harness();
+  await ctl.focusField({ from: '[data-id="m-priya"]' });
+  ctl.closed();
+  ctl.opened();
+  ctl.input('what did I promise?');
+  await ctl.submitField();
+  assert.equal(state.ask.backFocus, '[data-id="m-priya"]');
+  state.route = 'ask';
+  await ctl.back();
+  assert.deepEqual(calls.focusBack.at(-1), '[data-id="m-priya"]');
+  // Esc on an empty field gives focus back there itself: nothing is left for a later page.
+  const esc = harness();
+  await esc.ctl.focusField({ from: '[data-id="m-priya"]' });
+  esc.ctl.key(keyEvent({ key: 'Escape' }));
+  assert.equal(esc.state.ask.backFocus, null);
 });

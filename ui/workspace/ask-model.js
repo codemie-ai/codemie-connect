@@ -10,8 +10,10 @@ import { shownView } from './tasks-dates-model.js';
 /** `state.ask`: the hash the Ask page was first opened from (`from`), the control focus goes
  *  back to on Esc (`focusBack`, a selector), whether × dropped the About for this question, the
  *  words in the field, whether its list is open, the Recent row the arrows are on, a refusal
- *  shown under the box, the thread `#/ask/<id>` shows, and the page box's words and refusal. */
-export const newAskView = () => ({ from: null, focusBack: null, aboutDropped: false, text: '', open: false, active: -1, error: '', busy: false, threadId: null, pageText: '', pageError: '' });
+ *  shown under the box, the thread `#/ask/<id>` shows, and the page box's words and refusal.
+ *  `backFocus` is the page's own copy of `focusBack`, taken on the way into `#/ask` (the field
+ *  forgets its own whenever it closes): the Ask page's Back and Esc put focus there. */
+export const newAskView = () => ({ from: null, focusBack: null, backFocus: null, aboutDropped: false, text: '', open: false, active: -1, error: '', busy: false, threadId: null, pageText: '', pageError: '' });
 
 /** A question that comes back while an answer runs (Copy "Field"). */
 export const BUSY = 'Connect is still answering. Stop it or wait.';
@@ -144,8 +146,9 @@ export function isAskKey(ev, { modal = false, sheet = false } = {}) {
   return ev.code === 'KeyK' || String(ev.key || '').toLowerCase() === 'k';
 }
 
-/** Whether `ev` is ⌘. (Stop an answer): Meta only, no ⌥ ⇧ ⌃, not mid-composition. */
-export function isStopKey(ev) {
-  if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing) return false;
+/** Whether `ev` is ⌘. (Stop an answer): Meta only, no ⌥ ⇧ ⌃, not mid-composition, with no dialog
+ *  or setup sheet open. */
+export function isStopKey(ev, { modal = false, sheet = false } = {}) {
+  if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing || modal || sheet) return false;
   return ev.key === '.' || ev.code === 'Period';
 }
