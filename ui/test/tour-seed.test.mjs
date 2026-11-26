@@ -271,3 +271,15 @@ test('the seed’s Friday is the next one after today, a week on when today is F
   assert.equal(due('2026-11-27T10:00:00Z'), '2026-12-04');
   assert.equal(due('2026-11-29T10:00:00Z'), '2026-12-04');
 });
+
+test('Priya has one name across the seed, and Nudge Marek fills a box other than her mail’s', () => {
+  const { seed, folders } = buildSeed('/tmp/connect-tour-x/workspace', NOW);
+  const all = JSON.stringify(seed) + JSON.stringify(folders);
+  assert.ok(!all.includes('Natarajan'), 'the fixture’s full name is left somewhere');
+  const sender = id => seed.records.find(r => r.kind === 'message' && r.id === id).data.from;
+  assert.equal(sender(SEED_IDS.priyaMail), 'Priya N.');
+  assert.equal(sender(SEED_IDS.groupChat), 'Priya N.');
+  const marek = seed.records.find(r => r.kind === 'commitment' && r.id === SEED_IDS.checkWithTask);
+  assert.notEqual(marek.data.sourceId, SEED_IDS.priyaMail);
+  assert.ok(seed.records.some(r => r.kind === 'message' && r.id === marek.data.sourceId), 'its source is a seeded message');
+});

@@ -754,3 +754,26 @@ test('step 9 stops route to the seeded Ask threads and never ask', () => {
   assert.ok(!/ask_start|job_cancel|ai_draft|data-action="ask-(follow-up|again|retry|reply|stop|example|recent)"/.test(named), named);
   assert.ok(ask.every(s => !s.allow), 'no allow');
 });
+
+test('the key action presses k and n only with ⌘: plain and Ctrl are refused; Esc needs no modifier', async () => {
+  const sent = [];
+  const doc = fakeDoc({ '.ws-inbox-row': [node()] });
+  doc.defaultView.KeyboardEvent = class { constructor(type, init) { Object.assign(this, { type, ...init }); } };
+  doc.dispatchEvent = ev => { sent.push(ev.key); return true; };
+  const run = async arg => (await harness({ doc, stops: [stop('T72', { action: { name: 'key', arg } })] }).run()).stops[0].error;
+  for (const arg of [{ key: 'k' }, { key: 'n' }, { key: 'k', ctrl: true }, { key: 'n', meta: true, ctrl: true }]) {
+    assert.match(await run(arg) || '', /with ⌘ only/, JSON.stringify(arg));
+  }
+  assert.deepEqual(sent, [], 'nothing dispatched');
+  assert.equal(await run({ key: 'n', meta: true }), null);
+  assert.equal(await run({ key: 'Escape' }), null);
+  assert.deepEqual(sent, ['n', 'Escape']);
+});
+
+test('ask_start is refused whatever a stop allows: the tour never asks', async () => {
+  assert.equal(denied('op', 'ask_start'), true);
+  const refused = [];
+  const guarded = gate(async () => 'ok', { ops: [], refused, allow: new Set(['ask_start']) });
+  await assert.rejects(guarded('workspace_request', { request: { op: 'ask_start', data: { question: 'x' } } }), /sends nothing/);
+  assert.deepEqual(refused, [{ kind: 'op', name: 'ask_start' }]);
+});

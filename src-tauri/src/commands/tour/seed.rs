@@ -394,7 +394,10 @@ fn check_ask(ask: &AskSeed) -> Result<()> {
         }
         if t.turns.is_empty() || t.turns.len() > ask_store::MAX_TURNS {
             return Err(refused(
-                "A seeded Ask thread holds 1 to 20 turns.",
+                format!(
+                    "A seeded Ask thread holds 1 to {} turns.",
+                    ask_store::MAX_TURNS
+                ),
                 format!("ask.threads[{i}].turns"),
             ));
         }
@@ -890,6 +893,26 @@ mod tests {
         let e = expect_refusal(dir.path());
         assert_eq!(e.field.as_deref(), Some("ask.jobs[0]"));
         assert!(!dir.path().join("workspace.sqlite").exists());
+    }
+
+    #[test]
+    fn import_refuses_an_ask_thread_with_too_many_turns_naming_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seed = seed_with(vec![]);
+        let mut ask = ask_seed();
+        let turn = ask.threads[0].turns[0].clone();
+        ask.threads[0].turns = vec![turn; crate::workspace::ask::store::MAX_TURNS + 1];
+        seed.ask = Some(ask);
+        write_seed(dir.path(), &seed);
+        let e = expect_refusal(dir.path());
+        assert_eq!(e.field.as_deref(), Some("ask.threads[0].turns"));
+        assert_eq!(
+            e.message,
+            format!(
+                "A seeded Ask thread holds 1 to {} turns.",
+                crate::workspace::ask::store::MAX_TURNS
+            )
+        );
     }
 
     #[test]

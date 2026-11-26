@@ -25,16 +25,19 @@ const OPENS_WINDOW = /open|reveal|pick|link|download|relaunch|restart/i;
 const SAFE_OPS = new Set(['settings_update']);
 /** `data-action`s the open words would catch that only fold or switch something in the window. */
 const IN_WINDOW = new Set(['task-row-open']);
-/** Names refused whatever their kind: a login item would point at the tour binary (Task 1). */
-const ALWAYS_DENIED = new Set(['launchAtLogin']);
+/** Names refused whatever their kind, and never lifted by `allow`: a login item would point at
+ *  the tour binary (Task 1); `ask_start` would run an AI answer (the tour seeds finished threads
+ *  instead, and no stop asks, but the gate refuses it should the window ever try). */
+const ALWAYS_DENIED = new Set(['launchAtLogin', 'ask_start']);
 /** What a stop's `allow` can never lift: a send, or the login item. */
 const NEVER = /send|confirm|prepare/i;
 /** The commands the runner may invoke: `plugins_request` only to read. */
 const INVOKE_OK = new Set(['workspace_request', 'plugins_request:markets', 'plugins_request:installed', 'smoke_mode', 'get_app_version']);
 
-/** The keys the `key` action presses: ⌘K and ⌘N open Ask and quick capture, Esc closes them.
- *  No other key: ⌘↩ runs the Inbox's visible Send. */
+/** The keys the `key` action presses: ⌘K and ⌘N (with ⌘ only, as `isAskKey` reads ⌘K) open
+ *  Ask and quick capture, Esc closes them. No other key: ⌘↩ runs the Inbox's visible Send. */
 const KEYS = new Set(['k', 'n', 'Escape']);
+const META_KEYS = new Set(['k', 'n']);
 
 const SETTLE_MS = 8000;
 const SEND_REFUSAL = 'The tour sends nothing.';
@@ -269,9 +272,11 @@ export const ACTIONS = {
     await ctx.settle();
   },
   /** A key pressed in the window: one `keydown` DOM event (never an OS one) on the document, as
-   *  a shortcut reaches it, or on the control `on` names (Esc in a text box). Only `KEYS`. */
+   *  a shortcut reaches it, or on the control `on` names (Esc in a text box). Only `KEYS`; k and
+   *  n with ⌘ alone (no Ctrl). */
   key: async (ctx, { key, meta = false, ctrl = false, on = null }) => {
     if (!KEYS.has(key)) throw new Error(`"${key}" is not a key the tour presses`);
+    if (META_KEYS.has(key) && (!meta || ctrl)) throw new Error(`"${key}" is pressed with ⌘ only`);
     const target = on ? ctx.find(on) : ctx.doc;
     const KeyboardEventOf = ctx.doc.defaultView?.KeyboardEvent || KeyboardEvent;
     target.dispatchEvent(new KeyboardEventOf('keydown', { key, metaKey: !!meta, ctrlKey: !!ctrl, bubbles: true, cancelable: true }));

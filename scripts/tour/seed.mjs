@@ -103,6 +103,10 @@ export const SEED_IDS = {
   askQueued: 'ask-51bd',
 };
 
+/** Priya as the ask-capture design names her, and the fixture's full name the seed replaces. */
+const PRIYA = 'Priya N.';
+const PRIYA_FULL = 'Priya Natarajan';
+
 /** A day as native's Ask labels write it, in the seed's zone (UTC): "Wed 25 Nov". */
 function askDay(value) {
   const d = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
@@ -324,8 +328,10 @@ export function buildSeed(testDir, nowMs) {
   // and the seeded threads name it (`ask` below).
   s.settings.askInMenu = true;
   const priya = s.records.find(r => r.id === SEED_IDS.priyaMail);
-  priya.data.from = 'Priya N.';
   priya.data.title = 'Atlas budget';
+  // T55's Nudge Marek fills the reply box of the task's source message: Jordan's Monday sync
+  // notes (an FYI), so Priya's mail keeps its own box empty for step 9's Inbox stops.
+  s.records.find(r => r.kind === 'commitment' && r.id === SEED_IDS.checkWithTask).data.sourceId = 'm-fyi-1';
 
   // Menu bar: every source counted (spec § 4 "Menu bar").
   s.settings.menuBar = { replies: true, tasks: true, meetings: true, automations: true };
@@ -345,6 +351,9 @@ export function buildSeed(testDir, nowMs) {
     plugins: {},
   };
 
+  // One name for Priya across the seed (records here, the meeting files below): "Priya N.".
+  s.records = JSON.parse(JSON.stringify(s.records).replaceAll(PRIYA_FULL, PRIYA));
+
   // Every meeting folder path moved from the fixture's own MEETINGS_ROOT onto the test folder:
   // the records that name one, and the files to write there.
   for (const r of s.records) {
@@ -354,7 +363,7 @@ export function buildSeed(testDir, nowMs) {
   }
   const folders = Object.values(meetingFolders(nowMs)).map(f => ({
     path: meetingsRoot + f.folder.slice(MEETINGS_ROOT.length),
-    files: f.texts,
+    files: Object.fromEntries(Object.entries(f.texts).map(([name, text]) => [name, text.replaceAll(PRIYA_FULL, PRIYA)])),
   }));
 
   const seed = {

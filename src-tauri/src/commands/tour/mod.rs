@@ -225,7 +225,7 @@ mod run {
             .collect()
     }
 
-    fn parse_only(value: &str) -> Option<Only> {
+    pub(super) fn parse_only(value: &str) -> Option<Only> {
         if value.trim() == "all" {
             return Some(Only::All);
         }
@@ -250,7 +250,15 @@ mod run {
     /// have, or a rollout step none of its stops belongs to. A tour that runs nothing must never
     /// pass (final review I1), so such a value is refused like any other unknown one.
     fn nothing_to_run(value: &str, only: &Only) -> Option<String> {
-        let stops = script_stops();
+        nothing_to_run_in(value, only, &script_stops())
+    }
+
+    /// [`nothing_to_run`] over the stops `stops` (each with its rollout steps).
+    pub(super) fn nothing_to_run_in(
+        value: &str,
+        only: &Only,
+        stops: &[(String, Vec<u8>)],
+    ) -> Option<String> {
         let missing = match only {
             Only::All => None,
             Only::Steps(steps) => steps
@@ -517,8 +525,8 @@ mod tests {
     }
 
     /// Final review I1: a value that selects no stop would run nothing and pass. A stop id the
-    /// script doesn't have is refused at parse time, naming it. (A rollout step none of its
-    /// stops belongs to is refused the same way; since step 9's stops, every step 0–9 has some.)
+    /// script doesn't have is refused at parse time, naming it. (Every step 0–9 has stops now; a
+    /// step with none is refused too, `step_with_no_stops_is_refused` below.)
     #[test]
     fn parse_refuses_a_stop_or_step_with_nothing_to_run() {
         for (value, named) in [
@@ -535,6 +543,36 @@ mod tests {
             assert!(err.contains(&format!("{value:?}")), "{value}: {err}");
             assert!(err.contains(named), "{value}: {err}");
         }
+    }
+
+    /// A rollout step none of the stops belongs to is refused, naming it, and a step that has
+    /// stops is not: over a synthetic stop list, since every real step 0–9 has stops.
+    #[test]
+    fn step_with_no_stops_is_refused() {
+        let stops = vec![
+            ("T01".to_string(), vec![0]),
+            ("T02".to_string(), vec![1, 3]),
+        ];
+        for (value, step) in [("2", 2u8), ("0,2", 2), ("1,4", 4)] {
+            let only = parse_only(value).unwrap();
+            let err = nothing_to_run_in(value, &only, &stops).expect(value);
+            assert!(err.contains(&format!("{value:?}")), "{value}: {err}");
+            assert!(
+                err.contains(&format!("step {step} has no tour stops yet")),
+                "{value}: {err}"
+            );
+        }
+        for value in ["0", "1,3", "T02", "all"] {
+            assert_eq!(
+                nothing_to_run_in(value, &parse_only(value).unwrap(), &stops),
+                None,
+                "{value}"
+            );
+        }
+        assert!(
+            nothing_to_run_in("T03", &parse_only("T03").unwrap(), &stops)
+                .is_some_and(|e| e.contains("T03 is not a tour stop"))
+        );
     }
 
     /// Rust reads the stops from `script.js` itself, so the two can't drift apart.
