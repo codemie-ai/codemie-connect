@@ -197,11 +197,17 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
     {"key": "label", "label": "App label", "type": "string", "default": "connect"}] }
 ```
 
+- **Scope (amended 2026-11-26 at the user's request).** Connect shows all of the user's open Todoist tasks, not only the project's. Plugin 1.1.0 adds the string setting `{"key": "scope", "label": "Show", "type": "string", "default": "all", "help": "All projects, or only the Project above"}`:
+  - `all` (the default, and any value other than `project`): `list` is paged `GET /tasks` with no project filter, and `changedSince` takes every `/sync` item, Inbox and every other project included; a task moved between projects stays listed. The project is not looked up for these two calls.
+  - `project`: the behaviour below, unchanged (`list` and `changedSince` filtered to the project).
+  - New tasks Connect makes still go to the Project setting, with the key and marker lines, the labels and absolute dates; `create`'s key lookup still lists the project's open tasks only.
+  - **Tasks Connect didn't make** (no key line, no app label) map as plain tasks, the kind read from their labels, and the core keys them by remote id. Connect never adds its app label or marker lines to them: an edit sends only the changed field (a date sends `due_date`, Done closes it), a kind change swaps only the kind label, and a notes edit writes no key line.
+
 - **API.** `https://api.todoist.com/api/v1` with `Authorization: Bearer <token>`, read from `ctx.settings.get('token')` inside each call and never kept anywhere else.
   - `status`: `GET /user`, then the project, verified (`GET /projects/{id}`): a project deleted or archived in Todoist is found again by name, or made again once, and the answer then carries a `message` saying so.
   - The project is found by name (paged `GET /projects`; the first open one of that name, as names may repeat) and made once with `POST /projects` when missing. Its id is kept in the plugin's store. A project-scoped call that fails (`not_found`/`refused`) while the kept project no longer answers finds or makes it again and runs once more.
-  - `list`: paged `GET /tasks?project_id=`.
-  - `changedSince`: `POST /sync` with `sync_token` (`*` for null) and `resource_types: ["items"]`, filtered to the project; `checked` → `done`, `is_deleted` → `removed`.
+  - `list`: paged `GET /tasks?project_id=` (Show = `project`; with `all`, no filter, see Scope).
+  - `changedSince`: `POST /sync` with `sync_token` (`*` for null) and `resource_types: ["items"]`, filtered to the project with Show = `project` (no filter with `all`); `checked` → `done`, `is_deleted` → `removed`.
   - `create`: the key lookup over the open tasks, then `POST /tasks`. The open tasks are listed once and kept as a key index for 60 s (updated by each create and each `changedSince`, dropped when a create's answer is lost), so a copy of 50 tasks lists the project once.
   - `update`: `POST /tasks/{id}`. `complete`: `POST /tasks/{id}/close` (the open task is read first and answered closed, since a completed task may not be readable) or `/reopen`. `remove`: `DELETE /tasks/{id}`; a 404 means the task is already gone and answers `{removed: true}`, never `not_found:` (a parked remove of a deleted task would never clear).
 - **What a task looks like in Todoist:**
@@ -220,7 +226,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Network:** `uses.network.hosts` is exactly `["api.todoist.com"]`. The host refuses any other address. No sign-in host, no `hosts_from`.
 - **Known limits:**
   - A create whose answer was lost is adopted on replay only while its task is still open in the project. If the user completes it or moves it to another project in Todoist before the replay, the replay makes a second task (the ledger has no remote id to recognise it by).
-  - A task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen, and edits still reach it by id, until the next full pull (a switch, Check, or a changed setting) drops it from the cache, deleting nothing.
+  - With Show = `project`, a task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen, and edits still reach it by id, until the next full pull (a switch, Check, or a changed setting) drops it from the cache, deleting nothing.
   - `create`'s key lookup is a list of the project's open tasks kept for 60 s. A task with the same key made meanwhile somewhere else (Connect on another Mac, or another app writing the same key) is not in that list, so a create in that window makes a second task. Within one Connect, the ledger and the outbox order rule this out.
   - Lists stop at 100 pages (20,000 items) without a signal.
 
