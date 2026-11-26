@@ -46,13 +46,17 @@ pub const MESSAGE_TEXT: usize = 400;
 pub const MEETINGS_MAX: usize = 5_000;
 pub const MEETING_ITEMS: usize = 5;
 const MEETING_SUMMARY: usize = 1_000;
+const MEETING_TITLE: usize = 200;
+const MEETING_ATTENDEES: usize = 300;
 pub const ACTION_ITEMS: usize = 10;
 pub const PEOPLE_MAX: usize = 1_200;
 pub const PEOPLE_ITEMS: usize = 3;
 const PERSON_ABOUT: usize = 400;
+const PERSON_NAME: usize = 100;
 pub const FACTS_MAX: usize = 2_500;
 pub const FACT_ITEMS: usize = 5;
 const FACT_CHARS: usize = 500;
+const FACT_TITLE: usize = 200;
 pub const CONVERSATION_MAX: usize = 6_000;
 const TURN_QUESTION: usize = 2_000;
 const TURN_ANSWER: usize = 1_500;
@@ -232,9 +236,9 @@ pub struct MeetingDigest {
 }
 
 /// What the job hands `gather`. `tasks` are the active provider's (`tasks_provider` names it);
-/// `events` come from calendars that aren't hidden; `messages` carry their Inbox `lane`. With
-/// the voice off `people` is empty and `facts` and `facts_provider` are `None`; `facts` is
-/// `None` with a provider when the facts ask missed its 3 s. `m365` is `false` when Microsoft
+/// `events` come from calendars that aren't hidden; `messages` carry their Inbox `lane`.
+/// `people`, `facts` and `facts_provider` are read only when `voice` is `true` (fail closed);
+/// `facts` is `None` with a provider when the facts ask missed its 3 s. `m365` is `false` when Microsoft
 /// 365 isn't connected (no messages, no events).
 pub struct Records<'a> {
     pub tasks: &'a [Record],
@@ -246,6 +250,7 @@ pub struct Records<'a> {
     pub facts_provider: Option<&'a str>,
     pub tasks_provider: &'a str,
     pub m365: bool,
+    pub voice: bool,
 }
 
 /// The gathered context (design § 3). `text` is the items, one `<item>` block each, in source
@@ -383,10 +388,17 @@ fn cut_at_line_end(s: &str, max: usize) -> (String, bool) {
     (out, true)
 }
 
-/// An attribute value: one sanitized line, its double quotes made single so a value can't
-/// end its attribute.
-fn attr(s: &str, cap: usize) -> String {
-    sanitize_line(s, cap).replace('"', "'")
+/// An attribute value: one sanitized line cut to `cap` (setting `cut` when it was), its
+/// double quotes made single so a value can't end its attribute.
+fn attr(s: &str, cap: usize, cut: &mut bool) -> String {
+    capped_line(s, cap, cut).replace('"', "'")
+}
+
+/// One sanitized line cut to `cap` characters at a word end, setting `cut` when it was.
+fn capped_line(s: &str, cap: usize, cut: &mut bool) -> String {
+    let (v, c) = cut_at_line_end(&line(s), cap);
+    *cut |= c;
+    v
 }
 
 /// A record's text cleaned for the context with no cap of its own (the caller cuts it).
@@ -421,6 +433,11 @@ impl Item {
             head.push_str(&format!(" {key}=\"{value}\""));
         }
         format!("{head}>\n{}\n</item>", self.body)
+    }
+
+    /// The rendered size with `id`, its separating line break counted.
+    fn size(&self, id: &str) -> usize {
+        self.render(id).chars().count() + 1
     }
 
     /// The body cut to `max` characters (sets `cut` when it was).
@@ -512,13 +529,18 @@ pub fn gather(
         cut: false,
     };
 
-    // About: the pinned record, looked up among what the job read.
-    let pinned = about.and_then(|a| about_item(a, records, tz));
+    // About: the pinned record, looked up among what the job read, shortened to fit its cap
+    // (never dropped).
+    let about_id = format!("a{}", out.next);
+    let pinned = about.and_then(|a| about_item(a, records, tz, &about_id));
     let about_gone = about.is_some() && pinned.is_none();
-    let skip = pinned
-        .as_ref()
-        .map(|p| p.record_id.clone())
-        .unwrap_or_default();
+    let pinned_key = pinned.as_ref().map(|p| (p.kind, p.record_id.clone()));
+    let skip = |kind: &str| {
+        pinned_key
+            .as_ref()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, id)| id.as_str())
+    };
     if let Some(item) = pinned {
         out.source(vec![item], 1, ABOUT_MAX);
     }
@@ -526,7 +548,7 @@ pub fn gather(
     let mut searched: Vec<String> = Vec::new();
     let mut unread: Vec<String> = Vec::new();
 
-    let (items, matched) = task_items(records.tasks, &skip, &folded, today, span);
+    let (items, matched) = task_items(records.tasks, skip("task"), &folded, today, span);
     let given = out.source(items, TASK_ITEMS, TASKS_MAX);
     searched.push(format!(
         "tasks {} ({})",
@@ -535,7 +557,7 @@ pub fn gather(
     ));
 
     if records.m365 {
-        let (items, matched) = event_items(records.events, &skip, &folded, today, span, tz);
+        let (items, matched) = event_items(records.events, skip("event"), &folded, today, span, tz);
         let given = out.source(items, EVENT_ITEMS, EVENTS_MAX);
         searched.push(format!(
             "events {}, {} – {}",
@@ -544,7 +566,7 @@ pub fn gather(
             to.format("%a %-d %b")
         ));
         let (items, matched, needs_reply) =
-            message_items(records.messages, &skip, &folded, now, tz);
+            message_items(records.messages, skip("message"), &folded, now, tz);
         let given = out.source(items, MESSAGE_ITEMS, MESSAGES_MAX);
         searched.push(format!(
             "messages {}{}",
@@ -555,18 +577,18 @@ pub fn gather(
         unread.push("Microsoft 365 isn't connected".into());
     }
 
-    let (items, matched) = meeting_items(records.meetings, &skip, &folded, now, span, tz);
+    let (items, matched) = meeting_items(records.meetings, skip("meeting"), &folded, now, span, tz);
     let given = out.source(items, MEETING_ITEMS, MEETINGS_MAX);
     searched.push(format!("meetings {}", count(given, matched)));
 
-    if !records.people.is_empty() {
+    if records.voice && !records.people.is_empty() {
         let (items, matched) = person_items(records.people, &query);
         let given = out.source(items, PEOPLE_ITEMS, PEOPLE_MAX);
         searched.push(format!("people {}", count(given, matched)));
     }
 
-    let provider = records.facts_provider.map(line);
-    match records.facts {
+    let provider = records.facts_provider.filter(|_| records.voice).map(line);
+    match records.facts.filter(|_| records.voice) {
         Some(facts) => {
             let name = provider.clone().unwrap_or_else(|| "Knowledge".into());
             let items = fact_items(facts, &name);
@@ -618,7 +640,9 @@ fn in_span(day: NaiveDate, (from, to): (NaiveDate, NaiveDate)) -> bool {
     day >= from && day <= to
 }
 
-fn about_item(about: &RefItem, records: &Records, tz: Tz) -> Option<Item> {
+/// The About item, rendered with `id` within [`ABOUT_MAX`]: a meeting's summary gives way
+/// first (so its action items stay), then any body is cut at a line end; `cut` says so.
+fn about_item(about: &RefItem, records: &Records, tz: Tz, id_attr: &str) -> Option<Item> {
     let id = about.record_id.as_str();
     let mut item = match about.kind.as_str() {
         "message" => {
@@ -648,7 +672,20 @@ fn about_item(about: &RefItem, records: &Records, tz: Tz) -> Option<Item> {
         }
         "meeting" => {
             let m = records.meetings.iter().find(|m| m.id == id)?;
-            meeting_item(m, ABOUT_SUMMARY, tz)
+            // The summary gives way by what the item is over (a line-end cut can keep a few
+            // characters more than asked, so this repeats until it fits or the summary is gone).
+            let mut summary_max = ABOUT_SUMMARY;
+            let mut item = pinned(meeting_item(m, summary_max, tz));
+            while summary_max > 0 {
+                let over = item.size(id_attr).saturating_sub(ABOUT_MAX);
+                if over == 0 {
+                    break;
+                }
+                summary_max = summary_max.saturating_sub(over.max(16));
+                item = pinned(meeting_item(m, summary_max, tz));
+                item.cut = true;
+            }
+            item
         }
         "event" => {
             let e = records
@@ -659,9 +696,22 @@ fn about_item(about: &RefItem, records: &Records, tz: Tz) -> Option<Item> {
         }
         _ => return None,
     };
+    if !item.attrs.iter().any(|(k, _)| *k == "about") {
+        item = pinned(item);
+    }
+    let over = item.size(id_attr).saturating_sub(ABOUT_MAX);
+    if over > 0 {
+        let body = item.body.chars().count();
+        item = item.capped(body.saturating_sub(over));
+    }
+    Some(item)
+}
+
+/// `item` as the About: id prefix `a` and `about="true"`.
+fn pinned(mut item: Item) -> Item {
     item.prefix = 'a';
     item.attrs.push(("about", "true".into()));
-    Some(item)
+    item
 }
 
 fn valid_due(t: &Record) -> Option<NaiveDate> {
@@ -689,6 +739,8 @@ fn task_item(t: &Record) -> Item {
         ""
     };
     let (title, _) = cut_at_line_end(&body, LABEL_TEXT);
+    let mut cut = false;
+    let owner = attr(&owner_of(t), 100, &mut cut);
     Item {
         prefix: 't',
         kind: "task",
@@ -701,12 +753,12 @@ fn task_item(t: &Record) -> Item {
                     .map(|d| d.format("%Y-%m-%d").to_string())
                     .unwrap_or_default(),
             ),
-            ("owner", attr(&owner_of(t), 100)),
+            ("owner", owner),
             ("task-kind", kind.into()),
             ("handled", handled.into()),
         ],
         body,
-        cut: false,
+        cut,
         fact_title: None,
     }
 }
@@ -715,14 +767,14 @@ fn task_item(t: &Record) -> Item {
 /// window, then the rest; each group by due date (none last), ties newest first.
 fn task_items(
     tasks: &[Record],
-    skip: &str,
+    skip: Option<&str>,
     folded: &Folded,
     today: NaiveDate,
     span: (NaiveDate, NaiveDate),
 ) -> (Vec<Item>, usize) {
     let mut open: Vec<(u8, Option<NaiveDate>, &Record)> = tasks
         .iter()
-        .filter(|t| t.id != skip && tasks::is_open(&t.data))
+        .filter(|t| Some(t.id.as_str()) != skip && tasks::is_open(&t.data))
         .map(|t| {
             let due = valid_due(t);
             let group = if folded.hit(&[text(t, "text"), text(t, "ownerName")]) {
@@ -803,20 +855,33 @@ fn event_item(e: &Record, tz: Tz) -> Item {
             name
         })
     };
-    let organizer = person(&e.data["organizer"]);
-    if !organizer.is_empty() {
-        body.push(format!("Organizer: {organizer}"));
-    }
-    let attendees: Vec<String> = e.data["attendees"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(person)
-        .filter(|n| !n.is_empty())
-        .take(EVENT_ATTENDEES)
-        .collect();
-    if !attendees.is_empty() {
-        body.push(format!("Attendees: {}", attendees.join(", ")));
+    if private {
+        // A private meeting names nobody: only how many attend.
+        let count = e.data["attendeeCount"].as_u64().unwrap_or_else(|| {
+            e.data["attendees"]
+                .as_array()
+                .map(|a| a.len() as u64)
+                .unwrap_or(0)
+        });
+        if count > 0 {
+            body.push(format!("Attendees: {count}"));
+        }
+    } else {
+        let organizer = person(&e.data["organizer"]);
+        if !organizer.is_empty() {
+            body.push(format!("Organizer: {organizer}"));
+        }
+        let attendees: Vec<String> = e.data["attendees"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(person)
+            .filter(|n| !n.is_empty())
+            .take(EVENT_ATTENDEES)
+            .collect();
+        if !attendees.is_empty() {
+            body.push(format!("Attendees: {}", attendees.join(", ")));
+        }
     }
     let location = text(e, "location");
     if !private && !location.is_empty() {
@@ -831,14 +896,16 @@ fn event_item(e: &Record, tz: Tz) -> Item {
         }
     ));
     let (label_title, _) = cut_at_line_end(&title, LABEL_TEXT);
+    let mut cut = false;
+    let at = attr(&when_attr, 100, &mut cut);
     Item {
         prefix: 'e',
         kind: "event",
         record_id: e.id.clone(),
         label: format!("Event · {when_label} · {label_title}"),
-        attrs: vec![("at", attr(&when_attr, 100))],
+        attrs: vec![("at", at)],
         body: body.join("\n"),
-        cut: false,
+        cut,
         fact_title: None,
     }
     .capped(EVENT_CHARS)
@@ -849,7 +916,7 @@ fn event_item(e: &Record, tz: Tz) -> Item {
 /// first, then by start.
 fn event_items(
     events: &[Record],
-    skip: &str,
+    skip: Option<&str>,
     folded: &Folded,
     today: NaiveDate,
     span: (NaiveDate, NaiveDate),
@@ -861,7 +928,9 @@ fn event_items(
     );
     let mut picked: Vec<(u8, i64, &Record)> = events
         .iter()
-        .filter(|e| e.id != skip && e.data["cancelled"] != true && source_available(e))
+        .filter(|e| {
+            Some(e.id.as_str()) != skip && e.data["cancelled"] != true && source_available(e)
+        })
         .filter_map(|e| {
             let (first, last) = event_days(e, tz);
             let in_window = first <= span.1 && last >= span.0;
@@ -917,8 +986,10 @@ fn message_item(m: &Record, text_max: usize, tz: Tz) -> Item {
         }
     };
     let at = message_at(m);
-    let (body_text, cut) = cut_at_line_end(&clean(text(m, "text")), text_max);
-    let title = sanitize_line(text(m, "title"), 300);
+    let (body_text, mut cut) = cut_at_line_end(&clean(text(m, "text")), text_max);
+    let title = capped_line(text(m, "title"), 300, &mut cut);
+    let from_attr = attr(&from, 100, &mut cut);
+    let lane = attr(text(m, "lane"), 20, &mut cut);
     let mut body = Vec::new();
     if !title.is_empty() {
         body.push(format!(
@@ -940,10 +1011,10 @@ fn message_item(m: &Record, text_max: usize, tz: Tz) -> Item {
             prompts::local(at, tz, "%a %-d %b")
         ),
         attrs: vec![
-            ("from", attr(&from, 100)),
+            ("from", from_attr),
             ("at", prompts::local(at, tz, "%a %-d %b %H:%M")),
             ("channel", if chat { "teams" } else { "mail" }.into()),
-            ("lane", attr(text(m, "lane"), 20)),
+            ("lane", lane),
         ],
         body: body.join("\n"),
         cut,
@@ -956,7 +1027,7 @@ fn message_item(m: &Record, text_max: usize, tz: Tz) -> Item {
 /// newest first. Answers whether it fell back to Needs reply.
 fn message_items(
     messages: &[Record],
-    skip: &str,
+    skip: Option<&str>,
     folded: &Folded,
     now: i64,
     tz: Tz,
@@ -964,7 +1035,7 @@ fn message_items(
     let since = now - MESSAGE_DAYS * 86_400;
     let recent: Vec<&Record> = messages
         .iter()
-        .filter(|m| m.id != skip && source_available(m) && message_at(m) >= since)
+        .filter(|m| Some(m.id.as_str()) != skip && source_available(m) && message_at(m) >= since)
         .collect();
     let mut picked: Vec<&Record> = recent
         .iter()
@@ -992,7 +1063,8 @@ fn message_items(
 }
 
 fn meeting_item(m: &MeetingDigest, summary_max: usize, tz: Tz) -> Item {
-    let title = line(&m.title);
+    let mut cut = false;
+    let title = capped_line(&m.title, MEETING_TITLE, &mut cut);
     let title = if title.is_empty() {
         "Untitled meeting".to_string()
     } else {
@@ -1006,10 +1078,11 @@ fn meeting_item(m: &MeetingDigest, summary_max: usize, tz: Tz) -> Item {
         .filter(|a| !a.is_empty())
         .collect();
     if !attendees.is_empty() {
-        let (list, _) = cut_at_line_end(&attendees.join(", "), 300);
+        let list = capped_line(&attendees.join(", "), MEETING_ATTENDEES, &mut cut);
         body.push(format!("Attendees: {list}"));
     }
-    let (summary, mut cut) = cut_at_line_end(&clean(&m.summary), summary_max);
+    let (summary, c) = cut_at_line_end(&clean(&m.summary), summary_max);
+    cut |= c;
     if !summary.is_empty() {
         body.push(String::new());
         body.push(summary);
@@ -1050,7 +1123,7 @@ fn meeting_item(m: &MeetingDigest, summary_max: usize, tz: Tz) -> Item {
 /// window; matching first, newest first.
 fn meeting_items(
     meetings: &[MeetingDigest],
-    skip: &str,
+    skip: Option<&str>,
     folded: &Folded,
     now: i64,
     span: (NaiveDate, NaiveDate),
@@ -1059,7 +1132,7 @@ fn meeting_items(
     let since = now - MEETING_DAYS * 86_400;
     let mut picked: Vec<(u8, &MeetingDigest)> = meetings
         .iter()
-        .filter(|m| m.id != skip && m.at >= since)
+        .filter(|m| Some(m.id.as_str()) != skip && m.at >= since)
         .filter_map(|m| {
             let mut texts: Vec<&str> = vec![&m.title, &m.summary];
             texts.extend(m.attendees.iter().map(String::as_str));
@@ -1104,15 +1177,18 @@ fn person_items(people: &[Person], query: &[String]) -> (Vec<Item>, usize) {
     let items = picked
         .into_iter()
         .map(|p| {
-            let name = line(&p.name);
-            let (about, cut) = cut_at_line_end(&clean(&p.about), PERSON_ABOUT);
+            let mut cut = false;
+            let name = capped_line(&p.name, PERSON_NAME, &mut cut);
+            let (about, c) = cut_at_line_end(&clean(&p.about), PERSON_ABOUT);
+            cut |= c;
             let (label_name, _) = cut_at_line_end(&name, LABEL_TEXT);
+            let name_attr = attr(&name, PERSON_NAME, &mut cut);
             Item {
                 prefix: 'p',
                 kind: "person",
                 record_id: p.id.clone(),
                 label: format!("Person · {label_name}"),
-                attrs: vec![("name", attr(&name, 100))],
+                attrs: vec![("name", name_attr)],
                 body: if about.is_empty() {
                     name
                 } else {
@@ -1131,15 +1207,18 @@ fn fact_items(facts: &[Fact], provider: &str) -> Vec<Item> {
     facts
         .iter()
         .map(|f| {
-            let title = line(&f.title);
-            let (body, cut) = cut_at_line_end(&clean(&f.text), FACT_CHARS);
+            let mut cut = false;
+            let title = capped_line(&f.title, FACT_TITLE, &mut cut);
+            let (body, c) = cut_at_line_end(&clean(&f.text), FACT_CHARS);
+            cut |= c;
             let (label_title, _) = cut_at_line_end(&title, LABEL_TEXT);
+            let title_attr = attr(&title, FACT_TITLE, &mut cut);
             Item {
                 prefix: 'f',
                 kind: "fact",
                 record_id: String::new(),
                 label: format!("{provider} · {label_title}"),
-                attrs: vec![("title", attr(&title, 200))],
+                attrs: vec![("title", title_attr)],
                 body,
                 cut,
                 fact_title: Some(title),
@@ -1251,6 +1330,7 @@ mod tests {
         facts_provider: Option<String>,
         tasks_provider: String,
         m365: bool,
+        voice: bool,
     }
 
     impl Seed {
@@ -1265,6 +1345,7 @@ mod tests {
                 facts_provider: self.facts_provider.as_deref(),
                 tasks_provider: &self.tasks_provider,
                 m365: self.m365,
+                voice: self.voice,
             }
         }
     }
@@ -1490,6 +1571,7 @@ mod tests {
             facts_provider: Some("Knowledge".into()),
             tasks_provider: "Todoist".into(),
             m365: true,
+            voice: true,
         }
     }
 
@@ -1763,7 +1845,7 @@ mod tests {
                 thread: None,
                 about: None,
                 base: "atlas",
-                changes: json!({"people": [], "facts": null, "factsProvider": null}),
+                changes: json!({"voice": false}),
             },
             Case {
                 name: "facts missed",
@@ -2255,10 +2337,10 @@ mod tests {
 
     #[test]
     fn the_voice_off_gives_no_people_or_facts() {
+        // Fail closed: people, facts and the provider are ignored unless the voice is on, even
+        // when the caller passes them.
         let mut seed = atlas();
-        seed.people.clear();
-        seed.facts = None;
-        seed.facts_provider = None;
+        seed.voice = false;
         let ctx = gather(
             "Where is Atlas with Marek Novak?",
             None,
@@ -2272,6 +2354,161 @@ mod tests {
         assert!(ctx.facts.is_empty());
         assert!(!ctx.searched.contains("facts"));
         assert!(!ctx.searched.contains("Knowledge"));
+        assert!(!ctx.searched.contains("people"));
+        assert!(!ctx.text.contains("Head of operations"));
+        // Facts missed with the voice off say nothing either.
+        seed.facts = None;
+        let ctx = gather("Where is Atlas?", None, None, &seed.records(), NOW, ZONE);
+        assert!(!ctx.searched.contains("Knowledge"), "{}", ctx.searched);
+    }
+
+    /// A full meeting digest pinned as About: the summary gives way to the action items so
+    /// the item fits 4,000, and the pin is never dropped.
+    #[test]
+    fn a_full_about_meeting_is_shortened_never_dropped() {
+        let mut seed = atlas();
+        seed.meetings[0] = MeetingDigest {
+            id: "mtg-full".into(),
+            title: format!("Atlas {}", "quarterly review ".repeat(20)),
+            at: NOW - DAY,
+            attendees: (0..40).map(|n| format!("Attendee Number{n}")).collect(),
+            summary: "Атлас: итоги квартала и план.\n".repeat(200),
+            action_items: (0..12)
+                .map(|n| format!("{n} {}", "follow up ".repeat(30)))
+                .collect(),
+        };
+        let about = RefItem {
+            kind: "meeting".into(),
+            record_id: "mtg-full".into(),
+            label: "x".into(),
+            gone: false,
+        };
+        let ctx = gather(
+            "What happened?",
+            None,
+            Some(&about),
+            &seed.records(),
+            NOW,
+            ZONE,
+        );
+        assert!(!ctx.about_gone);
+        assert!(ctx.refs.contains_key("a1"), "{:?}", ctx.refs.keys());
+        assert!(ctx.cut);
+        let block = format!("{}</item>", ctx.text.split("</item>").next().unwrap());
+        assert!(block.contains("about=\"true\""));
+        assert!(
+            block.chars().count() < ABOUT_MAX,
+            "{}",
+            block.chars().count()
+        );
+        assert_eq!(
+            block.matches("\n- ").count(),
+            ACTION_ITEMS,
+            "action items kept"
+        );
+        assert!(block.contains("Атлас: итоги квартала"));
+    }
+
+    #[test]
+    fn a_private_event_names_nobody() {
+        let mut seed = atlas();
+        seed.events[0].data["private"] = true.into();
+        seed.events[0].data["attendeeCount"] = 2.into();
+        let ctx = gather("anything urgent?", None, None, &seed.records(), NOW, ZONE);
+        let about = RefItem {
+            kind: "event".into(),
+            record_id: "ev-qbr".into(),
+            label: "x".into(),
+            gone: false,
+        };
+        let pinned = gather(
+            "What is this?",
+            None,
+            Some(&about),
+            &seed.records(),
+            NOW,
+            ZONE,
+        );
+        for ctx in [&ctx, &pinned] {
+            let block = ctx
+                .text
+                .split("</item>")
+                .find(|b| b.contains("Private event"))
+                .unwrap();
+            assert!(!block.contains("Organizer"), "{block}");
+            assert!(
+                !block.contains("Jordan Lee") && !block.contains("Marek Novak"),
+                "{block}"
+            );
+            assert!(
+                !block.contains("Room 4") && !block.contains("QBR"),
+                "{block}"
+            );
+            assert!(block.contains("Attendees: 2"), "{block}");
+        }
+    }
+
+    #[test]
+    fn capped_titles_names_and_attributes_set_cut() {
+        assert!(!gather("Where is Atlas?", None, None, &atlas().records(), NOW, ZONE).cut);
+        let long = "Atlas ".repeat(100);
+        let check = |seed: Seed, what: &str| {
+            let ctx = gather(
+                "Where is Atlas with Marek Novak?",
+                None,
+                None,
+                &seed.records(),
+                NOW,
+                ZONE,
+            );
+            assert!(ctx.cut, "{what}");
+            assert!(!ctx.text.contains(long.trim()), "{what}");
+        };
+        let mut s = atlas();
+        s.meetings[0].title = long.clone();
+        check(s, "meeting title");
+        let mut s = atlas();
+        s.people[0].name = format!("Marek Novak {long}");
+        check(s, "person name");
+        let mut s = atlas();
+        s.messages[0].data["title"] = long.clone().into();
+        check(s, "message title");
+        let mut s = atlas();
+        s.messages[0].data["from"] = long.clone().into();
+        check(s, "message from");
+    }
+
+    #[test]
+    fn the_about_skip_is_by_kind_and_id() {
+        let mut seed = atlas();
+        seed.tasks[0].id = "dup-1".into();
+        seed.messages[0].id = "dup-1".into();
+        let about = RefItem {
+            record_id: "dup-1".into(),
+            ..about_priya()
+        };
+        let ctx = gather(
+            "Where is Atlas?",
+            None,
+            Some(&about),
+            &seed.records(),
+            NOW,
+            ZONE,
+        );
+        assert_eq!(ctx.refs["a1"].kind, "message");
+        assert!(
+            ctx.refs
+                .values()
+                .any(|r| r.kind == "task" && r.record_id == "dup-1"),
+            "the task with the same id stays"
+        );
+        assert_eq!(
+            ctx.refs
+                .values()
+                .filter(|r| r.kind == "message" && r.record_id == "dup-1")
+                .count(),
+            1
+        );
     }
 
     #[test]

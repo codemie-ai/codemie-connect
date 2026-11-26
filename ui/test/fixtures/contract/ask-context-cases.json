@@ -275,9 +275,7 @@
       "question": "Where is Atlas with Marek Novak?",
       "seed": "atlas",
       "seedChanges": {
-        "facts": null,
-        "factsProvider": null,
-        "people": []
+        "voice": false
       },
       "thread": null,
       "zone": "Europe/Berlin"
@@ -1004,7 +1002,8 @@
           "workspaceId": "personal"
         }
       ],
-      "tasksProvider": "Todoist"
+      "tasksProvider": "Todoist",
+      "voice": true
     },
     "overfull": {
       "events": [
@@ -2512,7 +2511,8 @@
           "workspaceId": "personal"
         }
       ],
-      "tasksProvider": "Todoist"
+      "tasksProvider": "Todoist",
+      "voice": true
     }
   }
 }
