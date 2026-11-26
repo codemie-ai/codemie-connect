@@ -545,6 +545,12 @@ impl Core {
         {
             eprintln!("ask: start-up prune failed: {}", e.code);
         }
+        // A turn left queued or running whose job is no longer queued or running reads failed
+        // with the job's own sentence (stopped for a stopped job). Runs whether the prune
+        // worked or not.
+        if let Err(e) = self.ask_startup() {
+            eprintln!("ask: start-up check failed: {}", e.code);
+        }
         self.start_menu_bar();
         let click_app = app.clone();
         let _ = app.notification().on_action(move |action| {
@@ -845,6 +851,7 @@ impl Core {
             }
             "ai_draft" => self.run_ai_draft(job).await,
             "ai_summarize" => self.run_ai_summary(job).await,
+            ask::ops::KIND => self.run_ask_job(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
             "automation_run" => self.run_automation(job).await,
             "transcript_check" => self.run_transcript_check(job).await,
@@ -970,6 +977,10 @@ impl Core {
         // Read-only: one person's profile from Connect's copy of the voice.
         if req.op == Operation::VoiceRead {
             return self.voice_read(&req);
+        }
+        // Read-only (ask-capture design § 6): one whole Ask thread; no operation id.
+        if req.op == Operation::AskRead {
+            return self.ask_read(&req);
         }
         // Read-only, pure (ask-capture design § 9): the date parser reads `text` and nothing
         // stored; no operation id, no revision bump.
@@ -1503,6 +1514,11 @@ impl Core {
                     job.state = "cancelled".into();
                 }
                 r.save_job(&job)?;
+                // Stop on an answer (ask-capture design § 6): its turn reads `stopped`, under the
+                // same repository guard, so the job's own write after its claim sees it.
+                if req.op == Operation::JobCancel && job.kind == ask::ops::KIND {
+                    ask::ops::stop_turn(&mut r, &job)?;
+                }
                 drop(r);
                 if req.op == Operation::JobCancel {
                     self.cancel_graph_job(&job.id);
@@ -1559,6 +1575,8 @@ impl Core {
             }
             Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
+            Operation::AskStart => self.ask_start(&req)?,
+            Operation::AskDelete => self.ask_delete(&req)?,
             Operation::AiSummarize => self.queue_ai_summary(&req)?,
             Operation::AutomationSave
             | Operation::AutomationDelete

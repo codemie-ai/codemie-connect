@@ -1,0 +1,135 @@
+{
+  "createdAt": 1795000280,
+  "id": "ask-7f2c",
+  "nextRef": 8,
+  "turns": [
+    {
+      "about": {
+        "kind": "message",
+        "label": "Priya N. · mail · Tue 24 Nov",
+        "recordId": "msg-17"
+      },
+      "actions": [
+        {
+          "due": "2026-11-27",
+          "kind": "task",
+          "text": "Send Priya the Atlas budget"
+        },
+        {
+          "kind": "open",
+          "label": "Event · Fri 27 Nov 10:00 · QBR",
+          "recordId": "ev-9",
+          "ref": "e3"
+        },
+        {
+          "hint": "Say the deck comes Thursday.",
+          "kind": "draft",
+          "label": "Jordan Lee · Teams · Wed 25 Nov",
+          "recordId": "msg-21",
+          "ref": "m4"
+        }
+      ],
+      "answer": "You promised Priya the **Atlas budget** by Fri 27 Nov [a1] [t2].\n\n- The QBR is on Fri 27 Nov at 10:00 [e3]; Jordan Lee asked for the deck [m4].\n- The rollout plan was agreed on Thu 20 Nov [n5]; Marek Novak owns it [p6].\n- Likely on track, from [f7].",
+      "at": 1795000280,
+      "cites": [
+        {
+          "id": "a1",
+          "kind": "message",
+          "label": "Priya N. · mail · Tue 24 Nov",
+          "recordId": "msg-17",
+          "title": null
+        },
+        {
+          "id": "t2",
+          "kind": "task",
+          "label": "Task · Send the Atlas budget",
+          "recordId": "task-3",
+          "title": null
+        },
+        {
+          "id": "e3",
+          "kind": "event",
+          "label": "Event · Fri 27 Nov 10:00 · QBR",
+          "recordId": "ev-9",
+          "title": null
+        },
+        {
+          "id": "m4",
+          "kind": "message",
+          "label": "Jordan Lee · Teams · Wed 25 Nov",
+          "recordId": "msg-21",
+          "title": null
+        },
+        {
+          "id": "n5",
+          "kind": "meeting",
+          "label": "Meeting · Atlas sync · Thu 20 Nov",
+          "recordId": "ev-4",
+          "title": null
+        },
+        {
+          "id": "p6",
+          "kind": "person",
+          "label": "Person · Marek Novak",
+          "recordId": "00000000-0000-4000-8000-00000000a003",
+          "title": null
+        },
+        {
+          "id": "f7",
+          "kind": "fact",
+          "label": null,
+          "recordId": null,
+          "title": "Atlas rollout"
+        }
+      ],
+      "cut": true,
+      "error": null,
+      "fellBackFrom": null,
+      "id": "turn-1",
+      "jobId": "job-1",
+      "model": "claude-sonnet-4-5",
+      "profile": "claude",
+      "question": "What did I promise Priya this week?",
+      "searched": "tasks 12 (Todoist) · events 7, Thu 19 Nov – Thu 3 Dec · messages 9 · meetings 2 · people 1 · facts 1 (Knowledge)",
+      "state": "done"
+    },
+    {
+      "about": null,
+      "actions": [],
+      "answer": null,
+      "at": 1795000340,
+      "cites": [],
+      "cut": false,
+      "error": {
+        "code": "needs_login",
+        "message": "CodeMie is not signed in."
+      },
+      "fellBackFrom": "claude",
+      "id": "turn-2",
+      "jobId": "job-2",
+      "model": null,
+      "profile": "codemie:prod",
+      "question": "And Jordan Lee?",
+      "searched": null,
+      "state": "failed"
+    },
+    {
+      "about": null,
+      "actions": [],
+      "answer": null,
+      "at": 1795000400,
+      "cites": [],
+      "cut": false,
+      "error": null,
+      "fellBackFrom": null,
+      "id": "turn-3",
+      "jobId": "job-3",
+      "model": null,
+      "profile": "claude",
+      "question": "Who is Marek Novak?",
+      "searched": null,
+      "state": "stopped"
+    }
+  ],
+  "updatedAt": 1795000400
+}

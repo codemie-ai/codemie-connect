@@ -167,6 +167,9 @@ pub enum Operation {
     VoiceImport,
     CaptureParse,
     NoteAppend,
+    AskStart,
+    AskRead,
+    AskDelete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

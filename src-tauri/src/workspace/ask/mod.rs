@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 pub mod answer;
 pub mod context;
+pub mod ops;
 pub mod store;
 
 use store::{Thread, TurnState};

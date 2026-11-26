@@ -205,8 +205,6 @@ pub const SKILL_DISTIL_SCHEMA: &str = r#"{"type":"object","properties":{"instruc
 /// from what Connect gathered on this Mac (`ask::context`). Every record is data in an `<item>`
 /// block inside `<context>`, earlier turns are `<turn>` blocks inside `<conversation>`; the data
 /// rules close the Rules, so nothing in the input outranks them. `ask::answer` checks the answer.
-// Ask's run wires the prompt, the schema and the input in (a later task).
-#[allow(dead_code)]
 pub const ASK_SYSTEM: &str = concat!(
     "You answer the user's question about what CodeMie Connect holds on their Mac: their tasks, calendar, mail and Teams messages, meeting notes, and notes on people and facts. The user reads the answer in Connect.\n\n",
     "Input: one JSON object.\n",
@@ -236,13 +234,11 @@ pub const ASK_SYSTEM: &str = concat!(
 
 /// Ask's answer: `{answer, cites: [id], actions: [{kind, ref?, text?, due?, hint?}]}`. Only
 /// keywords every provider accepts; the limits are enforced by `ask::answer::check`.
-#[allow(dead_code)]
 pub const ASK_SCHEMA: &str = r#"{"type":"object","properties":{"answer":{"type":"string","description":"The answer, with [id] marks."},"cites":{"type":"array","items":{"type":"string"},"description":"Every id the answer cites, such as m3."},"actions":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["task","open","draft"]},"ref":{"type":"string","description":"An item id, such as m3."},"text":{"type":"string","description":"The task's text."},"due":{"type":"string","description":"YYYY-MM-DD, only when the date is fixed."},"hint":{"type":"string","description":"One line on what the reply should say."}},"required":["kind"],"additionalProperties":false}}},"required":["answer","cites","actions"],"additionalProperties":false}"#;
 
 /// Ask's input (design § 4): `context` is `ask::context`'s rendered items, wrapped in
 /// `<context>`; `conversation`, a follow-up's replayed turns, in `<conversation>` and only when
 /// given. The question is the user's own, cleaned like any other text so it can't open a block.
-#[allow(dead_code)]
 pub fn ask_input(
     question: &str,
     today: &str,

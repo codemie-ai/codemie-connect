@@ -1317,6 +1317,15 @@ impl Repository {
             params![before, encode(&kinds)?],
         )?)
     }
+    /// Deletes the finished jobs (`succeeded`, `failed`, `cancelled`, `blocked`) whose key is
+    /// `key`, so a new job can take it (Ask keys one job per thread, `ask:<threadId>`, and
+    /// a follow-up queues the next one). Queued and running ones stay. Returns how many went.
+    pub fn delete_finished_jobs_keyed(&mut self, key: &str) -> Result<usize> {
+        Ok(self.db.execute(
+            "DELETE FROM jobs WHERE execution_key=?1 AND state IN ('succeeded','failed','cancelled','blocked')",
+            params![key],
+        )?)
+    }
     pub fn jobs(&self) -> Result<Vec<Job>> {
         self.documents("SELECT body FROM jobs ORDER BY due_at")
     }
@@ -1393,7 +1402,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind')!='task_sync' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='task_sync')) AND (json_extract(body,'$.kind')!='voice_refresh' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='voice_refresh')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 4 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 3 WHEN json_extract(body,'$.kind')='voice_refresh' THEN 2 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind')!='task_sync' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='task_sync')) AND (json_extract(body,'$.kind')!='voice_refresh' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='voice_refresh')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes','ask') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes','ask'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 4 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 3 WHEN json_extract(body,'$.kind')='voice_refresh' THEN 2 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )

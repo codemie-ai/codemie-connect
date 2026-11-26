@@ -1,0 +1,28 @@
+{
+  "attempts": 1,
+  "connectionId": null,
+  "dueAt": 1795000400,
+  "id": "job-2",
+  "key": "ask:ask-7f2c",
+  "kind": "ask",
+  "leaseUntil": 1795000700,
+  "payload": {
+    "hiddenCalendars": [],
+    "model": null,
+    "profile": "claude",
+    "purpose": "ask",
+    "runModel": "claude-sonnet-4-5",
+    "startedAt": 1795000401,
+    "threadId": "ask-7f2c",
+    "turnId": "turn-1"
+  },
+  "policy": {
+    "generation": null,
+    "policyRevision": null,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": null,
+  "state": "running",
+  "workspaceId": "personal"
+}
