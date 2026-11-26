@@ -166,6 +166,7 @@ pub enum Operation {
     VoiceImportDistil,
     VoiceImport,
     CaptureParse,
+    NoteAppend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

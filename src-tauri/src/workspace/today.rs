@@ -2,7 +2,8 @@
 //! layouts, card titles, per-card options and the cards taken off the page. Native storage
 //! checks the whole object, so a broken save never reaches disk.
 use super::{valid_widget_id, MAX_WIDGETS};
-use crate::workspace::models::WorkspaceError;
+use crate::workspace::models::{id, Record, WorkspaceError};
+use crate::workspace::repository::Repository;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
@@ -15,6 +16,10 @@ const MAX_LAYOUTS: usize = 15;
 const MAX_TEXT: usize = 40;
 const MAX_LIST: usize = 8;
 const MAX_OPTIONS_BYTES: usize = 8 * 1024;
+/// Quick capture's note text (ask-capture design § 10).
+const NOTE_TEXT_MAX: usize = 2_000;
+/// Today's Notes record's own limit (`local_save`'s `required(…, "text", 20000)`).
+const NOTE_RECORD_MAX: usize = 20_000;
 
 fn invalid() -> WorkspaceError {
     let mut e = WorkspaceError::new("validation", "Invalid Today layout.");
@@ -155,13 +160,83 @@ pub(in crate::workspace) fn valid_today(v: &Value) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
+/// `note_append` (ask-capture design § 10): appends a line to Today's Notes — the active
+/// workspace's newest `note` record, created when there is none. `source` is the record the
+/// caller already resolved from `sourceId` (`None` for no source, or one that no longer names a
+/// known record); its `title` is named in the appended line. Called under the mutation lock,
+/// with the usual operation id and revision fence, so a replay adds one line, not two.
+pub(crate) fn note_append(
+    r: &mut Repository,
+    workspace_id: &str,
+    text: &str,
+    source: Option<&Record>,
+    at: i64,
+) -> Result<Value> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > NOTE_TEXT_MAX {
+        let mut e = WorkspaceError::new("validation", "Write the note, up to 2,000 characters.");
+        e.field = Some("text".into());
+        return Err(e);
+    }
+    let mut line = format!("- {trimmed}");
+    if let Some(label) = source
+        .and_then(|s| s.data["title"].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        line.push_str(&format!(" (from {label})"));
+    }
+    let note = r.local_records(workspace_id, "note")?.into_iter().next();
+    let prior = note
+        .as_ref()
+        .and_then(|n| n.data["text"].as_str())
+        .unwrap_or("");
+    let joined = if prior.is_empty() {
+        line
+    } else {
+        format!("{prior}\n{line}")
+    };
+    if joined.chars().count() > NOTE_RECORD_MAX {
+        return Err(WorkspaceError::new(
+            "validation",
+            "Notes on Today is full. Tidy it first.",
+        ));
+    }
+    let record_id = note.map(|n| n.id).unwrap_or_else(id);
+    r.put_record(&Record {
+        id: record_id.clone(),
+        kind: "note".into(),
+        connection_id: None,
+        workspace_id: Some(workspace_id.into()),
+        source: "local".into(),
+        revision: id(),
+        updated_at: at,
+        data: json!({"text": joined}),
+    })?;
+    Ok(json!({"id": record_id}))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::ai::fake::FakeRunner;
     use crate::workspace::ai::tests::{mutation, ready};
+    use crate::workspace::models::Record;
     use crate::workspace::{test_core, Operation};
     use serde_json::{json, Value};
     use std::sync::Arc;
+
+    fn local_note(id: &str, text: &str, at: i64) -> Record {
+        Record {
+            id: id.into(),
+            kind: "note".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "local".into(),
+            revision: "r0".into(),
+            updated_at: at,
+            data: json!({"text": text}),
+        }
+    }
 
     fn grid() -> Value {
         json!({"active":"Default",
@@ -307,6 +382,174 @@ mod tests {
         crate::plugins::testkit::contract_fixture(
             "today-layout.json",
             &json!({"layout": w.layout, "widgetWidths": w.widget_widths, "today": w.today}),
+        );
+    }
+
+    #[tokio::test]
+    async fn note_append_adds_a_line_at_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        core.repo()
+            .unwrap()
+            .put_record(&local_note("n1", "a", 1))
+            .unwrap();
+        core.request(mutation(
+            &core,
+            Operation::NoteAppend,
+            json!({"text": "Ask Marek about the Q1 headcount"}),
+        ))
+        .await
+        .unwrap();
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].id, "n1",
+            "the Notes widget keeps writing the same record"
+        );
+        assert_eq!(
+            notes[0].data["text"],
+            json!("a\n- Ask Marek about the Q1 headcount")
+        );
+    }
+
+    #[tokio::test]
+    async fn note_append_creates_the_note_when_there_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let result = core
+            .request(mutation(
+                &core,
+                Operation::NoteAppend,
+                json!({"text": "Ask Marek about the Q1 headcount"}),
+            ))
+            .await
+            .unwrap();
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(result["id"], json!(notes[0].id));
+        assert_eq!(
+            notes[0].data["text"],
+            json!("- Ask Marek about the Q1 headcount")
+        );
+    }
+
+    #[tokio::test]
+    async fn note_append_names_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        {
+            let mut r = core.repo().unwrap();
+            let mut w = r.workspace("personal").unwrap();
+            w.connection_id = Some("c1".into());
+            r.save_workspace(&w).unwrap();
+            r.put_record(&Record {
+                id: "m1".into(),
+                kind: "message".into(),
+                connection_id: Some("c1".into()),
+                workspace_id: None,
+                source: "mail:c1".into(),
+                revision: "r1".into(),
+                updated_at: 1,
+                data: json!({"title": "Atlas budget"}),
+            })
+            .unwrap();
+        }
+        core.request(mutation(
+            &core,
+            Operation::NoteAppend,
+            json!({"text": "Follow up", "sourceId": "m1"}),
+        ))
+        .await
+        .unwrap();
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        assert_eq!(
+            notes[0].data["text"],
+            json!("- Follow up (from Atlas budget)")
+        );
+    }
+
+    #[tokio::test]
+    async fn note_append_refuses_empty_long_and_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let empty = core
+            .request(mutation(&core, Operation::NoteAppend, json!({"text": ""})))
+            .await
+            .unwrap_err();
+        assert_eq!(empty.code, "validation");
+        assert_eq!(empty.message, "Write the note, up to 2,000 characters.");
+        assert_eq!(empty.field.as_deref(), Some("text"));
+
+        let too_long = core
+            .request(mutation(
+                &core,
+                Operation::NoteAppend,
+                json!({"text": "x".repeat(2001)}),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(too_long.code, "validation");
+        assert_eq!(too_long.message, "Write the note, up to 2,000 characters.");
+        assert_eq!(too_long.field.as_deref(), Some("text"));
+
+        core.repo()
+            .unwrap()
+            .put_record(&local_note("n1", &"x".repeat(19_990), 1))
+            .unwrap();
+        let full = core
+            .request(mutation(
+                &core,
+                Operation::NoteAppend,
+                json!({"text": "y".repeat(18)}),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(full.code, "validation");
+        assert_eq!(full.message, "Notes on Today is full. Tidy it first.");
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        assert_eq!(
+            notes[0].data["text"],
+            json!("x".repeat(19_990)),
+            "refused, unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn note_append_replays_its_operation_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let req = mutation(
+            &core,
+            Operation::NoteAppend,
+            json!({"text": "Ask Marek about the Q1 headcount"}),
+        );
+        core.request(req.clone()).await.unwrap();
+        core.request(req).await.unwrap();
+        let notes = core
+            .repo()
+            .unwrap()
+            .local_records("personal", "note")
+            .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].data["text"],
+            json!("- Ask Marek about the Q1 headcount")
         );
     }
 }

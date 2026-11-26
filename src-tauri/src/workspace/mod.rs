@@ -1319,6 +1319,20 @@ impl Core {
                 }
                 json!({"deleted":true})
             }
+            // Quick capture's Note (ask-capture design § 10): appends a line to Today's Notes.
+            // `sourceId` names a message (the Inbox selection); an id that names no such record
+            // is dropped rather than refused, and the line carries no "(from ...)" part.
+            Operation::NoteAppend => {
+                let (w, _) = self.active_workspace(&req, false)?;
+                let text = req.data["text"].as_str().unwrap_or("");
+                let source = req.data["sourceId"].as_str().and_then(|sid| {
+                    self.repo()
+                        .ok()?
+                        .record("message", sid, w.connection_id.as_deref(), None)
+                        .ok()
+                });
+                today::note_append(&mut *self.repo()?, &w.id, text, source.as_ref(), now())?
+            }
             Operation::GraphConnect => self.graph_connect(connect_capabilities(&req.data)?).await?,
             Operation::GraphDisconnect => {
                 *self.auth_attempt.lock().await = None;
