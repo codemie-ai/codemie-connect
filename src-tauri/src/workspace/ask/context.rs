@@ -362,7 +362,7 @@ pub fn matches(terms: &[String], text: &str) -> bool {
 /// `s` cut to at most `max` characters, ending with "…": at the last line end in the kept
 /// half or more, else at the last word end, else mid-word. Counts characters, never bytes.
 /// Answers whether it cut.
-fn cut_at_line_end(s: &str, max: usize) -> (String, bool) {
+pub(super) fn cut_at_line_end(s: &str, max: usize) -> (String, bool) {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
         return (s.to_string(), false);

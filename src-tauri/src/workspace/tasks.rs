@@ -183,6 +183,13 @@ fn due(v: &Value) -> Result<Option<String>> {
         .ok_or_else(|| invalid("due", MESSAGE))
 }
 
+/// Whether `s` is a due date `task_save` accepts: a `YYYY-MM-DD` day that exists, from 2000 on.
+// Ask's answer check (`ask::answer`) reads it; Ask's run wires that in (a later task).
+#[allow(dead_code)]
+pub(crate) fn valid_due(s: &str) -> bool {
+    matches!(due(&Value::String(s.to_string())), Ok(Some(_)))
+}
+
 /// History given with a task being created (Undo of a delete puts the old one back).
 fn given_history(v: &Value) -> Result<Vec<Value>> {
     const MESSAGE: &str = "The task’s history can’t be read.";
