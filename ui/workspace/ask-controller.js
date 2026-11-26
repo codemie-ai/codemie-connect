@@ -30,15 +30,18 @@ export function createAskController({ state, snap, mutate, query = async () => n
     await go(target);
   }
 
+  /** Focus came into the field (a click, Tab): it opens with its words selected, as ⌘K does. */
   function opened() {
     if (ask().open) return;
     Object.assign(ask(), { open: true, active: -1 });
     render();
+    focus('#ask-input', { select: true });
   }
 
+  /** Focus or a press went elsewhere: closed, and where focus came from is forgotten. */
   function closed() {
     if (!ask().open) return;
-    Object.assign(ask(), { open: false, active: -1 });
+    Object.assign(ask(), { open: false, active: -1, focusBack: null });
     render();
   }
 
@@ -72,7 +75,7 @@ export function createAskController({ state, snap, mutate, query = async () => n
   }
 
   function reset() {
-    Object.assign(ask(), { text: '', aboutDropped: false, error: '', open: false, active: -1 });
+    Object.assign(ask(), { text: '', aboutDropped: false, error: '', open: false, active: -1, focusBack: null });
   }
 
   /** `ask_start` with the window's hidden calendars; a refusal shows under the box (`onRefused`).

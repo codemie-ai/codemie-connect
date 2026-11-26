@@ -3,7 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { aboutOf, askField, askRailButton, fieldRunning, isAskKey, recentQuestions, newAskView } from '../workspace/ask-model.js';
+import { readFileSync } from 'node:fs';
 import { buildSnapshot, withAsk, askStates } from './fixtures/workspace-fixture.mjs';
+
+const PROVIDERS = JSON.parse(readFileSync(new URL('./fixtures/contract/task-provider-states.json', import.meta.url), 'utf8'));
 
 const NOW = Date.UTC(2026, 10, 26, 9);
 const TUE = Date.UTC(2026, 10, 24, 10) / 1000;
@@ -42,6 +45,17 @@ test('aboutOf: a selected or open Inbox message, a meeting route, an open task, 
   ]) assert.equal(aboutOf(st, s), null, JSON.stringify(st));
 });
 
+test('aboutOf follows the Tasks view the page shows: with a provider active, By date’s unfolded row', () => {
+  const s = askSnapshot();
+  s.taskProvider = structuredClone(PROVIDERS.ready);
+  // The provider's own view (By date by default) while the Local choice stays Board.
+  const tasks = { view: 'board', providerView: null, drawer: null, rowOpen: 'task-budget' };
+  assert.deepEqual(aboutOf({ route: 'tasks', tasks }, s), { kind: 'task', recordId: 'task-budget', label: 'Task · Send the Atlas budget' });
+  // List shown (a provider has no Board): the drawer counts, not a By date row left unfolded.
+  assert.equal(aboutOf({ route: 'tasks', tasks: { ...tasks, providerView: 'list' } }, s), null);
+  assert.equal(aboutOf({ route: 'tasks', tasks: { ...tasks, providerView: 'list', drawer: 'task-budget' } }, s).recordId, 'task-budget');
+});
+
 test('Recent lists up to 5 first questions, newest first', () => {
   const s = withAsk(askSnapshot(), 'idle');
   assert.deepEqual(recentQuestions(s).map(r => r.title), ['What did I promise Priya this week?', 'When is the QBR?', 'Who is Marek Novak?']);
@@ -59,6 +73,7 @@ test('the field: role="search" "Ask", "Ask…" and "⌘K", labelled "Ask Connect
   assert.match(closed, /aria-label="Ask Connect"/);
   assert.match(closed, /aria-keyshortcuts="Meta\+K"/);
   assert.match(closed, /<kbd class="ws-ask-hint"[^>]*>⌘K<\/kbd>/);
+  assert.doesNotMatch(closed, /aria-controls/, 'no list drawn: nothing to control');
   assert.doesNotMatch(closed, /Recent|Enter to ask/);
   const open = askField({ route: 'today', ask: { ...newAskView(), open: true, active: 1 } }, s);
   assert.match(open, /aria-controls="ask-recent"/);
@@ -115,7 +130,9 @@ test('the question and the About label are escaped', () => {
 test('⌘K does nothing inside the terminal dock, with a dialog or the setup sheet open, or while composing', () => {
   const ev = (over = {}) => ({ key: 'k', code: 'KeyK', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, target: { closest: () => null }, ...over });
   assert.equal(isAskKey(ev()), true);
-  assert.equal(isAskKey(ev({ metaKey: false, ctrlKey: true })), true);
+  // Meta only: Ctrl+K stays the text boxes' "kill to end of line".
+  assert.equal(isAskKey(ev({ metaKey: false, ctrlKey: true })), false);
+  assert.equal(isAskKey(ev({ ctrlKey: true })), false);
   assert.equal(isAskKey(ev({ target: { closest: sel => (sel === '.ws-term' ? {} : null) } })), false, 'the terminal keeps its ⌘K');
   assert.equal(isAskKey(ev(), { modal: true }), false);
   assert.equal(isAskKey(ev(), { sheet: true }), false);

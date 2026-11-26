@@ -232,3 +232,34 @@ test('the page box asks a new question on #/ask and a follow-up on #/ask/<id>, w
   await ctl.submitPage('And next week?');
   assert.equal(calls.mutate[1][1].threadId, 'ask-7f2c');
 });
+
+test('a click that focuses the field selects its words, as ⌘K does', () => {
+  const { ctl, state, calls } = harness();
+  ctl.input('typed before');
+  ctl.opened();
+  assert.equal(state.ask.open, true);
+  assert.deepEqual(calls.focus, [['#ask-input', { select: true }]]);
+  ctl.opened();
+  assert.equal(calls.focus.length, 1, 'already open: nothing more');
+});
+
+test('every close forgets where focus came from: Esc, Enter, a click away', async () => {
+  const esc = harness();
+  await esc.ctl.focusField({ from: '#reply-body' });
+  esc.ctl.key(keyEvent({ key: 'Escape' }));
+  assert.equal(esc.state.ask.focusBack, null);
+  const enter = harness();
+  await enter.ctl.focusField({ from: '#reply-body' });
+  enter.ctl.input('q');
+  await enter.ctl.submitField();
+  assert.equal(enter.state.ask.focusBack, null);
+  const away = harness();
+  await away.ctl.focusField({ from: '#reply-body' });
+  away.ctl.closed();
+  assert.equal(away.state.ask.focusBack, null);
+  // A later Esc from a click-focused field goes to the page, not the stale control.
+  away.ctl.opened();
+  away.ctl.key(keyEvent({ key: 'Escape' }));
+  assert.deepEqual(away.calls.focusBack, [null]);
+});
+

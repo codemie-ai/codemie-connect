@@ -219,6 +219,9 @@ let pressing = false;
 // The Ask field opened or closed while the button was down (a click into it, or elsewhere): drawn
 // once the button is up, so the press isn't redrawn away (the field keeps its focus and caret).
 let askHeld = false;
+// A focus the Ask field asked for while the button was down (a click into it selects its words):
+// applied after that render, once the click has placed its caret.
+let askFocusHeld = null;
 const replyInFlight = new Set();
 const asksSaving = new Set();
 const KEEP_FOCUS = new Set(['capture-mode', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
@@ -815,6 +818,8 @@ async function route(name, tab, pluginPath = null) {
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   if (state.route === 'ask') state.ask.threadId = askThreadOf(tab);
+  // Leaving for another page forgets where ⌘K came from (the Ask page keeps it for its Back).
+  else state.ask.focusBack = null;
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
   state.pluginPath = onPluginsTab ? pluginPath : null;
   state.pluginPage = null;
@@ -1990,6 +1995,10 @@ const askUi = store && createAskController({
   openCapture: options => openCapture(options),
   fieldShown: () => !!document.getElementById('ask-input')?.getClientRects().length,
   focus: (selector, { select = false } = {}) => {
+    if (pressing) {
+      askFocusHeld = { selector, select };
+      return;
+    }
     const el = document.querySelector(selector);
     el?.focus({ preventScroll: true });
     if (select) el?.select?.();
@@ -2019,7 +2028,7 @@ document.addEventListener('focusin', ev => {
 // A press elsewhere is drawn after the button is up (a redraw now would swallow its click).
 document.addEventListener('pointerdown', ev => {
   if (!askUi || !state.ask.open || ev.target.closest?.('.ws-ask-field')) return;
-  Object.assign(state.ask, { open: false, active: -1 });
+  Object.assign(state.ask, { open: false, active: -1, focusBack: null });
   askHeld = true;
 }, true);
 
@@ -3336,8 +3345,17 @@ const released = () => {
   setTimeout(() => {
     if (askHeld) {
       askHeld = false;
-      if (ready && !modalOpen()) return render().catch(fail);
+      if (ready && !modalOpen()) {
+        const held = askFocusHeld;
+        askFocusHeld = null;
+        return render().then(() => {
+          const el = held && document.querySelector(held.selector);
+          el?.focus({ preventScroll: true });
+          if (held?.select) el?.select?.();
+        }).catch(fail);
+      }
     }
+    askFocusHeld = null;
     if (heldRender && !taskDrag) flushHeldRender();
     return undefined;
   }, 0);

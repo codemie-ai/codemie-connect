@@ -794,7 +794,10 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('.ws-ask-chip:has-text("About: Elena Varga · mail ·")');
       assert(await page.inputValue('#ask-input') === 'what did I promise?', 'the words went');
       await shot(page, 'layout-e10-chip');
-      await page.focus('#ask-input');
+      // A click back into the field selects its words, as ⌘K does (§ 2).
+      await page.click('#ask-input');
+      await page.waitForFunction(() => { const f = document.getElementById('ask-input'); return document.activeElement === f && f.selectionStart === 0 && f.selectionEnd === f.value.length; });
+      await page.keyboard.press('ArrowRight');
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => location.hash.startsWith('#/ask/ask-'));
       const starts = await calls(page, 'ask_start');

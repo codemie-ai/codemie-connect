@@ -5,6 +5,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { viewOf } from './view-mode.js';
+import { shownView } from './tasks-dates-model.js';
 
 /** `state.ask`: the hash the Ask page was first opened from (`from`), the control focus goes
  *  back to on Esc (`focusBack`, a selector), whether × dropped the About for this question, the
@@ -74,8 +75,9 @@ export function aboutOf(state, snap) {
     return ev ? eventAbout(ev, zone) : null;
   }
   if (state.route === 'tasks') {
+    // The view the page shows: with a provider active, its own (By date by default).
     const t = state.tasks || {};
-    const task = find(snap, 'commitment', t.view === 'dates' ? t.rowOpen : t.drawer);
+    const task = find(snap, 'commitment', shownView(t, snap) === 'dates' ? t.rowOpen : t.drawer);
     return task ? { kind: 'task', recordId: task.id, label: `Task · ${cut(task.data.text)}` } : null;
   }
   if (state.route === 'calendar') {
@@ -123,7 +125,7 @@ export function askField(state, snap) {
   const foot = ask.open ? '<p class="ws-ask-foot">Enter to ask · Esc to close</p>' : '';
   const error = ask.error ? `<p class="ws-ask-error" role="alert">${e(ask.error)}</p>` : '';
   return `<form class="ws-ask-field${ask.open ? ' ws-ask-open' : ''}" role="search" aria-label="Ask" novalidate${running ? ' data-running' : ''}>
-      <div class="ws-ask-box">${icon('sparkles', 'ws-ask-icon')}<input id="ask-input" class="ws-ask-input" type="text" value="${e(ask.text)}" placeholder="${running ? 'Answering… ⌘. to stop' : 'Ask…'}" maxlength="2000" autocomplete="off" spellcheck="false" role="combobox" aria-label="Ask Connect" aria-keyshortcuts="Meta+K" aria-autocomplete="list" aria-controls="ask-recent" aria-expanded="${recent.length > 0}"${active >= 0 ? ` aria-activedescendant="ask-recent-${active}"` : ''}${ask.error ? ' aria-invalid="true"' : ''}>${running ? '' : '<kbd class="ws-ask-hint" aria-hidden="true">⌘K</kbd>'}</div>
+      <div class="ws-ask-box">${icon('sparkles', 'ws-ask-icon')}<input id="ask-input" class="ws-ask-input" type="text" value="${e(ask.text)}" placeholder="${running ? 'Answering… ⌘. to stop' : 'Ask…'}" maxlength="2000" autocomplete="off" spellcheck="false" role="combobox" aria-label="Ask Connect" aria-keyshortcuts="Meta+K" aria-autocomplete="list"${recent.length ? ' aria-controls="ask-recent"' : ''} aria-expanded="${recent.length > 0}"${active >= 0 ? ` aria-activedescendant="ask-recent-${active}"` : ''}${ask.error ? ' aria-invalid="true"' : ''}>${running ? '' : '<kbd class="ws-ask-hint" aria-hidden="true">⌘K</kbd>'}</div>
       ${chip}${error}${list}${foot}
     </form>`;
 }
@@ -146,10 +148,11 @@ export function askPageStub(state) {
     </section>`;
 }
 
-/** Whether `ev` is ⌘K (or Ctrl+K), no ⌥, not mid-composition, with no dialog or setup sheet
- *  open, and not from the terminal dock (whose ⌘K clears the terminal). */
+/** Whether `ev` is ⌘K (Meta only: Ctrl+K stays the text boxes' "kill to end of line"), no ⌥,
+ *  not mid-composition, with no dialog or setup sheet open, and not from the terminal dock
+ *  (whose ⌘K clears the terminal). */
 export function isAskKey(ev, { modal = false, sheet = false } = {}) {
-  if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.shiftKey || ev.isComposing || modal || sheet) return false;
+  if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing || modal || sheet) return false;
   if (ev.target?.closest?.('.ws-term')) return false;
   return ev.code === 'KeyK' || String(ev.key || '').toLowerCase() === 'k';
 }
