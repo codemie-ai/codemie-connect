@@ -956,6 +956,7 @@ mod tests {
             task_provider: Value::Null,
             menu_bar: Value::Null,
             reply_voice: Value::Null,
+            ask: Value::Null,
         }
     }
 

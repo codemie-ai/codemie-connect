@@ -3,6 +3,10 @@ mod actions;
 mod ai;
 mod ai_jobs;
 pub(crate) mod analytics;
+#[allow(dead_code)]
+// `ask_start`, `ask_read` and `ask_delete` wire in the store's reads, writes and deletes (later
+// tasks); this task wires the snapshot's `ask` and the start-up prune.
+pub mod ask;
 mod automations;
 mod credentials;
 #[cfg(target_os = "macos")]
@@ -533,6 +537,14 @@ impl Core {
             return;
         }
         geometry::restore(&app, &self.paths.private);
+        // Ask's threads past their 30 days, or beyond the newest 50, go once at start-up
+        // (ask-capture design § 5).
+        if let Err(e) = self
+            .repo()
+            .and_then(|mut r| ask::store::prune(&mut r, now()))
+        {
+            eprintln!("ask: start-up prune failed: {}", e.code);
+        }
         self.start_menu_bar();
         let click_app = app.clone();
         let _ = app.notification().on_action(move |action| {
@@ -930,6 +942,7 @@ impl Core {
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
             snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
             snapshot.reply_voice = self.voice_snapshot(&snapshot.settings);
+            snapshot.ask = self.ask_snapshot(&snapshot.settings);
             snapshot.menu_bar = self.menu_bar_snapshot(&mut snapshot);
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
@@ -1650,6 +1663,9 @@ impl Core {
         }
         if let Some(v) = data["criticalRepeat"].as_bool() {
             s.critical_repeat = v;
+        }
+        if let Some(v) = data["askInMenu"].as_bool() {
+            s.ask_in_menu = v;
         }
         if let Some(days) = data["syncDays"].as_i64() {
             if ![1, 7, 30, 90].contains(&days) {

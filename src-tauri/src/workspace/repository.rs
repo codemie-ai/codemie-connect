@@ -458,6 +458,7 @@ impl Repository {
             task_provider: Value::Null,
             menu_bar: Value::Null,
             reply_voice: Value::Null,
+            ask: Value::Null,
         })
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is
@@ -614,6 +615,21 @@ impl Repository {
         bump(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+    /// Deletes the global bookkeeping records of `kind` whose id is in `ids`, in one transaction
+    /// with one revision bump when any went (Ask's threads, ask-capture design § 5). Answers how
+    /// many went.
+    pub fn delete_global_records(&mut self, kind: &str, ids: &[String]) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let gone = tx.execute(
+            "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' AND id IN (SELECT value FROM json_each(?2))",
+            params![kind, encode(&ids)?],
+        )?;
+        if gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
     }
     /// The plugin records of `kind`.
     pub fn plugin_records(&self, kind: &str) -> Result<Vec<Record>> {

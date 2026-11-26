@@ -265,6 +265,9 @@ pub struct Settings {
     /// Settings › Your voice: the active reply-context provider (reply-voice design §7). Old
     /// settings without `voice` read as Off (this struct's container-level `#[serde(default)]`).
     pub voice: super::voice::VoiceSettings,
+    /// Settings › Layout › "Ask in the menu" (ask-capture design § 6, ruling 26). Old settings
+    /// without `askInMenu` read as shown (`Settings`'s container-level `#[serde(default)]`).
+    pub ask_in_menu: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -293,6 +296,7 @@ impl Default for Settings {
             tasks: Default::default(),
             menu_bar: Default::default(),
             voice: Default::default(),
+            ask_in_menu: true,
         }
     }
 }
@@ -419,6 +423,10 @@ pub struct Snapshot {
     /// style, rules and people index — never a person's profile text. Filled by `Core` for the
     /// window's snapshot; `Value::Null` elsewhere.
     pub reply_voice: Value,
+    /// `ask` (ask-capture design § 6): thread titles, counts and states, what runs now and
+    /// `inMenu` — never answer text. Filled by `Core` for the window's snapshot; `Value::Null`
+    /// elsewhere.
+    pub ask: Value,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {
