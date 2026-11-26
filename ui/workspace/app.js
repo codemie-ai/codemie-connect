@@ -36,7 +36,7 @@ import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { activeProvider, newTasksView, tasksOf } from './tasks-model.js';
-import { shownView } from './tasks-dates-model.js';
+import { datesTasks, foldOf, shownView } from './tasks-dates-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
@@ -2005,7 +2005,7 @@ const askUi = store && createAskController({
   hash: () => location.hash,
   hiddenCalendars: () => [...hiddenCalendars()],
   openCapture: options => openCapture(options),
-  openRecord: target => openAskTarget(target),
+  openRecord: (target, options) => openAskTarget(target, options),
   draftOptions: channel => rememberedOptions(channel),
   // The composer's own ✦ draft path (the chooser on first use, a change's Restore ended).
   startDraft: async (m, request) => {
@@ -2031,30 +2031,45 @@ const askUi = store && createAskController({
 });
 
 /** Opens an Ask cite's record in the window (`citeTarget`, § 8): a message on its lane, selected
- *  (Default) or open (Compact); a task's drawer (By date: its row unfolded); a calendar day with
- *  its event open; a meeting by its hash. Sends nothing. */
-async function openAskTarget({ hash, select } = {}) {
+ *  (Default) or open (Compact); a task's drawer (By date: its row unfolded, in its fold opened); a
+ *  calendar day with its event open (`closed` runs when that card closes); a meeting by its hash.
+ *  Sends nothing. False, with nothing opened, when the record left Connect. */
+async function openAskTarget({ hash, select } = {}, { closed = () => {} } = {}) {
   if (select?.kind === 'message') {
     const m = getRecord('message', select.id);
-    if (!m) return undefined;
+    if (!m) return false;
     Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: m.id, selectedKey: messageKey(m) });
     if (compactView()) Object.assign(state, { openMessage: m.id, openKey: messageKey(m) });
-    return route('inbox');
+    await route('inbox');
+    return true;
   }
   if (select?.kind === 'task') {
+    const tasks = tasksOf(snap());
+    if (!tasks.some(r => r.id === select.id)) return false;
     await route('tasks');
-    if (!tasksOf(snap()).some(r => r.id === select.id)) return undefined;
-    if (shownView(state.tasks, snap()) !== 'dates') return tasksUi.openDrawer(select.id);
+    if (shownView(state.tasks, snap()) !== 'dates') {
+      await tasksUi.openDrawer(select.id);
+      return true;
+    }
+    // Every fold of Later starts closed and draws no rows: the task's own opens.
+    const fold = foldOf(datesTasks(tasks, state.tasks.filters), select.id, { now: Date.now(), zone: snap().settings.timeZone });
+    if (fold) state.tasks.folds = { ...state.tasks.folds, [fold]: true };
     state.tasks.rowOpen = select.id;
-    return render();
+    await render();
+    return true;
   }
   if (select?.kind === 'event') {
+    if (!getRecord('event', select.id)) return false;
     if (select.day) state.calendarDate = dateFromKey(select.day);
     await route('calendar');
     const ev = getRecord('event', select.id);
-    return ev ? eventDialog(ev) : undefined;
+    if (!ev) return false;
+    eventDialog(ev, { onClosed: closed });
+    return true;
   }
-  return hash ? goHash(hash) : undefined;
+  if (!hash) return false;
+  await goHash(hash);
+  return true;
 }
 
 // The field's and the page box's own keys, first (capture phase): Enter asks, Esc clears then
@@ -2382,7 +2397,7 @@ function commitmentDialog(source) {
   });
 }
 
-function eventDialog(ev) {
+function eventDialog(ev, { onClosed = () => {} } = {}) {
   if (!ev) return toast('This event is no longer available. Refresh the calendar.', 'error');
   const d = ev.data;
   const dialog = openModal({
@@ -2392,7 +2407,10 @@ function eventDialog(ev) {
     cancel: 'Close',
     size: 'md',
     footerExtra: eventActions(snap(), ev),
-    onClose: () => { if (state.openEvent === ev.id) state.openEvent = null; },
+    onClose: () => {
+      if (state.openEvent === ev.id) state.openEvent = null;
+      onClosed();
+    },
   });
   state.openEvent = ev.id;
   dialog.classList.add('ws-event-modal');

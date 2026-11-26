@@ -570,13 +570,16 @@ function withActions(h, { claude = run => run() } = {}) {
       state.route = m ? 'ask' : target.replace(/^#\/?/, '').split('/')[0];
       if (m) state.ask.threadId = m[1] ? decodeURIComponent(m[1]) : null;
     },
-    openRecord: async target => {
+    openRecord: async (target, options) => {
       calls.opened.push(target);
+      calls.closed = options?.closed;
+      if (h.refuseOpen) return false;
       hash = target.hash;
       state.route = target.hash.replace(/^#\/?/, '').split('/')[0];
     },
     hash: () => hash,
     toast: (message, tone, action, options) => calls.toasts.push({ message, tone, action, options }),
+    now: () => h.clock ?? 0,
     withClaudeChoice: claude,
     draftOptions: channel => ({ intent: 'reply', tone: 'neutral', length: 'short', includeFreeTimes: false, channel }),
     openCapture: o => h.capture.open(o),
@@ -667,20 +670,56 @@ test('"✦ Draft a reply to Priya N." opens the message, then sends one ai_draft
   assert.ok(instructions.startsWith('Line one line two'));
 });
 
-test('an action whose ref is gone is not drawn, and a stale click does nothing', async () => {
-  const h = actionHarness({ drop: ['ev-9', 'msg-21'] });
+test('a record gone by the click says "No longer in Connect." and offers no way back; a stale click does nothing', async () => {
+  const h = actionHarness({ drop: ['ev-9', 'msg-21', 'task-3'] });
   const ctl = withActions(h);
   await ctl.openThread();
   await ctl.handle('ask-go', el({ askTurn: 'turn-1', askIndex: '1' }));
   await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '2' }));
   await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'e3' }));
-  // A wrong index or kind does nothing either.
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 't2' }));
+  assert.deepEqual(h.calls.opened, [], 'nothing routed (a gone task does not open Tasks)');
+  assert.deepEqual(h.calls.toasts.map(t => [t.message, t.tone, t.action]), Array(4).fill(['No longer in Connect.', 'error', null]));
+  // A wrong index, kind or turn, a person or a fact does nothing at all.
+  h.calls.toasts.length = 0;
   await ctl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '0' }));
   await ctl.handle('ask-task', el({ askTurn: 'turn-9', askIndex: '0' }));
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'p6' }));
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'zz' }));
   assert.deepEqual(h.calls.opened, []);
   assert.deepEqual(h.calls.mutate, []);
   assert.equal(h.calls.toasts.length, 0);
   assert.notEqual(h.state.capture.open, true);
+  // The record leaves between the check and the opening: app.js says so, no way back, no draft.
+  const late = actionHarness();
+  late.refuseOpen = true;
+  const lateCtl = withActions(late);
+  await lateCtl.openThread();
+  await lateCtl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'a1' }));
+  await lateCtl.handle('ask-reply', el({ askTurn: 'turn-1', askIndex: '2' }));
+  assert.deepEqual(late.calls.toasts.map(t => t.message), ['No longer in Connect.', 'No longer in Connect.']);
+  assert.deepEqual(late.calls.mutate, []);
+});
+
+test('M2: the event card closing after the toast timed out offers "← Back to Ask" again', async () => {
+  const h = actionHarness();
+  h.clock = 1000;
+  const ctl = withActions(h);
+  await ctl.openThread();
+  await ctl.handle('ask-cite', el({ askTurn: 'turn-1', askCite: 'e3' }));
+  assert.equal(h.calls.toasts.length, 1);
+  // Closed within 6 s: the first toast is still there.
+  h.clock = 6999;
+  h.calls.closed();
+  assert.equal(h.calls.toasts.length, 1);
+  // Closed later: once more, for another 6 s.
+  h.clock = 7000;
+  h.calls.closed();
+  assert.equal(h.calls.toasts.length, 2);
+  assert.equal(h.calls.toasts[1].action.label, '← Back to Ask');
+  assert.equal(h.calls.toasts[1].options.life, 6000);
+  await h.calls.toasts[1].action.run();
+  assert.deepEqual(h.calls.go.at(-1), '#/ask/ask-7f2c');
 });
 
 test('rendering a thread sends nothing', async () => {

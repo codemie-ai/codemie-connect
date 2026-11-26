@@ -44,6 +44,13 @@ export function dateGroups(records, { now = Date.now(), zone } = {}) {
   return g;
 }
 
+/** The Later fold (`next7`, `noDate`, `later`) task `id` sits in, which must be open for its row
+ *  to be drawn; null when it is in another group (review, late, today) or not there. */
+export function foldOf(records, id, options) {
+  const g = dateGroups(records, options);
+  return ['next7', 'noDate', 'later'].find(k => g[k].some(r => r.id === id)) || null;
+}
+
 /** A row's due as By date shows it: "2d late", "Today", a weekday within six days, else the day. */
 function dueTone(due, now, zone) {
   if (!due) return null;

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chipsFor, dateGroups, defaultView, rowOf, statusLine, viewsFor, shownView } from '../workspace/tasks-dates-model.js';
+import { chipsFor, dateGroups, defaultView, foldOf, rowOf, statusLine, viewsFor, shownView } from '../workspace/tasks-dates-model.js';
 import { formatTime } from '../workspace/format.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { newTasksView } from '../workspace/tasks-model.js';
@@ -198,4 +198,13 @@ test('one primary per page: "Accept all" with two or more to review, every row A
   const one = tasksPage(snapshot(review(1)), { state: { tasks: newTasksView() }, now: NOW });
   assert.ok(!one.includes('Accept all'));
   assert.deepEqual(primaries(one), ['New task'], 'the header keeps the page primary');
+});
+
+test('foldOf: the Later fold a task sits in (Next 7 days, No date, Later than that); none for review, late and today', () => {
+  const records = [task('soon', { due: '2026-11-21' }), task('nodate'), task('far', { due: '2026-12-20' }), task('late', { due: '2026-11-16' }), task('today', { due: '2026-11-18' }), task('review', { status: 'review' })];
+  const at = id => foldOf(records, id, { now: NOW, zone: ZONE });
+  assert.equal(at('soon'), 'next7');
+  assert.equal(at('nodate'), 'noDate');
+  assert.equal(at('far'), 'later');
+  for (const id of ['late', 'today', 'review', 'gone']) assert.equal(at(id), null);
 });

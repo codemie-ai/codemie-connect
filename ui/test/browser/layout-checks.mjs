@@ -970,17 +970,24 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
   // whose instructions are the hint. Both themes and views at 1000 px.
   const actionThread = () => {
     const t = structuredClone(askThread());
-    const at = { a1: 'm-reply-1', t2: 'commit-1', e3: 'ev-standup', m4: 'c-reply-1', n5: 'ev-standup' };
+    const at = { a1: 'm-reply-1', t2: 'task-soon', e3: 'ev-standup', m4: 'c-reply-1', n5: 'ev-standup' };
     for (const c of t.turns[0].cites) if (at[c.id]) c.recordId = at[c.id];
     t.turns[0].about.recordId = 'm-reply-1';
     t.turns[0].actions[1].recordId = 'ev-standup';
     t.turns[0].actions[2].recordId = 'c-reply-1';
     return t;
   };
+  // I1: a task due in 3 days sits in By date's closed "Next 7 days" fold; its cite opens it.
+  const withSoonTask = (s, now) => {
+    withRecent(s);
+    const base = s.records.find(r => r.id === 'commit-1');
+    const due = new Date(now + 3 * 86_400_000).toISOString().slice(0, 10);
+    s.records.push({ ...structuredClone(base), id: 'task-soon', revision: 'r-task-soon', data: { ...structuredClone(base.data), text: 'Send the Atlas budget', due, status: 'todo', done: false } });
+  };
   for (const theme of ['dark', 'light']) {
     for (const view of ['default', 'compact']) {
       const name = `layout-e12-${theme}-${view}`;
-      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask/ask-7f2c', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask/ask-7f2c', patch: withSoonTask, localPrefs: { 'codemie.tasks.view': 'dates' }, settings: view === 'compact' ? { view: 'compact' } : null });
       await check(`layout E12 (${theme} ${view}): cite chips open their record with "← Back to Ask"; Add as task, Open and Draft a reply run only on a click`, async () => {
         // The thread's records are seeded ones: `ask_read` answers this copy once the page loads again.
         await page.addInitScript(t => { window.__askThreads = { 'ask-7f2c': t }; }, actionThread());
@@ -1008,6 +1015,15 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
         await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
         await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
         assert(new URL(page.url()).hash === '#/ask/ask-7f2c', new URL(page.url()).hash);
+        // I1: the task cite on By date opens the task's fold and unfolds its row, on screen.
+        await page.click('[data-action="ask-cite"][data-ask-cite="t2"]');
+        await page.waitForSelector('.ws-tdate-row.ws-tdate-open[data-task="task-soon"]', { state: 'visible' });
+        assert(new URL(page.url()).hash.startsWith('#/tasks'), new URL(page.url()).hash);
+        assert(await page.locator('[data-fold="next7"][aria-expanded="true"]').count() === 1, 'Next 7 days stayed closed');
+        // Taken as it is: `shot` would drop the toast used next.
+        await page.screenshot({ path: `${OUT.replace(/\/$/, '')}/${name}-task-1000.png` });
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
         // + Add as task: the bar filled in; nothing saved until Add.
         await page.click('[data-action="ask-task"]');
         await page.waitForSelector('.ws-capture');

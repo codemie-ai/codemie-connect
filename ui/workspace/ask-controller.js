@@ -19,6 +19,8 @@ import { draftRequest } from './draft-state.js';
 const BACK_MS = 6000;
 /** A draft hint is one line of at most this many characters (native checks it too). */
 const HINT_MAX = 200;
+/** A cite's or an action's record left Connect before the click (Copy "Turn": gone cite). */
+const GONE = 'No longer in Connect.';
 
 /**
  * `state.ask` is the field's view state (made here when missing); `snap()` the snapshot;
@@ -30,13 +32,15 @@ const HINT_MAX = 200;
  * screen (not hidden by the setting or the rail); `hash()` the hash open now;
  * `hiddenCalendars()` the calendar ids the window hides (kept out of Ask's context);
  * `openCapture({mode, text, due, source})` app.js's quick capture, for the page's Add as task;
- * `openRecord({hash, select})` app.js opens a cite's record in the window (`citeTarget`);
+ * `openRecord({hash, select}, {closed})` app.js opens a cite's record in the window (`citeTarget`),
+ * false when it is gone by then; `closed()` is called when an event card it opened closes;
+ * `now()` the time in ms;
  * `draftOptions(channel)` the draft options last used for a channel; `startDraft(message, request)`
  * queues that `ai_draft` the composer's way (by default through `withClaudeChoice` and `mutate`);
  * `announce(text)` says a short line in the window's polite live region; `confirm(options)` the
  * window's `confirmModal`; `fail(err)` the window's error path.
  */
-export function createAskController({ state, snap, mutate, query = async () => null, render = () => {}, go = async () => {}, toast = () => {}, withClaudeChoice = run => run(), focusBack = () => {}, focus = () => {}, fieldShown = () => true, hash = () => '', hiddenCalendars = () => [], openCapture = () => {}, openRecord = async () => {}, draftOptions = () => ({}), startDraft = null, announce = () => {}, confirm = () => {}, fail = () => {} }) {
+export function createAskController({ state, snap, mutate, query = async () => null, render = () => {}, go = async () => {}, toast = () => {}, withClaudeChoice = run => run(), focusBack = () => {}, focus = () => {}, fieldShown = () => true, hash = () => '', hiddenCalendars = () => [], openCapture = () => {}, openRecord = async () => {}, now = () => Date.now(), draftOptions = () => ({}), startDraft = null, announce = () => {}, confirm = () => {}, fail = () => {} }) {
   state.ask ||= newAskView();
   const ask = () => state.ask;
   // The thread the page shows: `{id, key, thread, missing}`, `key` the snapshot's summary of it
@@ -399,31 +403,56 @@ export function createAskController({ state, snap, mutate, query = async () => n
   /** The turn of the open thread a cite or an action button belongs to. */
   const turnOf = id => thread()?.turns?.find(t => t.id === id) || null;
 
-  /** Goes to a record, then offers the way back to this thread for 6 s. */
+  /** The way back to this thread, for 6 s. */
+  function offerBack(threadId) {
+    toast('', 'info', { label: '← Back to Ask', run: () => go(`#/ask/${encodeURIComponent(threadId)}`) }, { life: BACK_MS });
+    return now();
+  }
+
+  /** Goes to a record, then offers the way back to this thread; again when an event card it
+   *  opened closes after that toast has gone. A record gone by then is said, with no way back.
+   *  Answers whether it opened. */
   async function goRecord(target) {
+    if (!target) {
+      toast(GONE, 'error', null);
+      return false;
+    }
     const threadId = ask().threadId;
-    await openRecord(target);
-    if (threadId) toast('', 'info', { label: '← Back to Ask', run: () => go(`#/ask/${encodeURIComponent(threadId)}`) }, { life: BACK_MS });
+    let shown = null;
+    const opened = await openRecord(target, { closed: () => { if (threadId && shown != null && now() - shown >= BACK_MS) shown = offerBack(threadId); } });
+    if (opened === false) {
+      toast(GONE, 'error', null);
+      return false;
+    }
+    if (threadId) shown = offerBack(threadId);
+    return true;
   }
 
   async function openCite(el) {
     const turn = turnOf(el?.dataset?.askTurn);
-    const target = citeTarget(turn?.cites?.find(c => c.id === el?.dataset?.askCite), snap());
-    if (target) await goRecord(target);
+    const cite = turn?.cites?.find(c => c.id === el?.dataset?.askCite);
+    // A person or a fact is not a link; a record kind that left Connect is said.
+    if (!cite || !['message', 'meeting', 'task', 'event'].includes(cite.kind)) return;
+    await goRecord(citeTarget(cite, snap()));
   }
 
-  /** The action a button stands for, when it can still run as `kind` (null otherwise). */
+  /** The action a button stands for: `{turn, action, live}`, `live` false when its record has
+   *  left Connect; null for a stale button (no such turn or action, another kind). */
   function actionOf(el, kind) {
     const turn = turnOf(el?.dataset?.askTurn);
     const action = turn?.actions?.[Number(el?.dataset?.askIndex)];
-    return action && actionControl(action, turn, snap())?.kind === kind ? { turn, action } : null;
+    if (!action) return null;
+    const control = actionControl(action, turn, snap());
+    if (control) return control.kind === kind ? { turn, action, live: true } : null;
+    const wants = { go: 'open', reply: 'draft' }[kind];
+    return wants && action.kind === wants ? { turn, action, live: false } : null;
   }
 
   /** + Add as task: quick capture with the action's words, its due and the turn's About (a
    *  message or a meeting) as the source; `task_save` only on the bar's Add. */
   function addAsTask(el) {
     const found = actionOf(el, 'task');
-    if (!found) return;
+    if (!found?.live) return;
     const about = found.turn.about;
     const source = about && !about.gone && (about.kind === 'message' || about.kind === 'meeting') ? { kind: about.kind, id: about.recordId } : null;
     openCapture({ mode: 'task', text: found.action.text, due: found.action.due || null, source });
@@ -431,7 +460,7 @@ export function createAskController({ state, snap, mutate, query = async () => n
 
   async function openAction(el) {
     const found = actionOf(el, 'go');
-    if (found) await goRecord(actionTarget(found.action, found.turn, snap()));
+    if (found) await goRecord(found.live ? actionTarget(found.action, found.turn, snap()) : null);
   }
 
   /** ✦ Draft a reply: the message opened as its chip opens it, then one `ai_draft` whose
@@ -439,9 +468,9 @@ export function createAskController({ state, snap, mutate, query = async () => n
   async function draftReply(el) {
     const found = actionOf(el, 'reply');
     if (!found) return;
-    const target = actionTarget(found.action, found.turn, snap());
-    const message = (snap()?.records || []).find(r => r.kind === 'message' && r.id === target.select.id);
-    await goRecord(target);
+    const target = found.live ? actionTarget(found.action, found.turn, snap()) : null;
+    const message = target && (snap()?.records || []).find(r => r.kind === 'message' && r.id === target.select.id);
+    if (!(await goRecord(target))) return;
     const hint = [...String(found.action.hint ?? '').replace(/\s+/g, ' ').trim()].slice(0, HINT_MAX).join('');
     const request = draftRequest(message, draftOptions(message.data.channel), hint);
     try {
