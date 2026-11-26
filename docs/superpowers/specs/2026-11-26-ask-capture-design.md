@@ -108,7 +108,7 @@ It also adds **quick capture**: ⌘N opens a small bar under the top bar that ma
 ```
 
 - **Focus** (click or ⌘K): the field is focused with its text selected. When it is empty, a list under it shows up to 5 recent questions (first questions of the newest threads, newest first); ↑ ↓ move through them, Enter on one opens its thread, ⌘⌫ removes nothing (history is removed on the page, ruling 18).
-- **About this.** When the user came from an Inbox message (the selected or open row), a meeting (`#/meetings/<id>/…`), a task (an open drawer or unfolded row) or a calendar event (the open event), the field shows a removable chip "About: <label>". Asking with the chip pins that record into the context first (§ 3). × drops it for this question.
+- **About this.** When the user came from an Inbox message (the selected or open row), a meeting (`#/meetings/<id>/…`), a task (an open drawer or unfolded row) or a calendar event (the open event), the field shows a removable chip "About: <label>". Asking with the chip pins that record into the context first (§ 3). × drops it for this question. Anywhere else (Today, Calendar with no event open, Tasks with nothing open, Settings, the Ask page itself, a plugin page) there is no chip (ruling 32). The chip follows the live selection while the user types: selecting another row changes it, and closing the record removes it. It is read once, at submit (Enter), and `ask_start` gets that record; a record that is gone by then takes the "About gone" path: the turn is asked without it and says "The item you asked about is no longer in Connect." (ruling 34).
 - **Enter** asks: `ask_start {question, about}` (§ 6), then `#/ask/<new thread>`. ⇧Enter does nothing (one line). An empty field does nothing.
 - **Esc** clears typed text first; on an empty field it puts focus back where it was before ⌘K (or on the page's main region).
 - **While an answer is running** (one at a time, ruling 16) the field reads "Answering… ⌘. to stop" and Enter is refused inline: "Connect is still answering. Stop it or wait."
@@ -119,6 +119,7 @@ Native and pure: `workspace/ask/context.rs::gather(question, thread, about, reco
 
 **Terms and a date window** from the question (and, for a follow-up, the thread's first question):
 - terms: step 8's extractor (`voice/terms.rs`: ticket ids, codes, acronyms, names, amounts; never addresses, phones or URLs), plus up to 6 keywords: lower-case words of at least 4 letters not on the extractor's common-word lists ("budget", "rollout", "invoice");
+- matching: a term matches case-folded, Unicode-aware (`Марек` and `МАРЕК` fold alike, as `str::to_lowercase` does), on whole tokens cut by `voice/terms.rs`'s own tokenizer, so a code like `EPM-1234` is one token and matches only the token `EPM-1234`; never a substring (`plan` doesn't match `planning`, `EPM-12` doesn't match `EPM-1234`) (ruling 31);
 - the window: `when::window(question, now, zone)` from the capture parser (§ 9): "today", "tomorrow", "yesterday", a weekday, "this/next/last week", "this/next month", a date → that span; none → from 7 days back to 7 days ahead. `zone` is the workspace time zone (`settings.timeZone`).
 
 **Sources, in this order, each with its cap** (characters of rendered context):
@@ -132,11 +133,11 @@ Native and pure: `workspace/ask/context.rs::gather(question, thread, about, reco
 | Meetings | the last 90 days: matching a term (title, attendees, summary) or in the window | title, date, attendees, one summary ≤ 1,000 (the first pinned summary template's document that is ready, else Meeting notes), up to 10 action items | ≤ 5 items, ≤ 5,000 |
 | People | with the voice on: people in the copy whose name matches a term (folded as step 8 § 4 folds names) | name and `about` ≤ 400; never the writing profile, the style card or instructions | ≤ 3 items, ≤ 1,200 |
 | Facts | with the voice on, facts on and the provider offering `facts`: the `facts` ask with the terms (3 s, step 8 § 10) | step 8's limits: ≤ 5, ≤ 500 each | ≤ 2,500 |
-| Conversation | a follow-up: the thread's earlier turns, newest kept first | question ≤ 2,000, answer ≤ 1,500 | ≤ 6,000 |
+| Conversation | a follow-up: the thread's earlier turns, newest kept first | question ≤ 2,000, answer ≤ 1,500 with cite marks rendered as labels (ruling 33) | ≤ 6,000 |
 
 The whole context stays under **32,000 characters**: a source over its cap drops its lowest-ranked items; an item over its size is cut at a line end with "…". Anything cut or dropped sets `cut`. A source with nothing to give is left out.
 
-**Ids.** Each item gets a short id by source: `a1`, `t1…`, `e1…`, `m1…`, `n1…`, `p1…`, `f1…`. `Context` keeps `refs: {id → {kind, recordId, label}}`; `label` is built here ("Priya N. · mail · Tue 25 Nov", "Task · Send the Atlas budget", "Meeting · Atlas QBR · Thu 20 Nov", "Event · Fri 27 Nov 10:00 · QBR", "Knowledge · Atlas rollout"). Fact ids keep only `{id, title}`.
+**Ids.** Each item gets a short id by source: `a1`, `t1…`, `e1…`, `m1…`, `n1…`, `p1…`, `f1…`. The numbers come from one counter per conversation (kept on the thread, `nextRef`), so a follow-up's items continue from the last turn's numbers and an id is never reused within a thread (ruling 33). Replayed turns in `"conversation"` carry the answer text with every `[id]` mark rendered as its label in brackets (`[Priya N. · mail · Tue 25 Nov]`), never as an id, so only the current turn's ids can be cited. `Context` keeps `refs: {id → {kind, recordId, label}}`; `label` is built here ("Priya N. · mail · Tue 25 Nov", "Task · Send the Atlas budget", "Meeting · Atlas QBR · Thu 20 Nov", "Event · Fri 27 Nov 10:00 · QBR", "Knowledge · Atlas rollout"). Fact ids keep only `{id, title}`.
 
 **What was searched.** `Context.searched`: per source, how many items were given of how many matched, and the window ("tasks 12 (Todoist) · events 7, Thu 19 Nov – Thu 3 Dec · messages 9 · meetings 2 · facts 3 (Knowledge)"), plus the sources that couldn't be read: "Microsoft 365 isn't connected" (no messages, no events), "<name> found no facts in time".
 
@@ -166,7 +167,7 @@ The whole context stays under **32,000 characters**: a source over its cap drops
 
 ### 5. Threads and history
 
-- **A thread** is one bookkeeping record of kind `ask_thread` in `workspace.sqlite` (the data root), not in the snapshot's `records`: `{id, createdAt, updatedAt, turns: [Turn]}`.
+- **A thread** is one bookkeeping record of kind `ask_thread` in `workspace.sqlite` (the data root), not in the snapshot's `records`: `{id, createdAt, updatedAt, nextRef, turns: [Turn]}`; `nextRef` is the per-conversation id counter (§ 3, ruling 33), starting at 1.
 - **A turn:** `{id, at, question, about: {kind, recordId, label} | null, state, answer, cites, actions, searched, cut, profile, model, fellBackFrom, error: {code, message} | null, jobId}`; `state` is `queued`, `running`, `done`, `failed` or `stopped`.
 - **Kept** 30 days after a thread's last turn; at most 50 threads (the least recently updated go first); at most 20 turns per thread (the 21st is refused, § 6). Pruned on every `ask_start` and once at start-up. A moved data folder carries them; they hold no secret.
 - **Deleted** one at a time (the page's ⋯ › Delete, at once, no Undo) or all (Clear history, after a dialog). A delete while a turn of that thread runs cancels its job first.
@@ -446,6 +447,10 @@ Each ruling says what it costs if it is wrong.
 28. **No Ask or capture rows in the tray menu in this step.** *If wrong:* the user opens the window first; a tray "New task…" row is a small follow-up.
 29. **The tour seeds three threads (done, failed and stopped, queued) and covers the field, the page, both views, the states it can show, the actions that don't run AI, capture of a task and a note, Settings and the rail (T71–T83); a real answer, Stop on a running run, the draft action, the chooser from Ask and deletes stay the browser run's (amber).** *If wrong:* five amber rows; each names `ask-checks.mjs`.
 30. **Question, answer, context, term and fact text never appears in the ledger, a log, a smoke report or a real-data fixture; fixtures use invented people at `@example.test`.** *If wrong:* debugging a bad answer needs the thread itself, which the user can open.
+31. **(builder check) A term matches case-folded and Unicode-aware, on whole tokens from `voice/terms.rs`'s tokenizer, so codes like `EPM-1234` are one token; no substring matches.** *If wrong:* "plan" doesn't find "planning"; the user types the word as it is written, and the keywords and the date window still pick the week's records.
+32. **(builder check) There is no About chip outside an Inbox message, a meeting, a task or a calendar event.** *If wrong:* a question asked from Today or Settings carries no record; the user opens the record first.
+33. **(builder check) Context item ids come from a per-conversation counter and are never reused; replayed turns carry the answer text with citations rendered as labels, so only the current turn's ids can be cited.** *If wrong:* a follow-up can't cite an earlier turn's record unless this turn's context finds it again, which the first question's terms make likely.
+34. **(builder check) The About chip follows the live selection while the user types and is read at submit (Enter); a record that is gone by then takes the "About gone" path.** *If wrong:* the user who changed the selection mid-question asks about the new record; the chip showed it before Enter.
 
 ## Definition of done
 
