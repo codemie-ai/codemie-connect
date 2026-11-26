@@ -1764,6 +1764,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_damaged_thread_never_breaks_history_reads_asks_or_clear_history() {
+        let e = env(vec![]);
+        {
+            let mut r = e.core.repo().unwrap();
+            store::write(
+                &mut r,
+                &store::tests::thread(
+                    "ask-good",
+                    now() - DAY,
+                    vec![store::tests::turn(
+                        1,
+                        now() - DAY,
+                        "When is the QBR?",
+                        TurnState::Done,
+                    )],
+                ),
+            )
+            .unwrap();
+            store::tests::damage(e._dir.path(), &mut r);
+        }
+        let settings = e.core.repo().unwrap().settings().unwrap();
+        let snap = e.core.ask_snapshot(&settings);
+        assert_eq!(snap["threads"].as_array().unwrap().len(), 1, "{snap}");
+        assert_eq!(snap["threads"][0]["id"], "ask-good");
+        assert!(!snap.to_string().contains(SENTINEL));
+
+        assert_eq!(read(&e.core, "ask-good").await.unwrap()["id"], "ask-good");
+        for bad in ["ask-shape", "ask-json"] {
+            let gone = read(&e.core, bad).await.unwrap_err();
+            assert_eq!(
+                (gone.code.as_str(), gone.message.as_str()),
+                ("not_found", GONE)
+            );
+            assert!(!gone.message.contains(SENTINEL));
+        }
+
+        // A new question still starts (its prune reads the history).
+        ask(&e.core, json!({"question": "And the agenda?"}))
+            .await
+            .unwrap();
+
+        let all = op(&e.core, Operation::AskDelete, json!({"all": true}))
+            .await
+            .unwrap();
+        assert_eq!(all, json!({"deleted": 4}));
+        let r = e.core.repo().unwrap();
+        assert_eq!(r.plugin_records(store::KIND).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn ask_start_prunes() {
         let e = env(vec![]);
         let old = now() - 31 * DAY;

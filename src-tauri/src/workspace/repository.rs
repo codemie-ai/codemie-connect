@@ -639,6 +639,20 @@ impl Repository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+    /// `plugin_records`, except that a row whose body isn't JSON is answered by id in the second
+    /// list instead of failing the whole read.
+    pub fn global_records_readable(&self, kind: &str) -> Result<(Vec<Record>, Vec<String>)> {
+        let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' ORDER BY updated_at DESC")?;
+        let mut rows = stmt.query([kind])?;
+        let (mut records, mut damaged) = (Vec::new(), Vec::new());
+        while let Some(row) = rows.next()? {
+            match record_row(row) {
+                Ok(rec) => records.push(rec),
+                Err(_) => damaged.push(row.get(0)?),
+            }
+        }
+        Ok((records, damaged))
+    }
     /// Appends one `ai_run` usage record. It does not bump the revision: a run finishing is
     /// not a change the open views must reconcile with.
     pub fn put_ai_run(&mut self, record: &Record) -> Result<()> {

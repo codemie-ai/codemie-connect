@@ -155,11 +155,14 @@ fn decode(r: Record) -> Result<Thread> {
     serde_json::from_value(r.data).map_err(|_| unreadable())
 }
 
-/// The thread `id`, or `None` when there is none.
+/// The thread `id`, or `None` when there is none or its record is damaged (it reads as gone,
+/// like a deleted one; Clear history removes it).
 pub fn read(r: &Repository, id: &str) -> Result<Option<Thread>> {
     match r.record(KIND, id, None, None) {
-        Ok(rec) => decode(rec).map(Some),
+        Ok(rec) => Ok(decode(rec).ok()),
         Err(e) if e.code == "not_found" => Ok(None),
+        // A body that isn't JSON fails the row read itself; it reads as gone too.
+        Err(_) if r.global_records_readable(KIND)?.1.iter().any(|d| d == id) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -169,18 +172,40 @@ pub fn write(r: &mut Repository, t: &Thread) -> Result<()> {
     r.put_global_records(&[record(t)?])
 }
 
-/// Every thread, the most recently updated first (ties by id, newest first).
-pub fn list(r: &Repository) -> Result<Vec<Thread>> {
-    let mut threads = r
-        .plugin_records(KIND)?
-        .into_iter()
-        .map(decode)
-        .collect::<Result<Vec<_>>>()?;
+/// Every thread that reads back, the most recently updated first (ties by id, newest first),
+/// and how many records were damaged (skipped, so one never breaks the history).
+fn scan(r: &Repository) -> Result<(Vec<Thread>, usize)> {
+    let (records, unparsed) = r.global_records_readable(KIND)?;
+    let mut damaged = unparsed.len();
+    let mut threads = Vec::with_capacity(records.len());
+    for rec in records {
+        match decode(rec) {
+            Ok(t) => threads.push(t),
+            Err(_) => damaged += 1,
+        }
+    }
     threads.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
             .then_with(|| b.id.cmp(&a.id))
     });
+    Ok((threads, damaged))
+}
+
+/// The session-log line for `n` damaged thread records: a count, never their text or ids.
+fn damaged_line(n: usize) -> String {
+    format!("ask: skipped {n} damaged thread record(s)")
+}
+
+/// Every thread, as [`scan`] reads them; damaged records are skipped and counted in the session
+/// log.
+pub fn list(r: &Repository) -> Result<Vec<Thread>> {
+    let (threads, damaged) = scan(r)?;
+    if damaged > 0 {
+        // Tests don't write to the person's session log.
+        #[cfg(not(test))]
+        crate::commands::logger::write_line(&damaged_line(damaged), "stderr");
+    }
     Ok(threads)
 }
 
@@ -189,9 +214,14 @@ pub fn delete(r: &mut Repository, id: &str) -> Result<usize> {
     r.delete_global_records(KIND, &[id.to_string()])
 }
 
-/// Deletes every thread; answers how many went.
+/// Deletes every thread, damaged records included; answers how many went.
 pub fn delete_all(r: &mut Repository) -> Result<usize> {
-    let ids: Vec<String> = list(r)?.into_iter().map(|t| t.id).collect();
+    let (records, damaged) = r.global_records_readable(KIND)?;
+    let ids: Vec<String> = records
+        .into_iter()
+        .map(|rec| rec.id)
+        .chain(damaged)
+        .collect();
     r.delete_global_records(KIND, &ids)
 }
 
@@ -339,5 +369,64 @@ pub(crate) mod tests {
         assert_eq!(left.first().unwrap().id, "ask-00");
         assert_eq!(left.last().unwrap().id, "ask-49");
         assert_eq!(prune(&mut r, now).unwrap(), 0);
+    }
+
+    /// Two damaged `ask_thread` rows beside a good one: `ask-shape` whose JSON isn't a thread and
+    /// `ask-json` whose body isn't JSON at all.
+    pub(crate) fn damage(dir: &std::path::Path, r: &mut Repository) {
+        r.put_global_records(&[Record {
+            id: "ask-shape".into(),
+            kind: KIND.into(),
+            connection_id: None,
+            workspace_id: None,
+            source: "local".into(),
+            revision: id(),
+            updated_at: 50,
+            data: serde_json::json!({"id": "ask-shape", "turns": "ASK_SENTINEL_5c1e"}),
+        }])
+        .unwrap();
+        write(r, &thread("ask-json", 40, Vec::new())).unwrap();
+        rusqlite::Connection::open(dir.join("workspace.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE records SET body='{ASK_SENTINEL_5c1e' WHERE kind=?1 AND id='ask-json'",
+                [KIND],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_damaged_thread_is_skipped_and_counted_and_clear_history_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = repo(dir.path());
+        write(
+            &mut r,
+            &thread(
+                "ask-good",
+                30,
+                vec![turn(1, 30, "When is the QBR?", TurnState::Done)],
+            ),
+        )
+        .unwrap();
+        damage(dir.path(), &mut r);
+
+        let (threads, damaged) = scan(&r).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(damaged, 2);
+        let ids: Vec<String> = list(&r).unwrap().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, ["ask-good"]);
+        assert!(read(&r, "ask-good").unwrap().is_some());
+        // A damaged thread reads as gone, never as a storage error.
+        assert_eq!(read(&r, "ask-shape").unwrap(), None);
+        assert_eq!(read(&r, "ask-json").unwrap(), None);
+        // The prune still runs, and the log line holds the count only.
+        assert_eq!(prune(&mut r, 100).unwrap(), 0);
+        let line = damaged_line(2);
+        assert_eq!(line, "ask: skipped 2 damaged thread record(s)");
+
+        // Clear history removes the damaged rows with the good one.
+        assert_eq!(delete_all(&mut r).unwrap(), 3);
+        assert_eq!(scan(&r).unwrap().1, 0);
+        assert!(list(&r).unwrap().is_empty());
     }
 }
