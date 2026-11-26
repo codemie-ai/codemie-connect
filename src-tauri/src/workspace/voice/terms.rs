@@ -256,6 +256,18 @@ fn tokenize_section(s: &str) -> Vec<Token> {
     tokens
 }
 
+/// `text`'s tokens as [`terms_of`] cuts them (addresses, URLs and phone numbers masked,
+/// punctuation trimmed off both ends), for Ask's whole-token matching (ask-capture ruling 31).
+pub(crate) fn tokens(text: &str) -> Vec<String> {
+    tokenize_section(text).into_iter().map(|t| t.text).collect()
+}
+
+/// Whether `word` is on the extractor's common-word lists (greetings, weekdays, months,
+/// sign-offs and sentence starters in English, Russian and Ukrainian), case-folded.
+pub(crate) fn is_common(word: &str) -> bool {
+    is_common_word(word)
+}
+
 /// A number with a currency sign attached (`$12,000`), or with a `k`/`m` suffix (`15k`, `2.5m`,
 /// with or without a sign) — spec §10's amounts, the half that fits in one chunk. A number with
 /// a separate currency *code* (`15k EUR`) is completed by the caller from the next token.

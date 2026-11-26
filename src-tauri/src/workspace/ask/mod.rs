@@ -7,6 +7,7 @@ use super::models::Settings;
 use super::Core;
 use serde_json::{json, Value};
 
+pub mod context;
 pub mod store;
 
 use store::{Thread, TurnState};
