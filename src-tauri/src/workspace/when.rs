@@ -106,10 +106,13 @@ const WEEKDAYS: &[(&str, u32)] = &[
     ("sunday", 6),
     ("sun", 6),
     ("понедельник", 0),
+    ("понеділок", 0),
     ("пн", 0),
     ("вторник", 1),
+    ("вівторок", 1),
     ("вт", 1),
     ("среда", 2),
+    ("середа", 2),
     ("ср", 2),
     ("четверг", 3),
     ("четвер", 3),
@@ -532,15 +535,18 @@ fn try_month_name_then_day(
     Some((last, Token::Date(date)))
 }
 
-/// "next week", "next month", "next <weekday>" (the one in next week, Monday-based).
+/// "next week", "next month", "next <weekday>" (that weekday in the Monday-based week after
+/// the current one); Russian "следующий", Ukrainian "наступний" lead the same way for a
+/// weekday ("следующий понедельник", "наступний понеділок").
 fn try_next_prefixed(lexemes: &[Lex], idx: usize) -> Option<(usize, Token)> {
-    if lexemes.get(idx)?.as_word()? != "next" {
+    let lead = lexemes.get(idx)?.as_word()?;
+    if !matches!(lead, "next" | "следующий" | "наступний") {
         return None;
     }
     let next = lexemes.get(idx + 1)?.as_word()?;
     match next {
-        "week" => Some((idx + 1, Token::NextWeek)),
-        "month" => Some((idx + 1, Token::NextMonth)),
+        "week" if lead == "next" => Some((idx + 1, Token::NextWeek)),
+        "month" if lead == "next" => Some((idx + 1, Token::NextMonth)),
         _ => weekday_of(next).map(|w| (idx + 1, Token::NextWeekday(w))),
     }
 }
@@ -667,10 +673,13 @@ fn bare_weekday(today: NaiveDate, target: u32) -> NaiveDate {
     today + Duration::days(offset as i64)
 }
 
-/// "next <weekday>": one week beyond the bare next occurrence (not simply "next week's day" —
-/// from a Thursday, "next Monday" is the Monday *after* the upcoming one).
+/// "next <weekday>" (spec § 9: "the one in next week, Monday-based"): `target` in the
+/// Monday-based week *after* the one containing `today` — not the bare next occurrence of
+/// `target` (that's [`bare_weekday`]). From a Thursday, "next Monday" is next week's Monday
+/// (4 days away, the same day `next_week` gives); from a Monday, "next Monday" is 7 days away;
+/// from a Sunday, "next Monday" is the next day, since the next Monday-based week starts then.
 fn next_weekday(today: NaiveDate, target: u32) -> NaiveDate {
-    bare_weekday(today, target) + Duration::days(7)
+    monday_of(today) + Duration::days(7 + target as i64)
 }
 
 /// This week's Friday, or next week's when today is already past it (Saturday or Sunday).
@@ -884,6 +893,14 @@ mod tests {
             .with_ymd_and_hms(2026, 11, 28, 10, 0, 0)
             .unwrap()
             .timestamp();
+        let monday_now = Vilnius
+            .with_ymd_and_hms(2026, 11, 23, 10, 0, 0)
+            .unwrap()
+            .timestamp();
+        let sunday_now = Vilnius
+            .with_ymd_and_hms(2026, 11, 29, 10, 0, 0)
+            .unwrap()
+            .timestamp();
 
         push_parse_case(
             &mut cases,
@@ -922,10 +939,52 @@ mod tests {
         );
         push_parse_case(
             &mut cases,
-            "next mon",
+            "next mon from a Thursday",
             "call Priya next mon",
             now,
-            &due("call Priya", "2026-12-07", "next mon", 11, 19),
+            &due("call Priya", "2026-11-30", "next mon", 11, 19),
+        );
+        push_parse_case(
+            &mut cases,
+            "next fri from a Thursday",
+            "next fri",
+            now,
+            &due("", "2026-12-04", "next fri", 0, 8),
+        );
+        push_parse_case(
+            &mut cases,
+            "next thu from a Thursday",
+            "next thu",
+            now,
+            &due("", "2026-12-03", "next thu", 0, 8),
+        );
+        push_parse_case(
+            &mut cases,
+            "next mon from a Monday is 7 days later",
+            "next mon",
+            monday_now,
+            &due("", "2026-11-30", "next mon", 0, 8),
+        );
+        push_parse_case(
+            &mut cases,
+            "next mon from a Sunday is the next day",
+            "next mon",
+            sunday_now,
+            &due("", "2026-11-30", "next mon", 0, 8),
+        );
+        push_parse_case(
+            &mut cases,
+            "следующий понедельник (Russian next Monday)",
+            "следующий понедельник",
+            now,
+            &due("", "2026-11-30", "следующий понедельник", 0, 21),
+        );
+        push_parse_case(
+            &mut cases,
+            "наступний понеділок (Ukrainian next Monday)",
+            "наступний понеділок",
+            now,
+            &due("", "2026-11-30", "наступний понеділок", 0, 19),
         );
         push_parse_case(
             &mut cases,
@@ -1179,6 +1238,13 @@ mod tests {
             "last week",
             now,
             &span("2026-11-16", "2026-11-22", Some("last week")),
+        );
+        push_window_case(
+            &mut cases,
+            "next fri uses the same next-weekday rule as parse",
+            "next fri",
+            now,
+            &span("2026-12-04", "2026-12-04", Some("next fri")),
         );
         push_window_case(
             &mut cases,

@@ -71,7 +71,7 @@
   },
   {
     "expected": {
-      "due": "2026-12-07",
+      "due": "2026-11-30",
       "end": 19,
       "phrase": "next mon",
       "start": 11,
@@ -79,7 +79,91 @@
     },
     "input": "call Priya next mon",
     "kind": "parse",
-    "name": "next mon",
+    "name": "next mon from a Thursday",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-04",
+      "end": 8,
+      "phrase": "next fri",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next fri",
+    "kind": "parse",
+    "name": "next fri from a Thursday",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-03",
+      "end": 8,
+      "phrase": "next thu",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next thu",
+    "kind": "parse",
+    "name": "next thu from a Thursday",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 8,
+      "phrase": "next mon",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next mon",
+    "kind": "parse",
+    "name": "next mon from a Monday is 7 days later",
+    "now": 1795420800,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 8,
+      "phrase": "next mon",
+      "start": 0,
+      "title": ""
+    },
+    "input": "next mon",
+    "kind": "parse",
+    "name": "next mon from a Sunday is the next day",
+    "now": 1795939200,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 21,
+      "phrase": "следующий понедельник",
+      "start": 0,
+      "title": ""
+    },
+    "input": "следующий понедельник",
+    "kind": "parse",
+    "name": "следующий понедельник (Russian next Monday)",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 19,
+      "phrase": "наступний понеділок",
+      "start": 0,
+      "title": ""
+    },
+    "input": "наступний понеділок",
+    "kind": "parse",
+    "name": "наступний понеділок (Ukrainian next Monday)",
     "now": 1795680000,
     "zone": "Europe/Vilnius"
   },
@@ -574,6 +658,18 @@
     "input": "last week",
     "kind": "window",
     "name": "last week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-12-04",
+      "phrase": "next fri",
+      "to": "2026-12-04"
+    },
+    "input": "next fri",
+    "kind": "window",
+    "name": "next fri uses the same next-weekday rule as parse",
     "now": 1795680000,
     "zone": "Europe/Vilnius"
   },
