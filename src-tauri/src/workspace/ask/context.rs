@@ -655,7 +655,9 @@ fn about_item(about: &RefItem, records: &Records, tz: Tz, id_attr: &str) -> Opti
         "task" => {
             let t = records.tasks.iter().find(|t| t.id == id)?;
             let mut item = task_item(t);
-            let mut body = vec![item.body.clone()];
+            // Its status, so a done task reads as done (the task list holds open ones only).
+            let status = tasks::column_name(tasks::status_of(&t.data), &Default::default());
+            let mut body = vec![item.body.clone(), format!("Status: {status}")];
             if let Some(due) = valid_due(t) {
                 body.push(format!("Due: {due}"));
             }

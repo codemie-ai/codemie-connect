@@ -595,7 +595,7 @@ impl Core {
             ..thread.clone()
         });
 
-        let read = self.ask_records(job)?;
+        let read = self.ask_records(job, turn.about.as_ref())?;
         let voice = self.ask_voice()?;
         let terms = context::query_terms(&turn.question, earlier.as_ref());
         let found: Option<Vec<Fact>> = match &voice.facts {
@@ -801,7 +801,7 @@ impl Core {
     /// tasks; with Microsoft 365 connected to the workspace, the events, messages (with their
     /// Inbox lanes) and meetings the workspace selects and the account permits, none on a
     /// calendar the window hides. Files are read after the repository guard is released.
-    fn ask_records(&self, job: &Job) -> Result<Read> {
+    fn ask_records(&self, job: &Job, about: Option<&RefItem>) -> Result<Read> {
         let hidden = hidden_calendars(&job.payload);
         let settings: Settings = self.repo()?.settings()?;
         let tasks_provider = self.task_provider_snapshot(&settings)["name"]
@@ -810,7 +810,16 @@ impl Core {
             .to_string();
         let r = self.repo()?;
         let w = r.workspace(job.workspace_id.as_deref().unwrap_or("personal"))?;
-        let tasks = tasks::active(&r, &w.id)?;
+        let mut tasks = tasks::active(&r, &w.id)?;
+        // An About task of another provider is found by its id, as `about_of` found it, so it
+        // never reads as gone (the task list skips it; only the About shows it).
+        if let Some(a) = about.filter(|a| a.kind == "task" && !a.gone) {
+            if !tasks.iter().any(|t| t.id == a.record_id) {
+                if let Ok(t) = r.record(tasks::KIND, &a.record_id, None, Some(&w.id)) {
+                    tasks.push(t);
+                }
+            }
+        }
         let c: Option<Connection> = settings
             .active_connection
             .as_deref()
@@ -1357,6 +1366,64 @@ mod tests {
         let stored = serde_json::to_value(thread_of(&e.core, tid).unwrap()).unwrap();
         assert_eq!(got, stored);
         assert_eq!(got["turns"][0]["state"], "done");
+    }
+
+    #[tokio::test]
+    async fn a_done_about_task_reads_as_done_not_gone() {
+        let e = env(vec![Ok(outcome(
+            json!({"answer": "Jordan asked for it.", "cites": [], "actions": []}),
+        ))]);
+        let mut done = task("t-done", "Send the Atlas budget");
+        done.data["status"] = "done".into();
+        put(&e.core, done);
+        let a = ask(
+            &e.core,
+            json!({"question": "Who asked for this?",
+                "about": {"kind": "task", "recordId": "t-done", "label": "Task · Send the Atlas budget"}}),
+        )
+        .await
+        .unwrap();
+        run_jobs(&e.core).await;
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert_eq!(turn.state, TurnState::Done);
+        assert!(!turn.about.unwrap().gone, "a done task is still in Connect");
+        let context = context_of(&e.fake.calls()[0]);
+        assert!(
+            context.contains("<item id=\"a1\" kind=\"task\""),
+            "{context}"
+        );
+        assert!(context.contains("Status: Done"), "{context}");
+        assert!(!context.contains("no longer in Connect"), "{context}");
+
+        // A done task of another provider than the active one is still found by its id.
+        let e = env(vec![Ok(outcome(
+            json!({"answer": "Jordan asked for it.", "cites": [], "actions": []}),
+        ))]);
+        let mut other = task("t-other", "Book the Atlas room");
+        other.data["status"] = "done".into();
+        other.data["provider"] = "plugin:todo".into();
+        put(&e.core, other);
+        let a = ask(
+            &e.core,
+            json!({"question": "Who asked for this?",
+                "about": {"kind": "task", "recordId": "t-other", "label": "Task · Book the Atlas room"}}),
+        )
+        .await
+        .unwrap();
+        run_jobs(&e.core).await;
+        let turn = thread_of(&e.core, a["threadId"].as_str().unwrap())
+            .unwrap()
+            .turns[0]
+            .clone();
+        assert!(!turn.about.unwrap().gone);
+        let context = context_of(&e.fake.calls()[0]);
+        assert!(
+            context.contains("Book the Atlas room\nStatus: Done"),
+            "{context}"
+        );
     }
 
     #[tokio::test]
