@@ -3764,6 +3764,9 @@ function renderRecovery() {
   // Nor may the CodeMie setup sheet: it closes (stopping a setup that waits on the person).
   codemie.closeSheet().catch(() => {});
   document.querySelector('#cm-sheet-host .cm-sheet')?.remove();
+  // Nor the quick-capture bar: it closes (its Add would send to a store with no snapshot).
+  captureUi?.close({ refocus: false });
+  document.getElementById('ws-capture-host')?.remove();
   document.querySelector('.ws-plugin-layer')?.removeAttribute('inert');
   root.inert = false;
   root.dataset.route = 'recovery';

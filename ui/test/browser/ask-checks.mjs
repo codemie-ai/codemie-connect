@@ -593,6 +593,34 @@ export async function askChecks({ open, check, assert, shot, settled, calls, OUT
     });
     await context.close().catch(() => {});
   }
+  // The recovery page wins over an open capture bar: the bar goes, plugin frames are not left
+  // inert, and the recovery buttons take clicks.
+  {
+    const { page, context, errors } = await open({ theme: 'light', width: 1440, height: 900, now: FIXED_NOW, hash: '#/today' });
+    await check('ask Q8: the recovery page removes an open capture bar and plugin frames come back from inert', async () => {
+      await page.keyboard.press('Meta+KeyN');
+      await page.waitForSelector('#ws-capture-host .ws-capture');
+      // Nothing typed: no capture_parse answer redraws the bar after the storage call fails.
+      await page.evaluate(() => { window.__storageFail = true; window.dispatchEvent(new Event('focus')); });
+      await page.waitForSelector('.ws-recovery-card');
+      await page.waitForTimeout(400);
+      assert(await page.locator('#ws-capture-host').count() === 0, 'the capture bar stays over the recovery page');
+      assert(await page.evaluate(() => document.querySelector('.ws-plugin-layer')?.inert !== true), 'plugin frames stay inert');
+      const hit = await page.evaluate(() => {
+        const b = document.querySelector('[data-action="recovery-retry"]').getBoundingClientRect();
+        return document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2)?.closest('[data-action="recovery-retry"]') != null;
+      });
+      assert(hit, 'something covers the recovery buttons');
+      // ⌘N does not bring the bar back over the recovery page.
+      await page.keyboard.press('Meta+KeyN');
+      await page.waitForTimeout(300);
+      assert(await page.locator('#ws-capture-host').count() === 0, '⌘N opened the bar over the recovery page');
+      assert(await count(page, 'task_save') === 0, 'something was saved');
+      await shot(page, 'ask-q8-recovery-over-capture');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
   // A selected message as the source; ⌘↩ adds and stays without sending the touched reply (Compact).
   {
     const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, hash: '#/inbox', enable: ['mail_send'], settings: { view: 'compact' } });
