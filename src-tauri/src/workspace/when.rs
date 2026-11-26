@@ -85,11 +85,14 @@ pub fn window(question: &str, now: i64, zone: &str) -> Window {
 }
 
 /// One leading word folded into the phrase ahead of it.
-const LEAD_WORDS: [&str; 8] = ["by", "on", "due", "до", "к", "в", "у", "на"];
+const LEAD_WORDS: [&str; 9] = ["by", "on", "due", "до", "к", "в", "во", "у", "на"];
 
 /// English (full and three-letter), Russian and Ukrainian (full and short) weekday names, plus
-/// the two inflected forms the lead words above combine with (Russian's genitive "пятницы"
-/// after "до"/"к", Ukrainian's accusative "п'ятницю" after "в"/"у"), to a Monday-based index.
+/// the inflected forms the lead words above (and [`NEXT_LEADS_RU`]/[`NEXT_LEADS_UK`]) combine
+/// with: Russian's genitive "пятницы" (after "до"/"к") and accusative "пятницу", "среду",
+/// "субботу" (среда, пятница and суббота are feminine, so "следующую пятницу" etc. use the
+/// accusative, not the nominative); Ukrainian's accusative "п'ятницю", "середу", "суботу" the
+/// same way.
 const WEEKDAYS: &[(&str, u32)] = &[
     ("monday", 0),
     ("mon", 0),
@@ -112,18 +115,23 @@ const WEEKDAYS: &[(&str, u32)] = &[
     ("вівторок", 1),
     ("вт", 1),
     ("среда", 2),
+    ("среду", 2),
     ("середа", 2),
+    ("середу", 2),
     ("ср", 2),
     ("четверг", 3),
     ("четвер", 3),
     ("чт", 3),
     ("пятница", 4),
     ("пятницы", 4),
+    ("пятницу", 4),
     ("п'ятниця", 4),
     ("п'ятницю", 4),
     ("пт", 4),
     ("суббота", 5),
+    ("субботу", 5),
     ("субота", 5),
+    ("суботу", 5),
     ("сб", 5),
     ("воскресенье", 6),
     ("неділя", 6),
@@ -535,20 +543,55 @@ fn try_month_name_then_day(
     Some((last, Token::Date(date)))
 }
 
+/// Every case of Russian "следующий" ("next") that agrees with a weekday noun: masculine
+/// (понедельник, вторник, четверг) nominative/accusative "следующий", neuter (воскресенье)
+/// "следующее", feminine (среда, пятница, суббота) accusative "следующую" ("следующую
+/// пятницу"), and the genitive/dative/prepositional forms "следующего", "следующей",
+/// "следующем" ("следующей" also leads "неделе" below, as in "на следующей неделе").
+const NEXT_LEADS_RU: &[&str] = &[
+    "следующий",
+    "следующая",
+    "следующее",
+    "следующую",
+    "следующего",
+    "следующей",
+    "следующем",
+];
+
+/// The Ukrainian equivalent of [`NEXT_LEADS_RU`]: masculine/neuter/feminine nominative and
+/// accusative forms of "наступний" ("наступну середу").
+const NEXT_LEADS_UK: &[&str] = &[
+    "наступний",
+    "наступна",
+    "наступне",
+    "наступну",
+    "наступного",
+    "наступної",
+    "наступному",
+];
+
 /// "next week", "next month", "next <weekday>" (that weekday in the Monday-based week after
-/// the current one); Russian "следующий", Ukrainian "наступний" lead the same way for a
-/// weekday ("следующий понедельник", "наступний понеділок").
+/// the current one); every agreeing form of Russian "следующий" and Ukrainian "наступний"
+/// leads a weekday the same way ("следующую пятницу", "наступну середу" — a bare "next"
+/// would wrongly leave вторник/четверг masculine while среда/пятница/суббота need the
+/// feminine accusative, so every form the noun can take is accepted here rather than one).
+/// "на следующей неделе" also reads as `next week`. A lead word before any of this ("by",
+/// "в"/"во"/"у"/"на", …) is folded into the phrase by [`last_candidate`] as usual.
 fn try_next_prefixed(lexemes: &[Lex], idx: usize) -> Option<(usize, Token)> {
     let lead = lexemes.get(idx)?.as_word()?;
-    if !matches!(lead, "next" | "следующий" | "наступний") {
+    let ru = NEXT_LEADS_RU.contains(&lead);
+    let uk = NEXT_LEADS_UK.contains(&lead);
+    if lead != "next" && !ru && !uk {
         return None;
     }
     let next = lexemes.get(idx + 1)?.as_word()?;
     match next {
-        "week" if lead == "next" => Some((idx + 1, Token::NextWeek)),
-        "month" if lead == "next" => Some((idx + 1, Token::NextMonth)),
-        _ => weekday_of(next).map(|w| (idx + 1, Token::NextWeekday(w))),
+        "week" if lead == "next" => return Some((idx + 1, Token::NextWeek)),
+        "month" if lead == "next" => return Some((idx + 1, Token::NextMonth)),
+        "неделе" if ru => return Some((idx + 1, Token::NextWeek)),
+        _ => {}
     }
+    weekday_of(next).map(|w| (idx + 1, Token::NextWeekday(w)))
 }
 
 /// "this week", "last week", "this month" (window-only; a due day can't be "this week").
@@ -985,6 +1028,34 @@ mod tests {
             "наступний понеділок",
             now,
             &due("", "2026-11-30", "наступний понеділок", 0, 19),
+        );
+        push_parse_case(
+            &mut cases,
+            "следующую пятницу (Russian feminine accusative, not the masculine next)",
+            "следующую пятницу",
+            now,
+            &due("", "2026-12-04", "следующую пятницу", 0, 17),
+        );
+        push_parse_case(
+            &mut cases,
+            "наступну середу (Ukrainian feminine accusative, not the masculine next)",
+            "наступну середу",
+            now,
+            &due("", "2026-12-02", "наступну середу", 0, 15),
+        );
+        push_parse_case(
+            &mut cases,
+            "в следующую пятницу (the optional в/во/у/на lead folds in too)",
+            "в следующую пятницу",
+            now,
+            &due("", "2026-12-04", "в следующую пятницу", 0, 19),
+        );
+        push_parse_case(
+            &mut cases,
+            "на следующей неделе reads as next week",
+            "на следующей неделе",
+            now,
+            &due("", "2026-11-30", "на следующей неделе", 0, 19),
         );
         push_parse_case(
             &mut cases,

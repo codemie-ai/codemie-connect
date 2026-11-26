@@ -170,6 +170,62 @@
   {
     "expected": {
       "due": "2026-12-04",
+      "end": 17,
+      "phrase": "следующую пятницу",
+      "start": 0,
+      "title": ""
+    },
+    "input": "следующую пятницу",
+    "kind": "parse",
+    "name": "следующую пятницу (Russian feminine accusative, not the masculine next)",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-02",
+      "end": 15,
+      "phrase": "наступну середу",
+      "start": 0,
+      "title": ""
+    },
+    "input": "наступну середу",
+    "kind": "parse",
+    "name": "наступну середу (Ukrainian feminine accusative, not the masculine next)",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-04",
+      "end": 19,
+      "phrase": "в следующую пятницу",
+      "start": 0,
+      "title": ""
+    },
+    "input": "в следующую пятницу",
+    "kind": "parse",
+    "name": "в следующую пятницу (the optional в/во/у/на lead folds in too)",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-11-30",
+      "end": 19,
+      "phrase": "на следующей неделе",
+      "start": 0,
+      "title": ""
+    },
+    "input": "на следующей неделе",
+    "kind": "parse",
+    "name": "на следующей неделе reads as next week",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2026-12-04",
       "end": 9,
       "phrase": "on Friday",
       "start": 0,
