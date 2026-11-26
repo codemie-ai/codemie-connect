@@ -359,6 +359,9 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
         if (k === 'capabilities' || k === 'meetings' || k === 'menuBar') continue;
         if (k === 'hiddenPages') { s.settings.hiddenPages = navIds.filter(id => v.includes(id)); continue; }
         s.settings[k] = v;
+        // ask/mod.rs's `snapshot` always derives `ask.inMenu` live from the setting; the mock
+        // mirrors that so a check can turn the switch off and see the field go (ask-capture § 6).
+        if (k === 'askInMenu' && s.ask) s.ask = { ...s.ask, inMenu: v };
       }
       // library_ops.rs `carry_texts`: a new meetings folder gets the glossary and the tag list
       // (the mock keeps one copy of each, so nothing is ever kept apart or fails).
@@ -2077,12 +2080,12 @@ for (const theme of ['dark', 'light']) {
     const native = await text(page, '[data-ai-profile="claude"]');
     assert(/Ready/i.test(native) && /Max/.test(native) && /taylor@example\.com/.test(native) && /2\.1\.150/.test(native), native);
     assert(/Needs sign-in/i.test(await text(page, '[data-ai-profile="codemie:staging"]')), 'needs sign-in chip');
-    // Nine visible rows (Ask's is hidden until step 9; no plugin asks for AI here).
-    assert(await page.locator('[data-ai-route-row]:visible').count() === 9, 'route rows');
-    assert(await page.locator('[data-ai-route-row="ask"]').isHidden(), 'Ask row hidden');
+    // Ten visible rows (ask-capture § 6, ruling 1: Ask's row is shown; no plugin asks for AI here).
+    assert(await page.locator('[data-ai-route-row]:visible').count() === 10, 'route rows');
+    assert(await page.locator('[data-ai-route-row="ask"]').isVisible(), 'Ask row shown');
     assert(/Meeting notes/.test(await text(page, '[data-ai-route-row="meeting"]')), 'meeting notes route row');
     assert(/Working/i.test(await text(page, '[data-ai-route-row="summary"]')), 'summary row status');
-    for (const g of ['Replies', 'Summaries and notes', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
+    for (const g of ['Replies', 'Summaries and notes', 'Ask', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
     assert(/runs/.test(await text(page, '#ai-usage')) && /estimate/i.test(await text(page, '#ai-usage')), 'usage');
     await shot(page, `${theme}-settings-ai-both`);
     await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));

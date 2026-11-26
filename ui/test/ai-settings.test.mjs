@@ -41,7 +41,7 @@ test('ai_panel_renders_each_state', () => {
   assert.match(both, /select[^>]*name="ai-default"/);
   for (const row of ['Mail replies', 'Teams replies', 'Summaries', 'Automations', 'Plugins', 'Meeting notes']) assert.match(both, new RegExp(row));
   assert.match(both, /Notes and summaries from transcripts\./);
-  // Ten rows (Ask's hidden), each with a profile, a model and a fallback.
+  // Ten rows, each with a profile, a model and a fallback.
   assert.equal((both.match(/data-route="/g) || []).length, 30);
   assert.match(both, /data-route="meeting"[^>]*data-field="profile"|data-field="profile"[^>]*data-route="meeting"/);
   assert.match(both, /id="ai-usage"/);
@@ -264,11 +264,12 @@ test('ai_panel_draws_groups_plugin_rows_and_fallback_columns', () => {
   assert.match(html, /What each job uses/);
   assert.doesNotMatch(html, /Which Claude writes for you/);
   assert.match(html, /Used for every job below unless you pick another\./);
-  for (const g of ['Replies', 'Summaries and notes', 'Automations', 'Plugins']) assert.match(html, new RegExp(`<th scope="rowgroup"[^>]*>${g}</th>`));
+  for (const g of ['Replies', 'Summaries and notes', 'Ask', 'Automations', 'Plugins']) assert.match(html, new RegExp(`<th scope="rowgroup"[^>]*>${g}</th>`));
   for (const c of ['Job', 'Profile', 'Model', 'Fallback', 'Status']) assert.match(html, new RegExp(`<th scope="col">${c}</th>`));
   const keys = [...html.matchAll(/data-ai-route-row="([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(keys, ['mail_draft', 'chat_draft', 'summary', 'meeting', 'briefing', 'triage', 'commitments', 'automation', 'ask', 'plugin', 'plugin:github', 'plugin:knowledge']);
-  assert.match(html, /<tr[^>]*data-ai-route-row="ask"[^>]*hidden/);
+  // Ask sits in its own group, between Summaries and notes and Automations (spec § 6 ruling 1).
+  assert.deepEqual(keys, ['mail_draft', 'chat_draft', 'summary', 'meeting', 'ask', 'briefing', 'triage', 'commitments', 'automation', 'plugin', 'plugin:github', 'plugin:knowledge']);
+  assert.doesNotMatch(html.match(/<tr[^>]*data-ai-route-row="ask"[^>]*>/)[0], /hidden/);
   assert.match(rowOf(html, 'ask'), /Questions you type in ⌘K\./);
   assert.match(html, /aria-label="Inbox triage: fallback"/);
   assert.match(html, /aria-label="Knowledge: profile"/);

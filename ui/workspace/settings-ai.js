@@ -10,8 +10,7 @@ export const LOGIN_STEPS = 'Open Terminal and run claude, then type /login';
 
 /**
  * The rows of "What each job uses", in spec §2 order. `group`: the heading it is drawn under.
- * The row each one follows when it sets nothing is Rust's (`chosen[key].group`). Ask is hidden
- * until step 9.
+ * The row each one follows when it sets nothing is Rust's (`chosen[key].group`).
  */
 export const ROUTES = [
   { key: 'mail_draft', label: 'Mail replies', hint: 'Drafts for Outlook messages.', group: 'replies' },
@@ -22,12 +21,12 @@ export const ROUTES = [
   { key: 'triage', label: 'Inbox triage', hint: 'Automations made from the Inbox triage template.', group: 'automations' },
   { key: 'commitments', label: 'Commitments', hint: 'Automations made from the Commitments template.', group: 'automations' },
   { key: 'automation', label: 'Automations', hint: 'Every other automation, unless it picks its own profile.', group: 'automations' },
-  { key: 'ask', label: 'Ask', hint: 'Questions you type in ⌘K.', group: null, hidden: true },
+  { key: 'ask', label: 'Ask', hint: 'Questions you type in ⌘K.', group: 'ask' },
   { key: 'plugin', label: 'All plugins', hint: 'Plugins without a choice of their own.', group: 'plugins' },
 ];
 /** A row's name by key: "Inbox triage", "All plugins", and "Default" for the Default row. */
 export const ROW_LABEL = { default: 'Default', ...Object.fromEntries(ROUTES.map(r => [r.key, r.label])) };
-const GROUPS = [['replies', 'Replies'], ['notes', 'Summaries and notes'], ['automations', 'Automations'], [null, ''], ['plugins', 'Plugins']];
+const GROUPS = [['replies', 'Replies'], ['notes', 'Summaries and notes'], ['ask', 'Ask'], ['automations', 'Automations'], [null, ''], ['plugins', 'Plugins']];
 const PLUGIN_HINT = 'Your choice here wins over the profile the plugin asks for.';
 
 /** CodeMie provider ids as people know them; anything else is shown as its id. */

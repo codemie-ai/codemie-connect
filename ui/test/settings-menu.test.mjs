@@ -170,6 +170,30 @@ test('Settings → Layout: the Menu card sits above Side menus with one switch p
   assert.match(html, /<span title="Keep one page in the menu\.">[^]*?data-page="inbox"[^>]*disabled/);
 });
 
+test('Settings → Layout: "Ask in the menu" is on by default; turning it off sends settings_update {askInMenu:false}', () => {
+  // The panel only draws the switch; app.js's generic `setting-toggle` action (ai-settings.test.mjs
+  // and settings-menu.test.mjs cover the draw, the browser's layout-checks.mjs the actual mutate
+  // and the field hiding, Task 9's interface) sends `settings_update {[data-key]: checked}`.
+  const on = layoutPanel(s, sample());
+  assert.ok(on.indexOf('>Menu</h2>') < on.indexOf('Ask in the menu'), 'the switch is in the Menu card');
+  assert.match(on, /Ask in the menu/);
+  assert.match(on, /⌘K works either way\./);
+  assert.match(on, /<input[^>]*checked[^>]*data-action="setting-toggle"[^>]*data-key="askInMenu"[^>]*data-setting="askInMenu"/);
+  const off = layoutPanel({ ...s, settings: { ...s.settings, askInMenu: false } }, sample());
+  assert.doesNotMatch(off, /<input[^>]*checked[^>]*data-key="askInMenu"/);
+  assert.match(off, /<input[^>]*data-action="setting-toggle"[^>]*data-key="askInMenu"[^>]*data-setting="askInMenu"/);
+});
+
+test('Settings → Layout: the Keyboard shortcuts list gains the Ask shortcuts and keeps every existing line', () => {
+  const html = layoutPanel(s, sample());
+  for (const line of ['Collapse or expand the main menu', 'Shrink or expand the Settings menu', 'Undo or redo a change to Today while customizing', 'Move a focused widget or section header', 'Resize it', 'Keep only that group open']) {
+    assert.match(html, new RegExp(`<strong>${line}</strong>`), `kept: ${line}`);
+  }
+  assert.match(html, /<strong>Ask<\/strong>[^]*?<kbd class="ws-kbd">⌘K<\/kbd>/);
+  assert.match(html, /<strong>Quick capture<\/strong>[^]*?<kbd class="ws-kbd">⌘N<\/kbd>/);
+  assert.match(html, /<strong>Stop an answer<\/strong>[^]*?<kbd class="ws-kbd">⌘\.<\/kbd>/);
+});
+
 test('the Layout tab draws its panel in Settings', () => {
   const html = page('layout', {}, { layout: sample() });
   assert.match(html, /<h2>Layout<\/h2>/);

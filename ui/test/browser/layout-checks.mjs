@@ -1142,4 +1142,37 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
     });
     await context.close().catch(() => {});
   }
+
+  // ---------------------------------------------------------------- E13: Settings › Layout's "Ask in the menu" switch (ask-capture § 2, § 6, § 11, ruling 26)
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/settings/layout' });
+    await check('layout E13: "Ask in the menu" is on by default; turning it off sends one settings_update {askInMenu:false} and the field goes, leaving ⌘K', async () => {
+      await page.waitForSelector('.ws-settings-layout');
+      const input = page.locator('[data-setting="askInMenu"]');
+      const switchEl = page.locator('.ws-switch:has([data-setting="askInMenu"])');
+      assert(await input.isChecked(), 'the switch is not on by default');
+      assert(await page.locator('.ws-ask-field').isVisible(), 'the field is not in the menu to begin with');
+      await shot(page, 'layout-e13-on');
+      await switchEl.click();
+      await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'settings_update' && d.askInMenu === false));
+      const updates = await calls(page, 'settings_update');
+      assert(updates.filter(d => 'askInMenu' in d).length === 1, `one settings_update {askInMenu}: ${JSON.stringify(updates)}`);
+      await page.waitForSelector('.ws-ask-field', { state: 'detached' });
+      assert(!(await page.locator('.ws-ask-rail').count()), 'the rail stays once the field is off');
+      await shot(page, 'layout-e13-off');
+      // ⌘K still opens the Ask page with its box focused (Task 9 ruling 26).
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('#ask-follow-up');
+      await page.waitForFunction(() => document.activeElement?.id === 'ask-follow-up');
+      assert(new URL(page.url()).hash === '#/ask', `the hash: ${new URL(page.url()).hash}`);
+      assert((await page.locator('.ws-ask-back').innerText()) === '← Back to Settings', 'Back names the page it came from');
+      await page.click('[data-action="ask-back"]');
+      await page.waitForSelector('.ws-settings-layout');
+      await switchEl.click();
+      await page.waitForFunction(() => window.__bridgeCalls.filter(([op, d]) => op === 'settings_update' && 'askInMenu' in d).length > 1);
+      await page.waitForSelector('.ws-ask-field');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
 }

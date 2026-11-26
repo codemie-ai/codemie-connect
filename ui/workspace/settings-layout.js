@@ -1,7 +1,8 @@
 // Settings → Layout: the layout preferences of this Mac in one place, and the way back to the
 // original arrangement of Today and of each page. Pure: state in, HTML out. The actions it
 // names are the ones Today (`today-layout-*`), the page sections (`dock-reset`) and the menus
-// (`layout-lock`, `layout-handles`, `sidebar-toggle`, `settings-menu-toggle`) already handle.
+// (`layout-lock`, `layout-handles`, `sidebar-toggle`, `settings-menu-toggle`, `setting-toggle`)
+// already handle.
 import { escapeHtml as e } from './store.js';
 import { badge, button, card, settingRow, toggle } from './ui.js';
 import { PRESETS, layoutChanged } from './today-grid.js';
@@ -17,6 +18,9 @@ const SHORTCUTS = [
   ['Arrow keys', 'Move a focused widget or section header'],
   ['Shift + arrow keys', 'Resize it'],
   ['⌥-click a Settings group', 'Keep only that group open'],
+  ['⌘K', 'Ask'],
+  ['⌘N', 'Quick capture'],
+  ['⌘.', 'Stop an answer'],
 ];
 
 function movingCard({ locked, handles }) {
@@ -57,8 +61,9 @@ function pagesCard({ defs = {}, layouts = {} }) {
   return card({ title: 'Page layouts', iconName: 'layout', body: Object.keys(defs).map(row).join('') });
 }
 
-/** One switch per NAV page; the last visible one is disabled so the menu always keeps a page. */
-function menuCard(hiddenPages = []) {
+/** One switch per NAV page, plus "Ask in the menu" (ask-capture design §11); the last visible
+ *  page is disabled so the menu always keeps a page. */
+function menuCard(hiddenPages = [], askInMenu = true) {
   const visible = NAV.filter(([id]) => !hiddenPages.includes(id)).length;
   const rows = NAV.map(([id, label]) => {
     const hidden = hiddenPages.includes(id);
@@ -66,9 +71,13 @@ function menuCard(hiddenPages = []) {
     const control = toggle({ action: 'menu-page', checked: !hidden, attrs: { 'data-page': id, 'aria-label': `Show ${label} in the menu`, disabled: lastVisible } });
     return settingRow({ title: label, control: lastVisible ? `<span title="Keep one page in the menu.">${control}</span>` : control });
   });
+  const askRow = settingRow({
+    title: 'Ask in the menu', text: '⌘K works either way.',
+    control: toggle({ action: 'setting-toggle', checked: askInMenu, attrs: { 'data-key': 'askInMenu', 'data-setting': 'askInMenu', 'aria-label': 'Ask in the menu' } }),
+  });
   return card({
     title: 'Menu', iconName: 'list',
-    body: `<p class="ws-muted ws-hint">Hidden pages leave the menu. Links and notifications still open them.</p>${rows.join('')}`,
+    body: `${askRow}<p class="ws-muted ws-hint">Hidden pages leave the menu. Links and notifications still open them.</p>${rows.join('')}`,
   });
 }
 
@@ -89,5 +98,5 @@ const keyboardCard = () => card({
 /** The Layout tab. `prefs`: {locked, handles, sidebarCollapsed, menuCollapsed}; `docks`: {defs,
  *  layouts} by page; `today`: the Today grid ({active, layouts}). */
 export function layoutPanel(s, { prefs, docks, today }) {
-  return `${movingCard(prefs)}${todayCard(today)}${pagesCard(docks)}${menuCard(s.settings.hiddenPages)}${menusCard(prefs)}${keyboardCard()}`;
+  return `${movingCard(prefs)}${todayCard(today)}${pagesCard(docks)}${menuCard(s.settings.hiddenPages, s.settings.askInMenu !== false)}${menusCard(prefs)}${keyboardCard()}`;
 }

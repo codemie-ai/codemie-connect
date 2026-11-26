@@ -1,7 +1,9 @@
 // Browser checks of Settings › AI's rows, fallbacks and statuses (spec
-// docs/superpowers/specs/2026-11-24-profiles-models-design.md §2–§5), run by workspace-e2e.mjs
-// with its MOCKED native bridge. R1–R8 below: the profile cards and "What each job uses" table
-// across both views/themes/three widths (Ask hidden, no per-row Test button), the
+// docs/superpowers/specs/2026-11-24-profiles-models-design.md §2–§5; the Ask row and its own
+// group per docs/superpowers/specs/2026-11-26-ask-capture-design.md § 6, ruling 1), run by
+// workspace-e2e.mjs with its MOCKED native bridge. R1–R8 below: the profile cards and "What each
+// job uses" table across both views/themes/three widths (the Ask row shown, in its own group
+// between Summaries and notes and Automations, no per-row Test button), the
 // working/fallback/broken/unset statuses (a missing profile shown as "not ready"), exactly one
 // `ai_settings_save` per fallback or plugin-row change with the row's chip tracking the answer's
 // `chosen`, a kept model on an unrelated row while Ollama is down, the first-use chooser's Ollama
@@ -75,12 +77,16 @@ export async function aiRoutesChecks({ open, check, assert, shot, settled, calls
           const ollama = await text(page, '[data-ai-profile="codemie:local-ollama"]');
           assert(/Engine/i.test(ollama) && /Ollama/.test(ollama), `Ollama card facts: ${ollama}`);
           assert((await text(page, '.ws-ai-routes .ws-card-title')) === 'What each job uses', 'card title');
-          for (const g of ['Replies', 'Summaries and notes', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
+          for (const g of ['Replies', 'Summaries and notes', 'Ask', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
           assert(await page.locator('th[scope=col]:text-is("Status")').count() === 1, 'Status column');
           assert(await page.locator('[data-ai-route-row="plugin:knowledge"]').count() === 1, 'the Knowledge plugin row');
-          // Carried review: Ask's row is hidden, and there is no per-row Test button (the paid
-          // Test button stays on the profile cards; ruling 17).
-          assert(await page.locator('[data-ai-route-row="ask"]').isHidden(), 'Ask row hidden');
+          // ask-capture § 6, ruling 1: Ask's row is shown in its own group, between Summaries and
+          // notes and Automations; still no per-row Test button (the paid Test button stays on
+          // the profile cards; ruling 17).
+          assert(await page.locator('[data-ai-route-row="ask"]').isVisible(), 'Ask row shown');
+          assert(/Questions you type in ⌘K\./.test(await text(page, '[data-ai-route-row="ask"]')), 'Ask row hint');
+          const groups = await page.locator('th[scope=rowgroup]').allInnerTexts();
+          assert(groups.indexOf('Summaries and notes') < groups.indexOf('Ask') && groups.indexOf('Ask') < groups.indexOf('Automations'), `group order: ${groups}`);
           assert(await page.locator('[data-ai-route-row] [data-action="ai-test"]').count() === 0, 'a route row has its own Test button');
           await noOverflow(page, assert, `${theme} ${view} ${width}`);
           const clipped = await noClip(page);
