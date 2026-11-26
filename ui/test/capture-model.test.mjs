@@ -148,9 +148,12 @@ test('Default and Compact draw the same bar markup', () => {
 });
 
 test('⌘N is ignored while a dialog or the setup sheet is open, and while composing', () => {
-  const ev = over => ({ key: 'n', code: 'KeyN', metaKey: true, ctrlKey: false, altKey: false, isComposing: false, ...over });
+  const ev = over => ({ key: 'n', code: 'KeyN', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...over });
   assert.equal(isCaptureKey(ev()), true);
-  assert.equal(isCaptureKey(ev({ metaKey: false, ctrlKey: true })), true);
+  // Meta only: Ctrl+N stays the text box's next-line key, and ⌘⇧N and ⌘⌃N do nothing.
+  assert.equal(isCaptureKey(ev({ metaKey: false, ctrlKey: true })), false);
+  assert.equal(isCaptureKey(ev({ shiftKey: true, key: 'N' })), false);
+  assert.equal(isCaptureKey(ev({ ctrlKey: true })), false);
   assert.equal(isCaptureKey(ev({ metaKey: false })), false);
   assert.equal(isCaptureKey(ev({ altKey: true })), false);
   assert.equal(isCaptureKey(ev({ isComposing: true })), false);

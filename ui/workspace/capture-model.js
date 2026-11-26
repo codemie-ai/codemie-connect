@@ -107,8 +107,9 @@ export function captureBar(state, snap) {
     </form>`;
 }
 
-/** Whether `ev` is ⌘N (or Ctrl+N), no ⌥, not mid-composition, with no dialog or setup sheet open. */
+/** Whether `ev` is ⌘N: Meta only (no ⌃ ⌥ ⇧, so Ctrl+N stays a text box's next-line key), not
+ *  mid-composition, with no dialog or setup sheet open. */
 export function isCaptureKey(ev, { modal = false, sheet = false } = {}) {
-  if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.isComposing || modal || sheet) return false;
+  if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing || modal || sheet) return false;
   return ev.code === 'KeyN' || String(ev.key || '').toLowerCase() === 'n';
 }
