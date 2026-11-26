@@ -659,6 +659,202 @@
   },
   {
     "expected": {
+      "due": "2036-11-23",
+      "end": 12,
+      "phrase": "in 3650 days",
+      "start": 0,
+      "title": ""
+    },
+    "input": "in 3650 days",
+    "kind": "parse",
+    "name": "in 3650 days is the longest day span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2036-11-13",
+      "end": 12,
+      "phrase": "in 520 weeks",
+      "start": 0,
+      "title": ""
+    },
+    "input": "in 520 weeks",
+    "kind": "parse",
+    "name": "in 520 weeks is the longest week span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": "2036-11-26",
+      "end": 13,
+      "phrase": "in 120 months",
+      "start": 0,
+      "title": ""
+    },
+    "input": "in 120 months",
+    "kind": "parse",
+    "name": "in 120 months is the longest month span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 3651 days"
+    },
+    "input": "call bank in 3651 days",
+    "kind": "parse",
+    "name": "in 3651 days is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 521 weeks"
+    },
+    "input": "call bank in 521 weeks",
+    "kind": "parse",
+    "name": "in 521 weeks is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 121 months"
+    },
+    "input": "call bank in 121 months",
+    "kind": "parse",
+    "name": "in 121 months is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 100000000 days"
+    },
+    "input": "call bank in 100000000 days",
+    "kind": "parse",
+    "name": "in 100000000 days is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 14000000 weeks"
+    },
+    "input": "call bank in 14000000 weeks",
+    "kind": "parse",
+    "name": "in 14000000 weeks is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 999999 months"
+    },
+    "input": "call bank in 999999 months",
+    "kind": "parse",
+    "name": "in 999999 months is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "call bank in 99999999999 days"
+    },
+    "input": "call bank in 99999999999 days",
+    "kind": "parse",
+    "name": "a number too long to hold is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "через 100000000 дней"
+    },
+    "input": "через 100000000 дней",
+    "kind": "parse",
+    "name": "через 100000000 дней is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "через 14000000 недель"
+    },
+    "input": "через 14000000 недель",
+    "kind": "parse",
+    "name": "через 14000000 недель is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "через 100000000 днів"
+    },
+    "input": "через 100000000 днів",
+    "kind": "parse",
+    "name": "через 100000000 днів is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "due": null,
+      "end": null,
+      "phrase": null,
+      "start": null,
+      "title": "через 14000000 тижнів"
+    },
+    "input": "через 14000000 тижнів",
+    "kind": "parse",
+    "name": "через 14000000 тижнів is no date",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
       "from": "2026-11-26",
       "phrase": "today",
       "to": "2026-11-26"
@@ -786,6 +982,54 @@
     "input": "what's urgent?",
     "kind": "window",
     "name": "no date means the default span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-19",
+      "phrase": null,
+      "to": "2026-12-03"
+    },
+    "input": "what's due in 100000000 days?",
+    "kind": "window",
+    "name": "a day span past the cap means the default span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-19",
+      "phrase": null,
+      "to": "2026-12-03"
+    },
+    "input": "what's due in 14000000 weeks?",
+    "kind": "window",
+    "name": "a week span past the cap means the default span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-19",
+      "phrase": null,
+      "to": "2026-12-03"
+    },
+    "input": "what's due in 999999 months?",
+    "kind": "window",
+    "name": "a month span past the cap means the default span",
+    "now": 1795680000,
+    "zone": "Europe/Vilnius"
+  },
+  {
+    "expected": {
+      "from": "2026-11-19",
+      "phrase": null,
+      "to": "2026-12-03"
+    },
+    "input": "что через 100000000 дней?",
+    "kind": "window",
+    "name": "a Russian day span past the cap means the default span",
     "now": 1795680000,
     "zone": "Europe/Vilnius"
   }

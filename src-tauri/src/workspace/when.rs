@@ -43,17 +43,16 @@ pub struct Window {
 pub fn parse(text: &str, now: i64, zone: &str) -> Parsed {
     let chars: Vec<char> = text.chars().collect();
     let today = today_in(now, time_zone(zone));
-    match last_candidate(&chars, today, false) {
-        Some(c) => {
-            let due = resolve_due(c.token, today);
-            Parsed {
-                title: tidy_title(&chars, Some((c.start, c.end))),
-                due: Some(due.format("%Y-%m-%d").to_string()),
-                phrase: Some(chars[c.start..c.end].iter().collect()),
-                start: Some(c.start),
-                end: Some(c.end),
-            }
-        }
+    match last_candidate(&chars, today, false)
+        .and_then(|c| resolve_due(c.token, today).map(|due| (c, due)))
+    {
+        Some((c, due)) => Parsed {
+            title: tidy_title(&chars, Some((c.start, c.end))),
+            due: Some(due.format("%Y-%m-%d").to_string()),
+            phrase: Some(chars[c.start..c.end].iter().collect()),
+            start: Some(c.start),
+            end: Some(c.end),
+        },
         None => Parsed {
             title: tidy_title(&chars, None),
             due: None,
@@ -67,15 +66,14 @@ pub fn parse(text: &str, now: i64, zone: &str) -> Parsed {
 pub fn window(question: &str, now: i64, zone: &str) -> Window {
     let chars: Vec<char> = question.chars().collect();
     let today = today_in(now, time_zone(zone));
-    match last_candidate(&chars, today, true) {
-        Some(c) => {
-            let (from, to) = resolve_window(c.token, today);
-            Window {
-                from: from.format("%Y-%m-%d").to_string(),
-                to: to.format("%Y-%m-%d").to_string(),
-                phrase: Some(chars[c.start..c.end].iter().collect()),
-            }
-        }
+    match last_candidate(&chars, today, true)
+        .and_then(|c| resolve_window(c.token, today).map(|span| (c, span)))
+    {
+        Some((c, (from, to))) => Window {
+            from: from.format("%Y-%m-%d").to_string(),
+            to: to.format("%Y-%m-%d").to_string(),
+            phrase: Some(chars[c.start..c.end].iter().collect()),
+        },
         None => Window {
             from: (today - Duration::days(7)).format("%Y-%m-%d").to_string(),
             to: (today + Duration::days(7)).format("%Y-%m-%d").to_string(),
@@ -321,7 +319,9 @@ fn lex(chars: &[char]) -> Vec<Lex> {
             out.push(Lex {
                 start,
                 end: i,
-                kind: LexKind::Num(text.parse().unwrap_or(0)),
+                // A run too long for a u32 reads as the largest one, so a span cap refuses it
+                // rather than it passing as 0.
+                kind: LexKind::Num(text.parse().unwrap_or(u32::MAX)),
             });
         } else if c.is_alphabetic() {
             let start = i;
@@ -656,6 +656,12 @@ fn try_day_word(lexemes: &[Lex], idx: usize) -> Option<(usize, Token)> {
     Some((idx, token))
 }
 
+/// The longest span "in N <unit>" reads (ten years); a longer one is no date, so its words
+/// stay in the title and its due never leaves chrono's range or gains a five-digit year.
+const MAX_SPAN_DAYS: i64 = 3_650;
+const MAX_SPAN_WEEKS: i64 = 520;
+const MAX_SPAN_MONTHS: i64 = 120;
+
 /// "in 3 days", "in 2 weeks"; "через 3 дня", "через 2 тижні".
 fn try_span(lexemes: &[Lex], idx: usize) -> Option<(usize, Token)> {
     let lead = lexemes.get(idx)?.as_word()?;
@@ -664,6 +670,14 @@ fn try_span(lexemes: &[Lex], idx: usize) -> Option<(usize, Token)> {
     }
     let n = lexemes.get(idx + 1)?.as_num()? as i64;
     let unit = span_unit_of(lexemes.get(idx + 2)?.as_word()?)?;
+    let cap = match unit {
+        Unit::Days => MAX_SPAN_DAYS,
+        Unit::Weeks => MAX_SPAN_WEEKS,
+        Unit::Months => MAX_SPAN_MONTHS,
+    };
+    if n > cap {
+        return None;
+    }
     let token = match unit {
         Unit::Days => Token::SpanDays(n),
         Unit::Weeks => Token::SpanWeeks(n),
@@ -751,20 +765,20 @@ fn end_of_month(d: NaiveDate) -> NaiveDate {
 
 /// What `token` means as a single due day (`capture_parse`); every token `parse`'s scan can
 /// produce resolves here (the window-only tokens fall back to a sane value, unreachable since
-/// `last_candidate(..., window_ctx: false)` never returns them).
-fn resolve_due(token: Token, today: NaiveDate) -> NaiveDate {
-    match token {
+/// `last_candidate(..., window_ctx: false)` never returns them); `None` when a span would leave
+/// chrono's range, which reads as no date.
+fn resolve_due(token: Token, today: NaiveDate) -> Option<NaiveDate> {
+    let days = |n: i64| today.checked_add_signed(Duration::try_days(n)?);
+    Some(match token {
         Token::Today => today,
         Token::Yesterday => today - Duration::days(1),
         Token::Tomorrow => today + Duration::days(1),
         Token::DayAfterTomorrow => today + Duration::days(2),
         Token::Weekday(w) => bare_weekday(today, w),
         Token::NextWeekday(w) => next_weekday(today, w),
-        Token::SpanDays(n) => today + Duration::days(n),
-        Token::SpanWeeks(n) => today + Duration::days(n * 7),
-        Token::SpanMonths(n) => today
-            .checked_add_months(Months::new(n.max(0) as u32))
-            .unwrap_or(today),
+        Token::SpanDays(n) => days(n)?,
+        Token::SpanWeeks(n) => days(n.checked_mul(7)?)?,
+        Token::SpanMonths(n) => today.checked_add_months(Months::new(u32::try_from(n).ok()?))?,
         Token::NextWeek => monday_of(today) + Duration::days(7),
         Token::ThisWeek => monday_of(today),
         Token::LastWeek => monday_of(today) - Duration::days(7),
@@ -773,13 +787,13 @@ fn resolve_due(token: Token, today: NaiveDate) -> NaiveDate {
         Token::NextMonth => first_of_next_month(today),
         Token::ThisMonth => first_of_month(today),
         Token::Date(d) => d,
-    }
+    })
 }
 
 /// What `token` means as a window span (`window`): a single day for a day-like token, Monday
 /// to Sunday for a week, the first to the last day for a month.
-fn resolve_window(token: Token, today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    match token {
+fn resolve_window(token: Token, today: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
+    Some(match token {
         Token::NextWeek => {
             let m = monday_of(today) + Duration::days(7);
             (m, m + Duration::days(6))
@@ -798,10 +812,10 @@ fn resolve_window(token: Token, today: NaiveDate) -> (NaiveDate, NaiveDate) {
             (f, end_of_month(f))
         }
         other => {
-            let d = resolve_due(other, today);
+            let d = resolve_due(other, today)?;
             (d, d)
         }
-    }
+    })
 }
 
 /// Collapses every run of whitespace (newlines included) to a single space and trims the
@@ -1279,6 +1293,54 @@ mod tests {
             &due("Call Priya", "2026-11-27", "tomorrow", 13, 21),
         );
 
+        // Spans are capped at 3,650 days, 520 weeks and 120 months; a longer span (or a
+        // number too long to hold) is no date, and its words stay in the title.
+        push_parse_case(
+            &mut cases,
+            "in 3650 days is the longest day span",
+            "in 3650 days",
+            now,
+            &due("", "2036-11-23", "in 3650 days", 0, 12),
+        );
+        push_parse_case(
+            &mut cases,
+            "in 520 weeks is the longest week span",
+            "in 520 weeks",
+            now,
+            &due("", "2036-11-13", "in 520 weeks", 0, 12),
+        );
+        push_parse_case(
+            &mut cases,
+            "in 120 months is the longest month span",
+            "in 120 months",
+            now,
+            &due("", "2036-11-26", "in 120 months", 0, 13),
+        );
+        for (name, text) in [
+            ("in 3651 days is no date", "call bank in 3651 days"),
+            ("in 521 weeks is no date", "call bank in 521 weeks"),
+            ("in 121 months is no date", "call bank in 121 months"),
+            (
+                "in 100000000 days is no date",
+                "call bank in 100000000 days",
+            ),
+            (
+                "in 14000000 weeks is no date",
+                "call bank in 14000000 weeks",
+            ),
+            ("in 999999 months is no date", "call bank in 999999 months"),
+            (
+                "a number too long to hold is no date",
+                "call bank in 99999999999 days",
+            ),
+            ("через 100000000 дней is no date", "через 100000000 дней"),
+            ("через 14000000 недель is no date", "через 14000000 недель"),
+            ("через 100000000 днів is no date", "через 100000000 днів"),
+            ("через 14000000 тижнів is no date", "через 14000000 тижнів"),
+        ] {
+            push_parse_case(&mut cases, name, text, now, &no_due(text));
+        }
+
         push_window_case(
             &mut cases,
             "today",
@@ -1356,6 +1418,32 @@ mod tests {
             now,
             &span("2026-11-19", "2026-12-03", None),
         );
+        for (name, question) in [
+            (
+                "a day span past the cap means the default span",
+                "what's due in 100000000 days?",
+            ),
+            (
+                "a week span past the cap means the default span",
+                "what's due in 14000000 weeks?",
+            ),
+            (
+                "a month span past the cap means the default span",
+                "what's due in 999999 months?",
+            ),
+            (
+                "a Russian day span past the cap means the default span",
+                "что через 100000000 дней?",
+            ),
+        ] {
+            push_window_case(
+                &mut cases,
+                name,
+                question,
+                now,
+                &span("2026-11-19", "2026-12-03", None),
+            );
+        }
 
         cases
     }
@@ -1383,6 +1471,22 @@ mod tests {
                 other => panic!("case {name:?} has an unknown kind {other:?}"),
             };
             assert_eq!(got, case["expected"], "case {name:?}");
+        }
+    }
+
+    #[test]
+    fn huge_spans_read_as_no_date_and_never_panic() {
+        for text in [
+            "in 100000000 days",
+            "in 14000000 weeks",
+            "in 999999 months",
+            "in 4294967295 weeks",
+            "через 100000000 дней",
+        ] {
+            let got = parse(text, default_now(), ZONE);
+            assert_eq!(got.due, None, "{text:?}");
+            assert_eq!(got.title, text, "{text:?}");
+            assert_eq!(window(text, default_now(), ZONE).phrase, None, "{text:?}");
         }
     }
 
