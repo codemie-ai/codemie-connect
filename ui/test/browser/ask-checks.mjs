@@ -147,6 +147,7 @@ export async function askChecks({ open, check, assert, shot, settled, calls, OUT
   // ---------------------------------------------------------------- Q2: the field, its About chip and Recent
 
   for (const [view, theme] of [['default', 'light'], ['compact', 'dark']]) {
+    // 2025, not 2026: 25 Nov 2026 is a Wednesday, and the chip's date shows no year.
     const { page, context, errors } = await open({ theme, width: 1440, height: 900, now: TUE_25_NOV, hash: '#/inbox', ask: 'idle', patch: priyaN, settings: viewSettings(view) });
     await check(`ask Q2 (${view} ${theme}): the field first in the menu with ⌘K, the About chip follows the selection, none on Today, Recent opens a thread`, async () => {
       const place = await page.evaluate(() => {
@@ -472,6 +473,16 @@ export async function askChecks({ open, check, assert, shot, settled, calls, OUT
       assert(groups.join('|') === 'Today|Yesterday|This week|Earlier', `groups: ${groups.join('|')}`);
       assert(await page.getAttribute(`${menu} .ws-ask-hrow[aria-current=page]`, 'data-ask-thread') === 'ask-7f2c', 'the open thread is not marked');
       await shot(page, 'ask-history-compact-light-1000');
+      // A thread's ⋯ inside History ▾: Esc closes the ⋯ first and leaves History ▾ open; Esc again closes it.
+      await page.click(`${menu} [data-menu="ask-thread-ask-week"] summary`);
+      await page.waitForSelector(`${menu}[open] [data-menu="ask-thread-ask-week"][open]`);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(`${menu} [data-menu="ask-thread-ask-week"]:not([open])`);
+      assert(await page.locator(`${menu}[open]`).count() === 1, 'Esc on the ⋯ closed History ▾ too');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(`${menu}:not([open])`);
+      await page.click(`${menu} summary`);
+      await page.waitForSelector(`${menu}[open] .ws-ask-history`);
       await page.click(`${menu} [data-menu="ask-thread-ask-old"] summary`);
       await page.click(`${menu} [data-action="ask-delete"][data-ask-thread="ask-old"]`);
       await page.waitForSelector('[data-ask-thread="ask-old"]', { state: 'detached' });
