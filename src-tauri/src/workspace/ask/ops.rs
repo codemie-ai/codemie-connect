@@ -350,6 +350,7 @@ impl Core {
             actions: Vec::new(),
             searched: None,
             cut: false,
+            took: None,
             profile: None,
             model: None,
             fell_back_from: None,
@@ -698,6 +699,7 @@ impl Core {
                 turn.actions = done.actions;
                 turn.searched = Some(ctx.searched.clone());
                 turn.cut = ctx.cut;
+                turn.took = Some((crate::workspace::models::now() - turn.at).max(0));
                 turn.profile = profile;
                 turn.model = model;
                 turn.fell_back_from = fell_back_from;
@@ -1165,6 +1167,12 @@ mod tests {
         let t = thread_of(&e.core, answer["threadId"].as_str().unwrap()).unwrap();
         let turn = &t.turns[0];
         assert_eq!(turn.state, TurnState::Done, "{turn:?}");
+        // The meta line's "<n> s": the seconds from the question to the answer.
+        assert!(
+            turn.took.is_some_and(|s| (0..5).contains(&s)),
+            "{:?}",
+            turn.took
+        );
         assert_eq!(
             turn.answer.as_deref(),
             Some("The Atlas budget is due Friday [m1].")
@@ -2139,6 +2147,7 @@ mod tests {
         ];
         done.searched = Some("tasks 12 (Todoist) · events 7, Thu 19 Nov – Thu 3 Dec · messages 9 · meetings 2 · people 1 · facts 1 (Knowledge)".into());
         done.cut = true;
+        done.took = Some(14);
         done.profile = Some("claude".into());
         done.model = Some("claude-sonnet-4-5".into());
         done.job_id = Some("job-1".into());

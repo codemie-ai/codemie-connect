@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAskController } from '../workspace/ask-controller.js';
 import { askField } from '../workspace/ask-model.js';
-import { buildSnapshot, withAsk } from './fixtures/workspace-fixture.mjs';
+import { askThread, buildSnapshot, withAsk } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 26, 9);
 const TUE = Date.UTC(2026, 10, 24, 10) / 1000;
@@ -263,3 +263,216 @@ test('every close forgets where focus came from: Esc, Enter, a click away', asyn
   assert.deepEqual(away.calls.focusBack, [null]);
 });
 
+
+// ---------------------------------------------------------------- the Ask page (Task 10)
+
+/** A controller on `#/ask/ask-7f2c` over fakes: `ask_read` answers `threads[id]` (a copy), or
+ *  throws not_found; every other request is recorded and answered as native does. */
+function pageHarness({ askState = 'idle', threadId = 'ask-7f2c', threads = { 'ask-7f2c': askThread() }, from = '#/inbox', focusBack = '[data-id="m-priya"]', refuse = null } = {}) {
+  const s = withAsk(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), askState);
+  const calls = { mutate: [], query: [], go: [], focus: [], focusBack: [], render: 0, announce: [], confirm: [], failed: [] };
+  const state = { route: 'ask', ask: { from, focusBack, threadId } };
+  let refusal = refuse;
+  let hash = threadId ? `#/ask/${threadId}` : '#/ask';
+  const ctl = createAskController({
+    state,
+    snap: () => s,
+    query: async (op, data) => {
+      calls.query.push([op, data]);
+      const t = threads[data.threadId];
+      if (!t) throw Object.assign(new Error('That conversation is gone. Ask again.'), { code: 'not_found' });
+      return structuredClone(t);
+    },
+    mutate: async (op, data) => {
+      calls.mutate.push([op, data]);
+      if (refusal) {
+        const err = refusal;
+        refusal = null;
+        throw err;
+      }
+      if (op === 'ask_start') return { threadId: data.threadId || 'ask-new1', turnId: 'turn-9', jobId: 'job-9' };
+      if (op === 'ask_delete') return { deleted: data.all ? 3 : 1 };
+      return {};
+    },
+    render: () => { calls.render++; },
+    go: async h => {
+      calls.go.push(h);
+      hash = h;
+      const m = /^#\/ask(?:\/(.+))?$/.exec(h);
+      state.route = m ? 'ask' : h.replace(/^#\/?/, '').split('/')[0];
+      if (m) state.ask.threadId = m[1] ? decodeURIComponent(m[1]) : null;
+      else state.ask.focusBack = null;
+    },
+    focus: (sel, o) => calls.focus.push([sel, o || null]),
+    focusBack: sel => calls.focusBack.push(sel),
+    hash: () => hash,
+    hiddenCalendars: () => ['cal-home'],
+    announce: text => calls.announce.push(text),
+    confirm: o => calls.confirm.push(o),
+    fail: err => calls.failed.push(err),
+  });
+  return { ctl, state, calls, s, threads };
+}
+const el = data => ({ dataset: data });
+
+test('opening a thread reads it once with ask_read, draws it and focuses the newest turn\'s heading', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.openThread();
+  assert.deepEqual(calls.query, [['ask_read', { threadId: 'ask-7f2c' }]]);
+  assert.equal(ctl.thread().id, 'ask-7f2c');
+  assert.ok(calls.render >= 1);
+  assert.deepEqual(calls.focus.at(-1), ['[data-ask-turn="turn-3"] .ws-ask-q', null]);
+  // Nothing changed in the snapshot: no second read.
+  await ctl.refresh();
+  assert.equal(calls.query.length, 1);
+  // Rendering a thread writes nothing.
+  assert.equal(calls.mutate.length, 0);
+});
+
+test('a change to the open thread in the snapshot reads it again; a finished answer is announced once', async () => {
+  const running = structuredClone(askThread());
+  running.turns[2] = { ...running.turns[2], state: 'running', id: 'turn-3' };
+  const { ctl, calls, s, threads } = pageHarness({ askState: 'running', threads: { 'ask-7f2c': running } });
+  await ctl.openThread();
+  assert.equal(calls.announce.length, 0);
+  // The answer lands: the snapshot moves on, the thread reads again, "Answer ready" once.
+  const done = structuredClone(running);
+  done.turns[2] = { ...done.turns[2], state: 'done', answer: 'Marek Novak owns the rollout.' };
+  threads['ask-7f2c'] = done;
+  s.ask = { ...s.ask, running: null, threads: s.ask.threads.map(t => (t.id === 'ask-7f2c' ? { ...t, last: 'done', updatedAt: t.updatedAt + 5 } : t)) };
+  await ctl.refresh();
+  assert.equal(calls.query.length, 2);
+  assert.deepEqual(calls.announce, ['Answer ready']);
+  await ctl.refresh();
+  assert.deepEqual(calls.announce, ['Answer ready'], 'announced once');
+  // A failed one says so.
+  const failed = structuredClone(done);
+  failed.turns.push({ ...done.turns[2], id: 'turn-4', state: 'queued', answer: null });
+  threads['ask-7f2c'] = failed;
+  s.ask = { ...s.ask, threads: s.ask.threads.map(t => (t.id === 'ask-7f2c' ? { ...t, turns: 4, last: 'queued', updatedAt: t.updatedAt + 1 } : t)) };
+  await ctl.refresh();
+  const after = structuredClone(failed);
+  after.turns[3] = { ...after.turns[3], state: 'failed', error: { code: 'timeout', message: 'Claude took too long.' } };
+  threads['ask-7f2c'] = after;
+  s.ask = { ...s.ask, threads: s.ask.threads.map(t => (t.id === 'ask-7f2c' ? { ...t, last: 'failed', updatedAt: t.updatedAt + 1 } : t)) };
+  await ctl.refresh();
+  assert.deepEqual(calls.announce, ['Answer ready', 'Couldn’t answer']);
+});
+
+test('a thread that is gone reads as missing, and the box then asks a new question', async () => {
+  const { ctl, calls } = pageHarness({ threads: {} });
+  await ctl.openThread();
+  assert.deepEqual(ctl.thread(), { id: 'ask-7f2c', missing: true });
+  assert.equal(calls.failed.length, 0);
+  await ctl.submitPage('When is the QBR?');
+  assert.deepEqual(calls.mutate[0], ['ask_start', { question: 'When is the QBR?', hiddenCalendars: ['cal-home'] }]);
+});
+
+test('Stop and ⌘. send one job_cancel {id}', async () => {
+  const { ctl, calls } = pageHarness({ askState: 'running' });
+  await ctl.handle('ask-stop', el({ job: 'job-9' }));
+  assert.deepEqual(calls.mutate, [['job_cancel', { id: 'job-9' }]]);
+  await ctl.stop();
+  assert.deepEqual(calls.mutate.at(-1), ['job_cancel', { id: 'job-9' }]);
+  assert.equal(calls.mutate.length, 2);
+  // Nothing runs: ⌘. sends nothing.
+  const idle = pageHarness();
+  await idle.ctl.stop();
+  assert.equal(idle.calls.mutate.length, 0);
+});
+
+test('Ask again and Try again send ask_start {threadId, question} with the turn\'s question', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.openThread();
+  await ctl.handle('ask-again', el({ askTurn: 'turn-3' }));
+  await ctl.handle('ask-retry', el({ askTurn: 'turn-2' }));
+  assert.deepEqual(calls.mutate, [
+    ['ask_start', { threadId: 'ask-7f2c', question: 'Who is Marek Novak?', hiddenCalendars: ['cal-home'] }],
+    ['ask_start', { threadId: 'ask-7f2c', question: 'And Jordan Lee?', hiddenCalendars: ['cal-home'] }],
+  ]);
+  // A busy refusal shows under the box.
+  const busy = pageHarness({ refuse: Object.assign(new Error('Connect is still answering. Stop it or wait.'), { code: 'busy' }) });
+  await busy.ctl.openThread();
+  await busy.ctl.handle('ask-again', el({ askTurn: 'turn-3' }));
+  assert.equal(busy.state.ask.pageError, 'Connect is still answering. Stop it or wait.');
+});
+
+test('the follow-up box asks ask_start {threadId, question} and keeps the words until it is asked', async () => {
+  const { ctl, state, calls } = pageHarness();
+  ctl.pageInput('And Jordan?');
+  assert.equal(state.ask.pageText, 'And Jordan?');
+  await ctl.handle('ask-follow-up', null);
+  assert.deepEqual(calls.mutate[0], ['ask_start', { question: 'And Jordan?', threadId: 'ask-7f2c', hiddenCalendars: ['cal-home'] }]);
+  assert.equal(state.ask.pageText, '');
+  // While a turn runs it is refused here, before native.
+  const running = pageHarness({ askState: 'running' });
+  running.ctl.pageInput('More?');
+  await running.ctl.handle('ask-follow-up', null);
+  assert.equal(running.calls.mutate.length, 0);
+});
+
+test('⋯ Delete sends one ask_delete {threadId} at once; deleting the open thread goes to #/ask', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.handle('ask-delete', el({ askThread: 'ask-3a9e' }));
+  assert.deepEqual(calls.mutate, [['ask_delete', { threadId: 'ask-3a9e' }]]);
+  assert.deepEqual(calls.confirm, [], 'no dialog');
+  assert.deepEqual(calls.go, []);
+  await ctl.handle('ask-delete', el({ askThread: 'ask-7f2c' }));
+  assert.deepEqual(calls.mutate.at(-1), ['ask_delete', { threadId: 'ask-7f2c' }]);
+  assert.deepEqual(calls.go, ['#/ask']);
+});
+
+test('Clear history opens "Clear Ask history?" with Cancel focused and Return cancelling; "Clear history" sends one ask_delete {all:true}', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.handle('ask-clear', el({}));
+  assert.equal(calls.mutate.length, 0, 'nothing before the dialog answers');
+  const [dialog] = calls.confirm;
+  assert.equal(dialog.title, 'Clear Ask history?');
+  assert.equal(dialog.text, 'Connect deletes every question and answer kept on this Mac. Your mail, tasks and notes are not touched.');
+  assert.equal(dialog.confirm, 'Clear history');
+  assert.equal(dialog.initialFocus, 'cancel');
+  assert.equal(dialog.returnCancels, true);
+  await dialog.onConfirm();
+  assert.deepEqual(calls.mutate, [['ask_delete', { all: true }]]);
+  assert.deepEqual(calls.go, ['#/ask']);
+});
+
+test('the examples fill the box without asking', async () => {
+  const { ctl, state, calls } = pageHarness({ askState: 'empty', threadId: null, threads: {} });
+  await ctl.handle('ask-example', el({ text: 'What’s due this week?' }));
+  assert.equal(state.ask.pageText, 'What’s due this week?');
+  assert.deepEqual(calls.focus.at(-1), ['#ask-follow-up', null]);
+  assert.equal(calls.mutate.length, 0);
+});
+
+test('Back and Esc go to state.ask.from; focus returns to where it was before ⌘K', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.handle('ask-back', el({}));
+  assert.deepEqual(calls.go, ['#/inbox']);
+  assert.deepEqual(calls.focusBack, ['[data-id="m-priya"]']);
+  // Esc in the box clears its words first, then leaves.
+  const esc = pageHarness();
+  esc.ctl.pageInput('typed');
+  const ev = keyEvent({ key: 'Escape', target: { id: 'ask-follow-up', value: 'typed' } });
+  assert.equal(esc.ctl.key(ev), true);
+  assert.equal(esc.state.ask.pageText, '');
+  assert.deepEqual(esc.calls.go, []);
+  esc.ctl.key(keyEvent({ key: 'Escape', target: { id: 'ask-follow-up', value: '' } }));
+  await tick();
+  assert.deepEqual(esc.calls.go, ['#/inbox']);
+  // Opened with no page before: back to Today.
+  const none = pageHarness({ from: null, focusBack: null });
+  await none.ctl.back();
+  assert.deepEqual(none.calls.go, ['#/today']);
+});
+
+test('History, New ask and Check Settings › AI navigate; a mark focuses its chip', async () => {
+  const { ctl, calls } = pageHarness();
+  await ctl.handle('ask-history', el({ askThread: 'ask-3a9e' }));
+  await ctl.handle('ask-new', el({}));
+  await ctl.handle('ask-settings', el({}));
+  assert.deepEqual(calls.go, ['#/ask/ask-3a9e', '#/ask', '#/settings/ai']);
+  assert.deepEqual(calls.focus.find(([sel]) => sel === '#ask-follow-up'), ['#ask-follow-up', null]);
+  await ctl.handle('ask-mark', el({ askMark: 'ask-cite-turn-1-a1' }));
+  assert.deepEqual(calls.focus.at(-1), ['#ask-cite-turn-1-a1', null]);
+});

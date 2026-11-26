@@ -63,7 +63,8 @@ import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
 import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from './inbox-open.js';
 import { captureBar, isCaptureKey, newCaptureView } from './capture-model.js';
 import { createCaptureController } from './capture-controller.js';
-import { askPageStub, isAskKey, newAskView } from './ask-model.js';
+import { isAskKey, isStopKey, newAskView } from './ask-model.js';
+import { askPage, answeringLine } from './view-ask.js';
 import { createAskController } from './ask-controller.js';
 
 const ROUTES = HASH_ROUTES;
@@ -521,7 +522,9 @@ async function render() {
   if (state.route === 'meetings') meetingsUi.ensureSelection();
   if (state.route === 'automations') automationsUi.follow();
   if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
-  if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
+  if (['inbox', 'today', 'automations', 'ask'].includes(state.route)) readClaude();
+  // The open Ask thread is read again when the snapshot moved for it (drawn when it lands).
+  if (state.route === 'ask') askUi?.refresh().catch(fail);
   if (state.route === 'tasks') tasksDrawnDay = dayKey(Date.now(), s.settings.timeZone);
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
@@ -532,7 +535,7 @@ async function render() {
           : state.route === 'tasks' ? tasksPage(s, ctx)
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [], taskLabel: meetingsUi.taskLabel() })
           : state.route === 'plugin' ? pluginPageHtml()
-          : state.route === 'ask' ? askPageStub(state)
+          : state.route === 'ask' ? askPage(state, s, askUi?.thread(), { wide: (state.ask.wide = askWide(s)), now: Date.now(), profiles: state.ai.profiles, ai: state.ai })
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
@@ -845,6 +848,8 @@ async function route(name, tab, pluginPath = null) {
   if (onPluginsTab) pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
   if (state.route === 'tasks') syncTasks();
+  // An Ask thread: read, then focus its newest turn's heading.
+  if (state.route === 'ask') askUi?.openThread()?.catch(fail);
 }
 
 /** Asks the active task provider for a pull (Tasks open, the window back in front); native
@@ -1246,7 +1251,7 @@ function readClaude({ now = false, detect = false } = {}) {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
-    if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
+    if (changed && ['inbox', 'today', 'automations', 'ask'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
   }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
 }
@@ -1987,9 +1992,11 @@ const askUi = store && createAskController({
   render: () => {
     if (!ready || modalOpen()) return;
     if (pressing) askHeld = true;
-    else render().catch(fail);
+    else return render().catch(fail);
+    return undefined;
   },
-  go: hash => goHash(hash), toast, withClaudeChoice, fail,
+  go: hash => goHash(hash), toast, withClaudeChoice, fail, announce,
+  confirm: options => confirmModal(options),
   hash: () => location.hash,
   hiddenCalendars: () => [...hiddenCalendars()],
   openCapture: options => openCapture(options),
@@ -2018,7 +2025,31 @@ document.addEventListener('keydown', ev => {
 }, true);
 document.addEventListener('input', ev => {
   if (ev.target.id === 'ask-input') askUi?.input(ev.target.value);
+  else if (ev.target.id === 'ask-follow-up') askUi?.pageInput(ev.target.value);
 }, true);
+
+/** Whether the Ask page draws its history as a column: Default, a main area 1,100 px or wider. */
+function askWide(s) {
+  const main = document.getElementById('workspace-main');
+  return viewOf(s.settings) === 'default' && (main?.clientWidth || 0) >= 1100;
+}
+window.addEventListener('resize', () => {
+  if (ready && state.route === 'ask' && askWide(snap()) !== state.ask.wide && !modalOpen()) render().catch(fail);
+});
+// The answering line's seconds tick on screen every second; the status a screen reader hears
+// moves at most every 5 s (ask-capture § Accessibility).
+setInterval(() => {
+  if (!ready || state.route !== 'ask') return;
+  const now = Date.now() / 1000;
+  for (const el of root.querySelectorAll('[data-ask-since]')) {
+    const secs = Math.max(0, Math.floor(now - Number(el.dataset.askSince)));
+    const line = answeringLine(el.dataset.askProfile, secs);
+    const tick = el.querySelector('[data-ask-tick]');
+    if (tick && tick.textContent !== line) tick.textContent = line;
+    const sr = el.querySelector('[data-ask-sr]');
+    if (sr && secs - Number(sr.dataset.secs || 0) >= 5) Object.assign(sr, { textContent: line }).dataset.secs = String(secs);
+  }
+}, 1000);
 // Focus into the field opens its list; focus or a press anywhere else closes it.
 document.addEventListener('focusin', ev => {
   if (!askUi || !ready) return;
@@ -2126,6 +2157,12 @@ document.addEventListener('keydown', ev => {
     const el = document.activeElement;
     const from = el && root.contains(el) && !el.closest('.ws-ask-field') ? controlSelector(el) : null;
     askUi?.focusField({ from }).catch(fail);
+    return;
+  }
+  // ⌘.: Stop the running answer, on the Ask page or in the field.
+  if (isStopKey(ev) && (state.route === 'ask' || ev.target.closest?.('.ws-ask-field')) && snap().ask?.running) {
+    ev.preventDefault();
+    askUi?.stop().catch(fail);
     return;
   }
   if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
@@ -3485,6 +3522,13 @@ document.addEventListener('focusout', ev => {
 
 document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  // Esc on the Ask page (not in a box with words, an open ⋯ having taken it already): Back.
+  if (state.route === 'ask' && ev.key === 'Escape' && !ev.isComposing && !state.capture.open
+    && !ev.target.closest?.('.ws-ask-field,.ws-ask-page-box,.ws-term') && !(ev.target.matches?.('input,textarea') && ev.target.value)) {
+    ev.preventDefault();
+    askUi?.back().catch(fail);
+    return;
+  }
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
     // ←/→ on a divider, a section tab or a widget grip move that, not the week.

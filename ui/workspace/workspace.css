@@ -3220,9 +3220,74 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-ask-field{display:none}
   .ws-ask-rail{display:grid}
 }
-/* The Ask page's box (the page itself comes with its thread view). */
-.ws-ask-page{max-width:760px}
-.ws-ask-page-box{display:flex;gap:8px;margin-top:12px}
+/* The Ask page (ask-capture design § 7): Back and, below a 1,100 px main area or in Compact,
+   History ▾ and New ask in the header; a wide Default window draws the history as a 240 px
+   column. The answer column is at most 760 px in both views; Compact sizes it by its tokens. */
+.ws-ask-page{max-width:1100px;min-width:0}
+.ws-ask-head{display:flex;align-items:center;gap:8px;margin-bottom:16px;min-width:0}
+.ws-ask-page:not(:has(.ws-ask-cols))>.ws-ask-head{max-width:760px}
+.ws-ask-back{padding:2px 4px;margin-left:-4px;border:0;border-radius:4px;background:none;color:var(--ws-link);font-size:var(--ws-fs-secondary);font-weight:600;cursor:pointer}
+.ws-ask-back:hover{text-decoration:underline}
+.ws-ask-cols{display:grid;grid-template-columns:240px minmax(0,760px);gap:24px;align-items:start}
+.ws-ask-main{max-width:760px;min-width:0}
+.ws-ask-history{display:flex;flex-direction:column;gap:2px;min-width:0;padding:12px;border:1px solid var(--ws-border);border-radius:var(--ws-radius);background:var(--ws-card)}
+.ws-ask-htitle{margin:0 0 6px;padding:0 6px;font-size:var(--ws-fs-secondary);font-weight:600;color:var(--ws-text)}
+.ws-ask-hgroup{margin:8px 0 2px;padding:0 6px;font-size:var(--ws-fs-label);font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:var(--ws-faint)}
+.ws-ask-hlist{list-style:none;margin:0;padding:0;display:grid;gap:1px}
+.ws-ask-hitem{display:flex;align-items:center;gap:2px;min-width:0;border-radius:5px}
+.ws-ask-hitem:hover{background:var(--ws-hover)}
+.ws-ask-hrow{flex:1;min-width:0;padding:4px 6px;font-size:var(--ws-fs-secondary);line-height:18px;color:var(--ws-text-2);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-ask-hrow[aria-current=page]{color:var(--ws-text);font-weight:600}
+.ws-ask-hrow[aria-current=page]::before{content:"● ";color:var(--ws-accent)}
+.ws-ask-hmore{flex:none}
+.ws-ask-hmore>summary{opacity:.6}
+.ws-ask-hitem:hover .ws-ask-hmore>summary,.ws-ask-hmore[open]>summary,.ws-ask-hmore>summary:focus-visible{opacity:1}
+.ws-ask-clear{align-self:flex-start;margin-top:10px}
+.ws-ask-hmenu .ws-menu-panel{width:280px;max-width:calc(100vw - 32px);padding:0}
+.ws-ask-hmenu .ws-ask-history{border:0;background:none;max-height:60vh;overflow:auto}
+.ws-ask-turn{padding:14px 0 16px;border-bottom:1px solid var(--ws-border);min-width:0}
+.ws-ask-turn:first-child{padding-top:0}
+.ws-ask-q{margin:0 0 4px;font-size:var(--ws-fs-heading-sm);line-height:22px;font-weight:600;color:var(--ws-text);overflow-wrap:anywhere}
+.ws-ask-q:focus{outline:none}
+.ws-ask-q:focus-visible{outline:2px solid var(--ws-focus);outline-offset:2px;border-radius:3px}
+.ws-ask-about{display:inline-block;margin:0 0 8px;padding:2px 8px;border-radius:6px;background:color-mix(in srgb,var(--ws-accent) 14%,transparent);font-size:var(--ws-fs-meta);line-height:16px;color:var(--ws-text);overflow-wrap:anywhere}
+.ws-ask-about-gone{margin:-4px 0 8px;font-size:var(--ws-fs-meta);color:var(--ws-amber)}
+.ws-ask-note{margin:4px 0 8px}
+.ws-md.ws-ask-answer{padding:0;max-width:none;font-size:var(--ws-fs-body);line-height:var(--ws-lh-body,22px);color:var(--ws-text)}
+.ws-ask-answer p{margin:0 0 8px}
+.ws-ask-answer ul,.ws-ask-answer ol{margin:0 0 8px;padding-left:20px}
+.ws-ask-mark{margin-left:1px;font-size:.72em;font-weight:600;color:var(--ws-faint)}
+a.ws-ask-mark{color:var(--ws-link);cursor:pointer;text-decoration:none}
+a.ws-ask-mark:hover{text-decoration:underline}
+.ws-ask-cites{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;padding:0}
+.ws-ask-cite{display:inline-block;max-width:100%;padding:2px 8px;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-raised);font-size:var(--ws-fs-meta);line-height:16px;color:var(--ws-text-2);overflow-wrap:anywhere}
+.ws-ask-cite:focus-visible{outline:2px solid var(--ws-focus);outline-offset:1px}
+.ws-ask-cite-gone{color:var(--ws-faint);border-style:dashed;background:none}
+.ws-ask-fallback{margin:8px 0 0;font-size:var(--ws-fs-meta);color:var(--ws-muted)}
+.ws-ask-meta{margin-top:8px;font-size:var(--ws-fs-meta);line-height:16px;color:var(--ws-muted)}
+.ws-ask-meta>summary{cursor:pointer;list-style:none;overflow-wrap:anywhere}
+.ws-ask-meta>summary::-webkit-details-marker{display:none}
+.ws-ask-meta[open]>summary span{display:inline-block;transform:rotate(180deg)}
+.ws-ask-searched{margin:4px 0 0;color:var(--ws-faint);overflow-wrap:anywhere}
+.ws-ask-running{display:flex;align-items:center;flex-wrap:wrap;justify-content:space-between;gap:8px;margin-top:6px}
+.ws-ask-status{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--ws-fs-secondary);color:var(--ws-muted)}
+.ws-ask-spin{width:12px;height:12px;border:2px solid var(--ws-border-strong);border-top-color:var(--ws-accent);border-radius:50%;animation:ws-ask-spin 1s linear infinite}
+@keyframes ws-ask-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.ws-ask-spin{animation:none}}
+.ws-ask-stop kbd{font:inherit;color:var(--ws-faint)}
+.ws-ask-failed{margin:6px 0 0;font-size:var(--ws-fs-secondary);color:var(--ws-red);overflow-wrap:anywhere}
+.ws-ask-stopped{margin:0;font-size:var(--ws-fs-secondary);color:var(--ws-muted)}
+.ws-ask-acts{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px}
+.ws-ask-gone{margin:0 0 8px;color:var(--ws-amber);font-size:var(--ws-fs-secondary)}
+.ws-ask-loading{min-height:80px}
+.ws-ask-empty{margin:8px 0 4px}
+.ws-ask-empty-line{margin:0 0 10px;font-size:var(--ws-fs-heading-sm);color:var(--ws-text)}
+.ws-ask-examples{display:flex;flex-wrap:wrap;gap:6px}
+.ws-ask-page-box{display:flex;gap:8px;margin-top:12px;min-width:0}
+.ws-ask-page-box .ws-input{flex:1;min-width:0}
+.ws-ask-why{margin:6px 0 0;font-size:var(--ws-fs-meta);color:var(--ws-muted)}
+.ws-ask-privacy{max-width:760px;margin:20px 0 0;font-size:var(--ws-fs-meta);line-height:16px;color:var(--ws-faint)}
+.ws-ask-cols~.ws-ask-privacy{margin-left:264px}
 
 /* A rail has no labels: a tooltip names the icon. */
 .ws-tooltip{position:fixed;z-index:500;transform:translateY(-50%);pointer-events:none;padding:5px 9px;border-radius:6px;background:var(--ws-text);color:var(--ws-bg);font-size:var(--ws-fs-secondary);line-height:16px;white-space:nowrap;box-shadow:0 4px 14px #00000040}

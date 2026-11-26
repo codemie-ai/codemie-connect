@@ -91,7 +91,8 @@
       "profile": "claude",
       "question": "What did I promise Priya this week?",
       "searched": "tasks 12 (Todoist) · events 7, Thu 19 Nov – Thu 3 Dec · messages 9 · meetings 2 · people 1 · facts 1 (Knowledge)",
-      "state": "done"
+      "state": "done",
+      "took": 14
     },
     {
       "about": null,
@@ -111,7 +112,8 @@
       "profile": "codemie:prod",
       "question": "And Jordan Lee?",
       "searched": null,
-      "state": "failed"
+      "state": "failed",
+      "took": null
     },
     {
       "about": null,
@@ -128,7 +130,8 @@
       "profile": "claude",
       "question": "Who is Marek Novak?",
       "searched": null,
-      "state": "stopped"
+      "state": "stopped",
+      "took": null
     }
   ],
   "updatedAt": 1795000400

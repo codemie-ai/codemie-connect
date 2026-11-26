@@ -7,7 +7,7 @@
 // proves the window's side, not native storage.
 import { PRESETS, compact, todayOf } from '../../workspace/today-grid.js';
 import { SETTINGS_GROUPS } from '../../workspace/view-settings.js';
-import { askStates } from '../fixtures/workspace-fixture.mjs';
+import { askStates, askThread } from '../fixtures/workspace-fixture.mjs';
 
 // The Default layout as todayOf builds it for a workspace never customized.
 const DEFAULT_TODAY = todayOf({ widgetWidths: {} }, {});
@@ -839,6 +839,154 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForTimeout(200);
       assert(await page.evaluate(() => document.activeElement?.id) !== 'ask-input', '⌘K focused the field under a dialog');
       await page.evaluate(() => document.querySelector('dialog.ws-modal')?.remove());
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- E11: the Ask page (ask-capture § 5, § 7)
+  // The thread ask-thread.json (done, failed, stopped), opened from the Inbox through Recent, in
+  // both themes and views at 1440, 1000 and 1680 px; then an answer running (Stop and ⌘. send one
+  // job_cancel), Back to the Inbox as it was; the empty page; Delete and Clear history.
+  const sizes = async (page, name, view) => {
+    for (const width of [1440, 1000, 1680]) {
+      await page.setViewportSize({ width, height: 900 });
+      const wide = view === 'default' && width >= 1440;
+      await page.waitForSelector(wide ? '.ws-ask-cols .ws-ask-history' : '.ws-ask-hmenu');
+      if (!wide) assert(await page.locator('[data-action="ask-new"]:text-is("New ask")').count() === 1, `${name} ${width}: no New ask`);
+      await noOverflow(page, `${name} at ${width}`);
+      await shot(page, `${name}-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const name = `layout-e11-${theme}-${view}`;
+      const { page, context, errors } = await open({ theme, width: 1440, height: 900, hash: '#/inbox', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E11 (${theme} ${view}): the Ask page's turns, states, history and Back`, async () => {
+        await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+        await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.click('#ask-recent-0');
+        await page.waitForSelector('[data-ask-turn="turn-3"]');
+        assert(new URL(page.url()).hash === '#/ask/ask-7f2c', `hash ${new URL(page.url()).hash}`);
+        // Opening the page focuses the newest turn's heading.
+        await page.waitForFunction(() => document.activeElement?.matches('[data-ask-turn="turn-3"] .ws-ask-q'));
+        const seen = await page.evaluate(() => ({
+          back: document.querySelector('.ws-ask-back')?.textContent,
+          region: document.querySelector('section.ws-ask-page')?.getAttribute('aria-label'),
+          turns: document.querySelectorAll('article.ws-ask-turn').length,
+          failed: document.querySelector('.ws-ask-failed')?.textContent.trim(),
+          stopped: document.querySelector('.ws-ask-stopped')?.textContent,
+          meta: document.querySelector('.ws-ask-meta summary')?.textContent.trim(),
+          marks: document.querySelectorAll('[data-ask-turn="turn-1"] .ws-ask-mark').length,
+          privacy: document.querySelector('.ws-ask-privacy')?.textContent,
+          current: document.querySelector('.ws-ask-hrow[aria-current=page]')?.dataset.askThread,
+          answerWidth: Math.round(document.querySelector('.ws-ask-main')?.getBoundingClientRect().width || 0),
+        }));
+        assert(seen.back === '← Back to Inbox' && seen.region === 'Ask' && seen.turns === 3, JSON.stringify(seen));
+        assert(seen.failed === '✕ Couldn’t answer: CodeMie is not signed in.' && seen.stopped === 'Stopped.', JSON.stringify(seen));
+        assert(/^Claude Code · 14 s · from 12 tasks, 7 events, 9 messages, 2 meetings, 1 person, 1 fact · Shortened to fit\./.test(seen.meta), seen.meta);
+        assert(seen.marks === 7 && /^Answers use what Connect has on this Mac:/.test(seen.privacy) && seen.answerWidth <= 760, JSON.stringify(seen));
+        assert(await page.locator('[data-action="ask-settings"]:text-is("Check Settings › AI")').count() === 1, 'no Check Settings › AI');
+        // The history (the column, or History ▾'s list in Compact) marks the open thread.
+        assert(seen.current === 'ask-7f2c', `aria-current: ${seen.current}`);
+        assert((await calls(page, 'ask_read')).length >= 1 && (await calls(page, 'ask_start')).length === 0, 'opening sent a write');
+        await sizes(page, `${name}-thread`, view);
+        // The meta line's ▾ shows the whole searched line.
+        await page.click('[data-ask-turn="turn-1"] .ws-ask-meta summary');
+        await page.waitForSelector('.ws-ask-searched:has-text("events 7, Thu 19 Nov – Thu 3 Dec")');
+        // An answer running: the turn says so with its seconds and Stop; the box waits.
+        await page.evaluate(({ thread, running }) => {
+          const t = structuredClone(thread);
+          t.turns = [{ ...t.turns[0], searched: `${t.turns[0].searched} · Microsoft 365 isn't connected` }, { ...t.turns[2], id: 'turn-2', state: 'running', jobId: 'job-9' }];
+          window.__askThreads = { 'ask-7f2c': t };
+          const startedAt = Math.floor(Date.now() / 1000) - 9;
+          window.__lastAsk = { ...running, running: { ...running.running, startedAt } };
+          window.__askSet(window.__lastAsk, [{ id: 'job-9', kind: 'ask', key: 'ask:ask-7f2c', state: 'running', dueAt: startedAt, attempts: 1, connectionId: null, policy: {}, payload: { threadId: 'ask-7f2c', turnId: 'turn-2', purpose: 'ask', profile: 'claude', startedAt }, result: null }]);
+        }, { thread: askThread(), running: askStates().running });
+        await page.waitForSelector('.ws-ask-stop[aria-keyshortcuts="Meta+Period"]');
+        const status = await page.locator('[data-ask-sr][role=status]').innerText();
+        assert(/^Answering with Claude Code · \d+ s$/.test(status), status);
+        assert(await page.locator('#ask-follow-up').isDisabled(), 'the box asks while an answer runs');
+        assert(await page.locator('#ask-box-why:text-is("Connect is still answering. Stop it or wait.")').count() === 1, 'no reason');
+        assert(await page.locator('.ws-ask-note:has-text("Microsoft 365 isn’t connected, so this answer leaves out your mail, Teams and calendar.")').count() === 1, 'no Microsoft line');
+        // The seconds tick on screen.
+        const before = await page.locator('[data-ask-tick]').innerText();
+        await page.waitForFunction(was => document.querySelector('[data-ask-tick]')?.textContent !== was, before, { timeout: 3000 });
+        await page.setViewportSize({ width: 1000, height: 900 });
+        await noOverflow(page, `${name} running at 1000`);
+        await shot(page, `${name}-running-1000`);
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.click('.ws-ask-stop');
+        await page.waitForFunction(() => window.__bridgeCalls.filter(([op]) => op === 'job_cancel').length === 1);
+        // ⌘. on a run started again (native had settled the first): one more job_cancel.
+        await page.evaluate(() => {
+          const job = { id: 'job-9', kind: 'ask', key: 'ask:ask-7f2c', state: 'running', dueAt: 0, attempts: 1, connectionId: null, policy: {}, payload: { threadId: 'ask-7f2c', turnId: 'turn-2', purpose: 'ask', profile: 'claude', startedAt: Math.floor(Date.now() / 1000) } };
+          window.__askSet(JSON.parse(JSON.stringify(window.__lastAsk || {})), [job]);
+        });
+        await page.waitForSelector('.ws-ask-stop');
+        await page.keyboard.press('Meta+Period');
+        await page.waitForFunction(() => window.__bridgeCalls.filter(([op]) => op === 'job_cancel').length === 2);
+        const cancels = await calls(page, 'job_cancel');
+        assert(cancels.length === 2 && cancels.every(c => c.id === 'job-9'), JSON.stringify(cancels));
+        // Back: the Inbox as it was, Priya's row still selected.
+        await page.evaluate(ask => window.__askSet(ask), askStates().idle);
+        await page.click('.ws-ask-back');
+        await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // The empty page: the line and three examples that fill the box without asking.
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask', settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E11 (${theme} ${view}): the empty Ask page`, async () => {
+        await page.waitForSelector('.ws-ask-empty-line:text-is("Ask about your mail, meetings, calendar and tasks.")');
+        const examples = await page.locator('[data-action="ask-example"]').allInnerTexts();
+        assert(examples.join('|') === 'What’s due this week?|What did I agree in my last meeting?|Who’s waiting on me?', examples.join('|'));
+        await page.click('[data-action="ask-example"] >> nth=1');
+        await page.waitForFunction(() => document.getElementById('ask-follow-up')?.value === 'What did I agree in my last meeting?' && document.activeElement?.id === 'ask-follow-up');
+        assert((await calls(page, 'ask_start')).length === 0, 'an example asked');
+        await noOverflow(page, `${theme} ${view} empty at 1000`);
+        await shot(page, `layout-e11-${theme}-${view}-empty-1000`);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // Delete is at once with no Undo; Clear history asks first, Return cancels.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/ask/ask-7f2c', patch: withRecent });
+    await check('layout E11: ⋯ Delete sends one ask_delete at once; Clear history asks first and Return cancels', async () => {
+      await page.waitForSelector('[data-ask-turn="turn-3"]');
+      await page.click('[data-menu="ask-thread-ask-3a9e"] summary');
+      const del = page.locator('[data-action="ask-delete"][data-ask-thread="ask-3a9e"]');
+      assert(await del.getAttribute('aria-label') === 'Delete “When is the QBR?”', await del.getAttribute('aria-label'));
+      await del.click();
+      await page.waitForSelector('[data-ask-thread="ask-3a9e"]', { state: 'detached' });
+      assert(JSON.stringify(await calls(page, 'ask_delete')) === '[{"threadId":"ask-3a9e"}]', 'one ask_delete');
+      assert(await page.locator('dialog.ws-modal').count() === 0, 'Delete asked first');
+      await page.click('[data-action="ask-clear"]');
+      await page.waitForSelector('dialog.ws-modal h2:text-is("Clear Ask history?")');
+      assert(await page.locator('dialog.ws-modal .ws-modal-text:text-is("Connect deletes every question and answer kept on this Mac. Your mail, tasks and notes are not touched.")').count() === 1, 'the dialog body');
+      assert(await page.evaluate(() => document.activeElement?.textContent) === 'Cancel', 'Cancel is not focused');
+      await page.waitForTimeout(300);
+      await shot(page, 'layout-e11-clear-dialog');
+      await page.waitForTimeout(600);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('dialog.ws-modal', { state: 'detached' });
+      assert((await calls(page, 'ask_delete')).length === 1, 'Return cleared the history');
+      await page.click('[data-action="ask-clear"]');
+      await page.waitForSelector('dialog.ws-modal');
+      await page.waitForTimeout(600);
+      await page.click('dialog.ws-modal button[type=submit]:text-is("Clear history")');
+      await page.waitForFunction(() => location.hash === '#/ask');
+      assert(JSON.stringify((await calls(page, 'ask_delete')).at(-1)) === '{"all":true}', 'no ask_delete {all:true}');
+      await page.waitForSelector('.ws-ask-empty-line');
       assert(errors.length === 0, errors.join(' | '));
     });
     await context.close().catch(() => {});

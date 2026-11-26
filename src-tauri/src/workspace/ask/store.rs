@@ -62,6 +62,10 @@ pub struct Turn {
     pub searched: Option<String>,
     #[serde(default)]
     pub cut: bool,
+    /// Seconds from the question to the answer (the page's meta line), set when the turn is
+    /// `done`; older records read `null`.
+    #[serde(default)]
+    pub took: Option<i64>,
     pub profile: Option<String>,
     pub model: Option<String>,
     pub fell_back_from: Option<String>,
@@ -218,6 +222,7 @@ pub(crate) mod tests {
             actions: Vec::new(),
             searched: None,
             cut: false,
+            took: None,
             profile: None,
             model: None,
             fell_back_from: None,

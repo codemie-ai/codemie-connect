@@ -653,7 +653,8 @@
             "profile": null,
             "question": "What did I promise Priya this week?",
             "searched": "tasks 2 (Todoist)",
-            "state": "done"
+            "state": "done",
+            "took": null
           },
           {
             "about": null,
@@ -670,7 +671,8 @@
             "profile": null,
             "question": "And Jordan Lee?",
             "searched": "tasks 2 (Todoist)",
-            "state": "queued"
+            "state": "queued",
+            "took": null
           }
         ],
         "updatedAt": 1795690800

@@ -2,7 +2,7 @@
 // 19, 32 and 34): the About label, Recent, the field's markup and the ⌘K test.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aboutOf, askField, askRailButton, fieldRunning, isAskKey, recentQuestions, newAskView } from '../workspace/ask-model.js';
+import { aboutOf, askField, askRailButton, fieldRunning, isAskKey, isStopKey, recentQuestions, newAskView } from '../workspace/ask-model.js';
 import { readFileSync } from 'node:fs';
 import { buildSnapshot, withAsk, askStates } from './fixtures/workspace-fixture.mjs';
 
@@ -140,4 +140,10 @@ test('⌘K does nothing inside the terminal dock, with a dialog or the setup she
   assert.equal(isAskKey(ev({ altKey: true })), false);
   assert.equal(isAskKey(ev({ metaKey: false })), false);
   assert.equal(isAskKey(ev({ key: 'n', code: 'KeyN' })), false);
+});
+
+test('⌘. is Stop: Meta only, not with ⌥ ⇧ ⌃ or mid-composition', () => {
+  const ev = over => ({ key: '.', code: 'Period', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...over });
+  assert.equal(isStopKey(ev()), true);
+  for (const o of [{ metaKey: false }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { isComposing: true }, { key: ',', code: 'Comma' }]) assert.equal(isStopKey(ev(o)), false, JSON.stringify(o));
 });

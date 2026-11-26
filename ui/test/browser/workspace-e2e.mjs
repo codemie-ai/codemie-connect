@@ -32,6 +32,7 @@ const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
 // capture_parse's answers by text, for the mock (when-cases.json, written by `when::` tests).
 const WHEN_CASES = JSON.parse(readFileSync(new URL('../fixtures/contract/when-cases.json', import.meta.url), 'utf8'));
+const ASK_THREAD = JSON.parse(readFileSync(new URL('../fixtures/contract/ask-thread.json', import.meta.url), 'utf8'));
 const core = process.env.PLAYWRIGHT_CORE;
 const playwright = await import(core ? pathToFileURL(join(core, 'index.js')).href : 'playwright-core');
 const chromium = playwright.chromium || playwright.default.chromium;
@@ -116,7 +117,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [] }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [], askThread = null }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -807,6 +808,13 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
     return j;
   }
   window.__folderMissing = id => { if (folders[id]) folders[id].missing = true; };
+  // Ask (ask-capture § 6): native moves the snapshot's `ask` (an answer starts, lands, is stopped)
+  // and, with it, the jobs a running answer holds; a check plays that with `__askSet`.
+  window.__askSet = (ask, jobs = []) => {
+    s.ask = ask;
+    for (const j of jobs) { s.jobs = s.jobs.filter(x => x.id !== j.id); s.jobs.unshift(j); }
+    update();
+  };
   // Another window (or a run) changes a document while the person edits it.
   window.__docChanged = (id, docId) => {
     const m = meetingRec(id);
@@ -1160,6 +1168,25 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       }
       const threadId = d.threadId || `ask-${crypto.randomUUID().slice(0, 12)}`;
       return { threadId, turnId: 'turn-1', jobId: `job-${crypto.randomUUID().slice(0, 8)}` };
+    },
+    // `ask_read` answers `window.__askThreads[id]` (a check's own threads), else ask-thread.json
+    // for its own id, else not_found as native does; `ask_delete` drops the threads from the
+    // snapshot's `ask` and answers `{deleted}`.
+    ask_read: d => {
+      calls.push(['ask_read', clone(d)]);
+      const own = window.__askThreads?.[d.threadId];
+      if (own) return clone(own);
+      if (askThread && d.threadId === askThread.id && !(window.__askDeleted || []).includes(d.threadId)) return clone(askThread);
+      fail('not_found', 'That conversation is gone. Ask again.');
+    },
+    ask_delete: d => {
+      calls.push(['ask_delete', clone(d)]);
+      const ids = d.all ? (s.ask?.threads || []).map(t => t.id) : [d.threadId];
+      window.__askDeleted = [...(window.__askDeleted || []), ...ids];
+      if (window.__askThreads) for (const id of ids) delete window.__askThreads[id];
+      const before = s.ask?.threads?.length || 0;
+      if (s.ask) s.ask = { ...s.ask, threads: s.ask.threads.filter(t => !ids.includes(t.id)) };
+      return { deleted: before - (s.ask?.threads?.length || 0) };
     },
     task_delete: d => {
       calls.push(['task_delete', clone(d)]);
@@ -1732,7 +1759,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary, draftVoice: voiceDraft } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES, askThread: ASK_THREAD })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);

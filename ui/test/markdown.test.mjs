@@ -135,3 +135,19 @@ test('the default still draws the whole front matter', () => {
   assert.match(html, /<dl class="ws-md-front">[^]*?<dt>summary<\/dt><dd>Agreed the export\.<\/dd>/);
   assert.match(html, /<h2>Philips sync<\/h2>/);
 });
+
+// Ask mode (ask-capture design § 7): an answer is plain reading text with bullets. No transcript
+// buttons for `[10:00]`, no front matter, no headings or tables; `[m3]` marks become what `cite`
+// returns (unknown ids go). The other callers are unchanged.
+test('ask mode: no time buttons, front matter, headings or tables; cite marks through `cite`', () => {
+  const md = ['---', 'title: x', '---', '# Summary', 'At [10:00] you agreed [m3] and [e9] **this**.', '| A | B |', '|---|---|', '| 1 | 2 |', `- a [t2] ${EVIL}`, '`[m3]` stays code'].join('\n');
+  const html = renderMarkdown(md, { mode: 'ask', cite: id => (id === 'm3' ? '<sup>M3</sup>' : id === 't2' ? '<sup>T2</sup>' : '') });
+  assert.doesNotMatch(html, /ws-md-ts|<dl|<h\d|<table/);
+  assert.match(html, /At \[10:00\] you agreed <sup>M3<\/sup> and  <strong>this<\/strong>\./);
+  assert.match(html, /<p>title: x<\/p>|title: x/);
+  assert.match(html, /<p>Summary<\/p>/);
+  assert.match(html, /<li>a <sup>T2<\/sup> &lt;script&gt;/);
+  assert.match(html, /<code>\[m3\]<\/code>/);
+  // Without the mode, the same text keeps its notes rendering.
+  assert.match(renderMarkdown('At [10:00]'), /ws-md-ts/);
+});

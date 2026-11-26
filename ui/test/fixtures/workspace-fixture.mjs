@@ -163,6 +163,8 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
 // `idle`, `running`, `failedLast`, `stoppedLast`.
 
 export const askStates = () => contract('ask-states');
+/** An `ask_read` answer (ask-thread.json): a done turn with cites of every kind and three actions, a failed turn and a stopped turn. */
+export const askThread = () => contract('ask-thread');
 
 /** `snapshot.ask` replaced with one of the named states from ask-states.json. */
 export function withAsk(s, stateName) {

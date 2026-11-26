@@ -10,8 +10,8 @@ import { shownView } from './tasks-dates-model.js';
 /** `state.ask`: the hash the Ask page was first opened from (`from`), the control focus goes
  *  back to on Esc (`focusBack`, a selector), whether × dropped the About for this question, the
  *  words in the field, whether its list is open, the Recent row the arrows are on, a refusal
- *  shown under the box, and the thread `#/ask/<id>` shows. */
-export const newAskView = () => ({ from: null, focusBack: null, aboutDropped: false, text: '', open: false, active: -1, error: '', busy: false, threadId: null });
+ *  shown under the box, the thread `#/ask/<id>` shows, and the page box's words and refusal. */
+export const newAskView = () => ({ from: null, focusBack: null, aboutDropped: false, text: '', open: false, active: -1, error: '', busy: false, threadId: null, pageText: '', pageError: '' });
 
 /** A question that comes back while an answer runs (Copy "Field"). */
 export const BUSY = 'Connect is still answering. Stop it or wait.';
@@ -135,19 +135,6 @@ export function askRailButton() {
   return `<button type="button" class="ws-ask-rail" data-action="ask-rail" aria-label="Ask" aria-keyshortcuts="Meta+K" title="Ask (⌘K)" data-tip="Ask (⌘K)">${icon('sparkles')}</button>`;
 }
 
-/** The Ask page's box until the page itself is drawn (Task 10 replaces this with the page): the
- *  main region labelled "Ask" and one box that asks (a follow-up on `#/ask/<id>`). */
-export function askPageStub(state) {
-  const thread = state?.ask?.threadId;
-  return `<section class="ws-ask-page" aria-label="Ask"><div class="ws-page-head"><h1>Ask</h1></div>
-      <form class="ws-ask-page-box" role="search" aria-label="Ask" novalidate>
-        <input id="ask-follow-up" class="ws-input" type="text" placeholder="${thread ? 'Ask a follow-up…' : 'Ask…'}" maxlength="2000" autocomplete="off" aria-label="${thread ? 'Ask a follow-up' : 'Ask Connect'}">
-        <button type="button" class="ws-btn ws-btn-primary" data-action="ask-page-submit">Ask</button>
-      </form>
-      ${state?.ask?.pageError ? `<p class="ws-ask-error" role="alert">${e(state.ask.pageError)}</p>` : ''}
-    </section>`;
-}
-
 /** Whether `ev` is ⌘K (Meta only: Ctrl+K stays the text boxes' "kill to end of line"), no ⌥,
  *  not mid-composition, with no dialog or setup sheet open, and not from the terminal dock
  *  (whose ⌘K clears the terminal). */
@@ -155,4 +142,10 @@ export function isAskKey(ev, { modal = false, sheet = false } = {}) {
   if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing || modal || sheet) return false;
   if (ev.target?.closest?.('.ws-term')) return false;
   return ev.code === 'KeyK' || String(ev.key || '').toLowerCase() === 'k';
+}
+
+/** Whether `ev` is ⌘. (Stop an answer): Meta only, no ⌥ ⇧ ⌃, not mid-composition. */
+export function isStopKey(ev) {
+  if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.isComposing) return false;
+  return ev.key === '.' || ev.code === 'Period';
 }

@@ -242,6 +242,6 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
   return dialog;
 }
 
-export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId, initialFocus, guard, onClose }) {
-  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId, initialFocus, guard, onClose });
+export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId, initialFocus, guard, onClose, returnCancels = false }) {
+  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId, initialFocus, guard, onClose, returnCancels });
 }

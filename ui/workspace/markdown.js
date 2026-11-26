@@ -3,9 +3,13 @@
 // front matter (a `<dl>`), headings, bullet, numbered and `- [ ]` lists (nested by indent), tables,
 // `>` quotes, code blocks, `---` rules, **bold**, *italic*, `code`, and `[hh:mm]` / `[hh:mm:ss]`
 // references, which become buttons that open the transcript at that moment. Links are not made.
+// `mode: 'ask'` (an Ask answer, ask-capture design § 7) reads plain: no time buttons, no front
+// matter, headings as paragraphs, table rows as text, and `[m3]` cite marks through `cite`.
 import { escapeHtml as e } from './store.js';
 
 const TIME = /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g;
+/** An Ask context id in square brackets (`[m3]`): one of the prefixes `a t e m n p f`. */
+const CITE = /\[([atemnpf]\d{1,4})\]/g;
 const LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const TABLE_RULE = /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
@@ -38,18 +42,18 @@ function bold(html) {
   return out + html.slice(copied);
 }
 
-/** Bold, italic and time references in text that is already escaped. */
-function format(html) {
-  return bold(html)
-    .replace(/(^|[\s(“"'])\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*(?=$|[\s).,;:!?”"'])/g, '$1<em>$2</em>')
-    .replace(TIME, '<button type="button" class="ws-md-ts" data-action="meeting-goto-line" data-t="$1" title="Show in the transcript">$1</button>');
+/** Bold, italic and time references (Ask: cite marks) in text that is already escaped. */
+function format(html, opts = {}) {
+  const styled = bold(html).replace(/(^|[\s(“"'])\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*(?=$|[\s).,;:!?”"'])/g, '$1<em>$2</em>');
+  if (opts.mode === 'ask') return opts.cite ? styled.replace(CITE, (_, id) => opts.cite(id) || '') : styled;
+  return styled.replace(TIME, '<button type="button" class="ws-md-ts" data-action="meeting-goto-line" data-t="$1" title="Show in the transcript">$1</button>');
 }
 
 /** One line of inline Markdown: `code` spans are kept as they are, the rest is formatted. */
-export function inline(text) {
+export function inline(text, opts = {}) {
   return String(text ?? '').split(/(`[^`]+`)/).map(part => (part.length > 2 && part.startsWith('`') && part.endsWith('`')
     ? `<code>${e(part.slice(1, -1))}</code>`
-    : format(e(part)))).join('');
+    : format(e(part), opts))).join('');
 }
 
 const tagSpans = v => v.replace(/^\[|\]$/g, '').split(',').map(t => t.trim()).filter(Boolean).map(t => `<span class="ws-md-tag">${e(t)}</span>`).join('');
@@ -94,7 +98,7 @@ function table(rows) {
 }
 
 /** A list from its lines (`[indent, marker, text]`), nested by indent. */
-function list(items) {
+function list(items, opts) {
   let i = 0;
   const build = indent => {
     const ordered = /\d/.test(items[i][1]);
@@ -112,8 +116,8 @@ function list(items) {
       i++;
       const check = /^\[( |x|X)\]\s+(.*)$/.exec(text);
       out.push(check
-        ? `<li class="ws-md-check${check[1] === ' ' ? '' : ' ws-md-done'}"><span class="ws-md-box" aria-hidden="true"></span><span>${inline(check[2])}</span></li>`
-        : `<li>${inline(text)}</li>`);
+        ? `<li class="ws-md-check${check[1] === ' ' ? '' : ' ws-md-done'}"><span class="ws-md-box" aria-hidden="true"></span><span>${inline(check[2], opts)}</span></li>`
+        : `<li>${inline(text, opts)}</li>`);
     }
     return ordered ? `<ol${first !== 1 ? ` start="${first}"` : ''}>${out.join('')}</ol>` : `<ul>${out.join('')}</ul>`;
   };
@@ -122,12 +126,13 @@ function list(items) {
   return html.join('');
 }
 
-function blocks(lines) {
+function blocks(lines, opts = {}) {
+  const ask = opts.mode === 'ask';
   const out = [];
   let i = 0;
   let para = [];
   const flush = () => {
-    if (para.length) out.push(`<p>${inline(para.join(' '))}</p>`);
+    if (para.length) out.push(`<p>${inline(para.join(' '), opts)}</p>`);
     para = [];
   };
   while (i < lines.length) {
@@ -147,7 +152,8 @@ function blocks(lines) {
     if (heading) {
       flush();
       const level = Math.min(6, heading[1].length + 1);
-      out.push(`<h${level}>${inline(heading[2].replace(/\s+#+\s*$/, ''))}</h${level}>`);
+      const text = inline(heading[2].replace(/\s+#+\s*$/, ''), opts);
+      out.push(ask ? `<p>${text}</p>` : `<h${level}>${text}</h${level}>`);
       i++;
       continue;
     }
@@ -156,14 +162,14 @@ function blocks(lines) {
       flush();
       const rows = [];
       while (i < lines.length && lines[i].trim().startsWith('|')) rows.push(lines[i++]);
-      out.push(rows.length > 1 && TABLE_RULE.test(rows[1]) ? table(rows) : `<p>${inline(rows.join(' '))}</p>`);
+      out.push(!ask && rows.length > 1 && TABLE_RULE.test(rows[1]) ? table(rows) : `<p>${inline(rows.join(' '), opts)}</p>`);
       continue;
     }
     if (trimmed.startsWith('>')) {
       flush();
       const quote = [];
       while (i < lines.length && lines[i].trim().startsWith('>')) quote.push(lines[i++].trim().replace(/^>\s?/, ''));
-      out.push(`<blockquote class="ws-md-quote">${blocks(quote)}</blockquote>`);
+      out.push(`<blockquote class="ws-md-quote">${blocks(quote, opts)}</blockquote>`);
       continue;
     }
     if (LIST.test(line)) {
@@ -174,7 +180,7 @@ function blocks(lines) {
         items.push([indent.replace(/\t/g, '  ').length, marker, text]);
         i++;
       }
-      out.push(list(items));
+      out.push(list(items, opts));
       continue;
     }
     para.push(trimmed);
@@ -186,9 +192,12 @@ function blocks(lines) {
 
 /** The notes as HTML: front matter between the first two `---` lines, then the blocks.
  *  `front: 'tags'` draws only the front matter's tags; `dropTitle` leaves out a first `# `
- *  heading that repeats it. */
-export function renderMarkdown(md, { front = 'all', dropTitle = '' } = {}) {
+ *  heading that repeats it. `mode: 'ask'` draws an Ask answer: no front matter, headings or
+ *  tables, `[10:00]` as text, and each `[m3]` mark replaced by `cite(id)` (escaped HTML, or ''
+ *  to drop it). */
+export function renderMarkdown(md, { front = 'all', dropTitle = '', mode = 'notes', cite = null } = {}) {
   const lines = String(md ?? '').replace(/\r\n?/g, '\n').split('\n');
+  if (mode === 'ask') return blocks(lines, { mode, cite });
   if (lines[0]?.trim() === '---') {
     const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
     if (end > 0) return frontMatter(lines.slice(1, end), front) + blocks(withoutTitle(lines.slice(end + 1), dropTitle));

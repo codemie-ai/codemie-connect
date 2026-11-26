@@ -1603,6 +1603,7 @@ mod tests {
             actions: Vec::new(),
             searched: None,
             cut: false,
+            took: None,
             profile: None,
             model: None,
             fell_back_from: None,
