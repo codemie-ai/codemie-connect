@@ -25,8 +25,8 @@ function snapshot({ provider = 'ready' } = {}) {
 
 /** A controller over fakes. `parse(text)` answers `capture_parse` (a promise or a value);
  *  `refuse[op]` makes that write throw `{code: 'validation', message}`. */
-function harness({ s = snapshot(), state = { route: 'today' }, parse = text => ({ title: text, due: null }), refuse = {}, wait = 0 } = {}) {
-  const calls = { mutate: [], queries: [], render: 0, toasts: [], go: [], saved: 0, focusBack: 0, order: [] };
+function harness({ s = snapshot(), state = { route: 'today' }, parse = text => ({ title: text, due: null }), refuse = {}, broken = {}, wait = 0 } = {}) {
+  const calls = { mutate: [], queries: [], render: 0, toasts: [], go: [], saved: 0, focusBack: 0, order: [], failed: [] };
   const ctl = createCaptureController({
     state,
     snap: () => s,
@@ -34,6 +34,7 @@ function harness({ s = snapshot(), state = { route: 'today' }, parse = text => (
       calls.mutate.push([op, data]);
       calls.order.push(op);
       if (refuse[op]) throw { code: 'validation', message: refuse[op], field: op === 'note_append' && /2,000/.test(refuse[op]) ? 'text' : undefined };
+      if (broken[op]) throw broken[op];
       return op === 'note_append' ? { id: 'note-1' } : { id: 'task-new' };
     },
     query: async (op, data) => {
@@ -45,6 +46,7 @@ function harness({ s = snapshot(), state = { route: 'today' }, parse = text => (
     go: hash => calls.go.push(hash),
     savePendingNote: async () => { calls.saved++; calls.order.push('savePendingNote'); },
     focusBack: () => { calls.focusBack++; },
+    fail: err => calls.failed.push(err),
     wait,
   });
   return { ctl, state, calls, s };
@@ -293,4 +295,34 @@ test('keys typed while composing are the input method\'s', () => {
   }
   assert.equal(h.state.capture.open, true);
   assert.equal(h.calls.mutate.length, 0);
+});
+
+test('a failed Undo says so', async () => {
+  const h = harness({ broken: { task_delete: { code: 'not_found', message: 'This task is no longer there.' } } });
+  h.ctl.open();
+  await typed(h, 'Send the deck');
+  await h.ctl.add();
+  await h.calls.toasts.at(-1).action.run();
+  assert.deepEqual(h.calls.toasts.at(-1), { message: 'This task is no longer there.', tone: 'error', action: undefined });
+});
+
+test('only refusals show under the box; any other failure goes to the window\'s error path', async () => {
+  const gone = { code: 'storage_unavailable', message: 'The data folder is not available.' };
+  const h = harness({ broken: { task_save: gone } });
+  h.ctl.open();
+  await typed(h, 'Send the deck');
+  await h.ctl.add();
+  assert.deepEqual(h.calls.failed, [gone]);
+  assert.equal(h.state.capture.error, '');
+  assert.equal(h.state.capture.open, true, 'the words stay for another try');
+});
+
+test('a note from a meeting page links nothing (note_append names messages only)', async () => {
+  const s = withMeetings(snapshot(), NOW);
+  const h = harness({ s, state: { route: 'meetings', meetings: { selected: 'mtg-philips' } } });
+  h.ctl.open({ mode: 'note' });
+  assert.doesNotMatch(h.calls.html, /data-capture-source/);
+  await typed(h, 'Follow up with Legal');
+  await h.ctl.add();
+  assert.deepEqual(h.calls.mutate, [['note_append', { text: 'Follow up with Legal' }]]);
 });

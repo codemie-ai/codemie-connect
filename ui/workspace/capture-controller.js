@@ -17,9 +17,10 @@ export const PARSE_WAIT_MS = 120;
  * `mutate(op, data)` a fenced write; `query(op, data)` a read-only request; `render()` draws the
  * bar again; `toast(message, tone, {label, run})`; `go(hash)` opens a Connect hash;
  * `savePendingNote()` saves what is typed in Today's Notes widget; `focusBack()` puts focus where
- * it was before the bar opened.
+ * it was before the bar opened; `fail(err)` is the window's error path, for any failure that is
+ * not a refusal (a refusal shows under the box).
  */
-export function createCaptureController({ state, snap, mutate, query, render = () => {}, toast = () => {}, go = () => {}, savePendingNote = async () => {}, focusBack = () => {}, wait = PARSE_WAIT_MS }) {
+export function createCaptureController({ state, snap, mutate, query, render = () => {}, toast = () => {}, go = () => {}, savePendingNote = async () => {}, focusBack = () => {}, fail = () => {}, wait = PARSE_WAIT_MS }) {
   state.capture ||= newCaptureView();
   const cap = () => state.capture;
   let timer = null;
@@ -130,11 +131,18 @@ export function createCaptureController({ state, snap, mutate, query, render = (
     try {
       result = await mutate('task_save', captureRequest(state, s, meOf(s)));
     } catch (err) {
-      c.error = err?.message || String(err);
+      refused(err);
       return null;
     }
     const id = result?.id;
-    toast(addedLine(snap(), 'Added to Connect'), 'success', id ? { label: 'Undo', run: () => mutate('task_delete', { id }) } : null);
+    const undo = async () => {
+      try {
+        await mutate('task_delete', { id });
+      } catch (err) {
+        toast(err?.message || 'Couldn’t undo. Try again.', 'error');
+      }
+    };
+    toast(addedLine(snap(), 'Added to Connect'), 'success', id ? { label: 'Undo', run: undo } : null);
     done(keep);
     return result;
   }
@@ -148,12 +156,19 @@ export function createCaptureController({ state, snap, mutate, query, render = (
       await savePendingNote();
       result = await mutate('note_append', src ? { text: c.text, sourceId: src.id } : { text: c.text });
     } catch (err) {
-      c.error = err?.message || String(err);
+      refused(err);
       return null;
     }
     toast('Added to Notes on Today', 'success', { label: 'Open', run: () => go('#/today') });
     done(keep);
     return result;
+  }
+
+  /** A refusal (`validation`) shows under the box; anything else goes to the window's error path.
+   *  The words stay either way. */
+  function refused(err) {
+    if (err?.code === 'validation') cap().error = err.message || String(err);
+    else fail(err);
   }
 
   function done(keep) {

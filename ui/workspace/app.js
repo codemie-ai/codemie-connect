@@ -522,9 +522,6 @@ async function render() {
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [], taskLabel: meetingsUi.taskLabel() })
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
-  // The quick-capture bar is kept through the redraw (its box, caret and words), not recreated.
-  const captureHost = root.querySelector(':scope > .ws-capture-host');
-  captureHost?.remove();
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
@@ -538,7 +535,7 @@ async function render() {
     page.className = pageClass;
     page.innerHTML = html;
   }
-  if (captureHost) root.append(captureHost);
+  // The quick-capture bar lives outside #workspace-app (not redrawn): laid over the new main area.
   drawCapture();
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
@@ -666,9 +663,12 @@ function renderSheet() {
   if (!html) {
     host?.querySelector('.cm-sheet')?.remove();
     root.inert = false;
-    if (pluginLayer) pluginLayer.inert = false;
+    // The quick-capture bar keeps the frames out of reach while it is open (drawCapture).
+    if (pluginLayer) pluginLayer.inert = state.capture.open;
     return;
   }
+  // The sheet is a dialog over everything: the capture bar closes under it.
+  if (state.capture.open) captureUi?.close({ refocus: false });
   if (!host) {
     host = document.createElement('div');
     host.id = 'cm-sheet-host';
@@ -1924,13 +1924,15 @@ document.addEventListener('dblclick', ev => {
 
 // ---------------------------------------------------------------- quick capture (ask-capture § 9)
 
-// The bar sits under the top bar, over the page (`.ws-capture-host`, a child of #workspace-app
-// placed by CSS), so the page never moves. `render` keeps it through a redraw; `drawCapture`
-// draws it from `state.capture`, swapping its parts in place around the box being typed in.
+// The bar sits under the top bar, over the page, so the page never moves. Like the setup sheet it
+// lives outside #workspace-app (`#ws-capture-host` in <body>, which a redraw never touches) and
+// above the plugin layer, whose frames it makes inert while open: a click where a frame is lands
+// on the page and closes the bar. `drawCapture` draws it from `state.capture`, laid over the main
+// area, swapping its parts in place around the box and the line (a live region), which stay.
 let captureReturn = null;
 const captureUi = store && createCaptureController({
   state, snap, mutate, query: (op, data) => store.query(op, data),
-  render: () => drawCapture(), toast, go: hash => goHash(hash), savePendingNote,
+  render: () => drawCapture(), toast, go: hash => goHash(hash), savePendingNote, fail,
   focusBack: () => {
     const back = captureReturn;
     captureReturn = null;
@@ -1942,35 +1944,64 @@ const captureUi = store && createCaptureController({
 /** Opens quick capture (⌘N, or Ask's Add as task), remembering where focus was for Esc. With the
  *  bar open already, only its box takes focus. */
 function openCapture(options) {
-  if (state.capture.open) return root.querySelector('#capture-input')?.focus();
+  if (state.capture.open) return document.getElementById('capture-input')?.focus();
   const el = document.activeElement;
   captureReturn = el && root.contains(el) ? { el, sel: controlSelector(el) } : null;
   return captureUi?.open(options);
 }
 
+/** Lays the bar over the main area, under the top bar (the menu may be a rail, collapsed or
+ *  dragged; the terminal dock may be open). */
+function placeCapture(host) {
+  const main = document.getElementById('workspace-main');
+  if (!main) return;
+  const r = main.getBoundingClientRect();
+  Object.assign(host.style, { left: `${Math.round(r.left)}px`, top: `${Math.round(r.top)}px`, width: `${Math.round(r.width)}px` });
+}
+
 function drawCapture() {
-  let host = root.querySelector(':scope > .ws-capture-host');
+  let host = document.getElementById('ws-capture-host');
+  const pluginLayer = document.querySelector('.ws-plugin-layer');
   if (!state.capture.open || recovering || !store?.get()) {
     host?.remove();
+    if (pluginLayer) pluginLayer.inert = sheetOpen();
     return;
   }
+  if (pluginLayer) pluginLayer.inert = true;
   const html = captureBar(state, snap());
   if (!host) {
     host = document.createElement('div');
+    host.id = 'ws-capture-host';
     host.className = 'ws-capture-host';
     host.innerHTML = html;
-    root.append(host);
+    document.body.append(host);
+    placeCapture(host);
     host.querySelector('#capture-input')?.focus({ preventScroll: true });
     return;
   }
+  placeCapture(host);
   const live = host.firstElementChild;
   const t = document.createElement('template');
   t.innerHTML = html;
   const fresh = t.content.firstElementChild;
   const focused = host.contains(document.activeElement) ? controlSelector(document.activeElement) : null;
-  for (const a of [...live.attributes]) if (!fresh.hasAttribute(a.name)) live.removeAttribute(a.name);
-  for (const a of [...fresh.attributes]) live.setAttribute(a.name, a.value);
-  for (const part of [...fresh.querySelectorAll('[data-capture-part]')]) live.querySelector(`[data-capture-part="${part.dataset.capturePart}"]`)?.replaceWith(part);
+  const sync = (to, from) => {
+    for (const a of [...to.attributes]) if (!from.hasAttribute(a.name)) to.removeAttribute(a.name);
+    for (const a of [...from.attributes]) if (to.getAttribute(a.name) !== a.value) to.setAttribute(a.name, a.value);
+  };
+  sync(live, fresh);
+  for (const part of [...fresh.querySelectorAll('[data-capture-part]')]) {
+    const old = live.querySelector(`[data-capture-part="${part.dataset.capturePart}"]`);
+    if (!old) continue;
+    if (part.dataset.capturePart !== 'line') {
+      old.replaceWith(part);
+      continue;
+    }
+    // The line is a polite live region: the same node, its content changed only when it differs,
+    // so the read date is said once, when its answer settles.
+    sync(old, part);
+    if (old.innerHTML !== part.innerHTML) old.innerHTML = part.innerHTML;
+  }
   const input = live.querySelector('#capture-input');
   const twin = fresh.querySelector('#capture-input');
   for (const name of ['aria-label', 'aria-invalid']) {
@@ -1994,6 +2025,7 @@ document.addEventListener('input', ev => {
 document.addEventListener('pointerdown', ev => {
   if (state.capture.open && !ev.target.closest?.('.ws-capture-host,.ws-toasts,.ws-modal')) captureUi?.close({ refocus: false });
 }, true);
+window.addEventListener('resize', () => { if (state.capture.open) drawCapture(); });
 
 // ⌘N opens quick capture, ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the
 // Settings menu's edge, Enter toggles it and ← → resize it.
@@ -2963,7 +2995,7 @@ document.addEventListener('click', ev => {
 
 document.addEventListener('click', async ev => {
   const el = ev.target.closest('[data-action]');
-  if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host')) return;
+  if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host,#ws-capture-host')) return;
   if (el.matches('input[type=checkbox],input[type=radio],select')) return;
   ev.preventDefault();
   if (el.disabled) return;

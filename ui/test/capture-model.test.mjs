@@ -44,9 +44,41 @@ test('a read date shows "Due Fri 27 Nov" with × labelled "Keep the words, no du
   const text = 'Send the deck by fri';
   const out = html({ route: 'today', capture: view({ text, parsed: { text, title: 'Send the deck', due: '2026-11-27' } }) }, snapshot());
   assert.match(out, /data-capture-due="2026-11-27">Due Fri 27 Nov<button[^>]*data-action="capture-due-drop" aria-label="Keep the words, no due date">×<\/button>/);
-  // An answer for other words (typed since) shows no date: the line always matches the box.
-  const stale = html({ route: 'today', capture: view({ text: `${text} or`, parsed: { text, title: 'Send the deck', due: '2026-11-27' } }) }, snapshot());
-  assert.doesNotMatch(stale, /data-capture-due/);
+});
+
+test('while newer words wait for their answer, the read date stays in the line marked stale (not shown, not sent)', () => {
+  const text = 'Send the deck by fri';
+  const state = { route: 'today', capture: view({ text: `${text} or`, parsed: { text, title: 'Send the deck', due: '2026-11-27' } }) };
+  const s = snapshot();
+  assert.match(html(state, s), /<span class="ws-capture-item" data-stale>[^]*data-capture-due="2026-11-27"/);
+  // Nothing else in the line changes, so the live region has nothing new to say.
+  const settled = html({ route: 'today', capture: view({ text, parsed: { text, title: 'Send the deck', due: '2026-11-27' } }) }, s);
+  const line = out => out.match(/<p id="capture-line"[^]*?<\/p>/)[0];
+  assert.equal(line(html(state, s)).replace(' data-stale', ''), line(settled));
+  assert.equal(captureRequest(state, s, meOf(s)).due, null, 'a stale date is never sent');
+});
+
+test('Tab goes from the box to Task, Note, then Add', () => {
+  const out = html({ route: 'today', capture: view() }, snapshot());
+  const at = needle => out.indexOf(needle);
+  assert.ok(at('id="capture-input"') < at('data-capture-mode="task"'));
+  assert.ok(at('data-capture-mode="task"') < at('data-capture-mode="note"'));
+  assert.ok(at('data-capture-mode="note"') < at('data-action="capture-add"'));
+  assert.doesNotMatch(out, /tabindex="-1"/);
+});
+
+test('a note links a message only, labelled with its subject as note_append writes it', () => {
+  const s = withMeetings(snapshot(), NOW);
+  s.records.find(r => r.id === 'm-atlas').data.title = 'Atlas\n  budget';
+  const note = source => ({ capture: view({ mode: 'note', source }) });
+  assert.equal(captureSource(note({ kind: 'meeting', id: 'mtg-philips' }), s), null);
+  assert.doesNotMatch(html(note({ kind: 'meeting', id: 'mtg-philips' }), s), /data-capture-source/);
+  assert.equal(captureSource(note({ kind: 'message', id: 'm-atlas' }), s).label, 'Atlas budget');
+  // A Teams chat with no subject of its own: the native line would say nothing, so no chip.
+  const chat = s.records.find(r => r.id === 'c-reply-1');
+  s.records.push({ ...chat, id: 'c-untitled', data: { ...chat.data, title: '' } });
+  assert.equal(captureSource(note({ kind: 'message', id: 'c-untitled' }), s), null);
+  assert.ok(captureSource({ capture: view({ source: { kind: 'message', id: 'c-untitled' } }) }, s), 'a task still links the chat');
 });
 
 test('a selected Inbox message is the source: "From: Atlas budget" with × "Don\'t link Atlas budget"', () => {

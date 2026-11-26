@@ -39,16 +39,23 @@ export function pageSource(state, snap) {
   return null;
 }
 
+const oneLine = text => String(text ?? '').replace(/\s+/g, ' ').trim();
+
 /** The bar's source as drawn and sent: `{kind, id, label, record}`, or null when there is none,
- *  × dropped it, or its record is gone. */
+ *  × dropped it, or its record is gone. A note links a message only, labelled with the subject
+ *  `note_append` writes in ` (from <subject>)` (its `data.title`, on one line); a message with
+ *  none links nothing. */
 export function captureSource(state, snap) {
   const src = state.capture?.source;
   if (!src) return null;
+  const note = state.capture.mode === 'note';
   if (src.kind === 'message') {
     const record = snap.records.find(r => r.kind === 'message' && r.id === src.id);
-    return record ? { kind: 'message', id: src.id, label: messageTitle(record, snap), record } : null;
+    if (!record) return null;
+    const label = note ? oneLine(record.data.title) : messageTitle(record, snap);
+    return label ? { kind: 'message', id: src.id, label, record } : null;
   }
-  if (src.kind === 'meeting') {
+  if (src.kind === 'meeting' && !note) {
     const m = meetingOf(snap, src.id);
     return m ? { kind: 'meeting', id: src.id, label: m.title, record: null } : null;
   }
@@ -73,24 +80,29 @@ export function captureRequest(state, snap, me) {
   return { text, due, owner: me?.address || 'You', ownerName: me?.name || null, status: 'todo', ...fields };
 }
 
-/** The bar: Task / Note, the box, Add, the line under the box and a refusal. The same markup in
- *  Default and Compact (the view's tokens size it). Every part app.js may swap in place carries
- *  `data-capture-part`; the box itself is kept, so typing is never interrupted. */
+/** The bar: the box, Task / Note, Add, the line under the box and a refusal. The same markup in
+ *  Default and Compact (the view's tokens size it); the grid puts Task / Note first on screen,
+ *  while Tab goes from the box to Task, Note, then Add (§ 11). Every part app.js may swap in
+ *  place carries `data-capture-part`; the box and the line (a live region) are kept, so typing
+ *  is never interrupted and the line speaks only what changed.
+ *  The read date stays drawn while newer words wait for their answer, marked `data-stale` (not
+ *  shown, nothing for the live region to say), and changes once that answer settles. */
 export function captureBar(state, snap) {
   const cap = state.capture;
   const task = cap.mode === 'task';
-  const mode = (id, label) => `<button type="button" role="radio" aria-checked="${cap.mode === id}" tabindex="${cap.mode === id ? 0 : -1}" data-capture-mode="${id}" data-action="capture-mode">${label}</button>`;
+  const mode = (id, label) => `<button type="button" role="radio" aria-checked="${cap.mode === id}" data-capture-mode="${id}" data-action="capture-mode">${label}</button>`;
   const src = captureSource(state, snap);
-  const due = captureDue(cap);
-  const label = due ? dueLabel(due) : null;
-  const parts = task ? [`<span data-capture-target>${e(targetLine(snap))}</span>`] : ['<span data-capture-target>Adds a line to Notes on Today</span>'];
-  if (label) parts.push(`<span class="ws-capture-chip" data-capture-due="${e(due)}">${e(label)}<button type="button" class="ws-capture-x" data-action="capture-due-drop" aria-label="Keep the words, no due date">×</button></span>`);
-  if (src) parts.push(`<span class="ws-capture-chip" data-capture-source="${e(src.kind)}">From: ${e(src.label)}<button type="button" class="ws-capture-x" data-action="capture-source-drop" aria-label="Don’t link ${e(src.label)}">×</button></span>`);
+  const due = task && !cap.dueDropped && cap.parsed?.due ? cap.parsed.due : null;
+  const stale = due && cap.parsed.text !== cap.text;
+  const item = (html, extra = '') => `<span class="ws-capture-item"${extra}><span class="ws-capture-sep" aria-hidden="true">·</span>${html}</span>`;
+  const parts = [task ? `<span data-capture-target>${e(targetLine(snap))}</span>` : '<span data-capture-target>Adds a line to Notes on Today</span>'];
+  if (due) parts.push(item(`<span class="ws-capture-chip" data-capture-due="${e(due)}">${e(dueLabel(due))}<button type="button" class="ws-capture-x" data-action="capture-due-drop" aria-label="Keep the words, no due date">×</button></span>`, stale ? ' data-stale' : ''));
+  if (src) parts.push(item(`<span class="ws-capture-chip" data-capture-source="${e(src.kind)}">From: ${e(src.label)}<button type="button" class="ws-capture-x" data-action="capture-source-drop" aria-label="Don’t link ${e(src.label)}">×</button></span>`));
   return `<form class="ws-capture" aria-label="Quick capture" data-mode="${task ? 'task' : 'note'}" novalidate>
-      <div class="ws-segmented ws-capture-modes" role="radiogroup" aria-label="Add as" data-capture-part="modes">${mode('task', 'Task')}${mode('note', 'Note')}</div>
       <input id="capture-input" class="ws-input ws-capture-input" type="text" value="${e(cap.text)}" maxlength="2000" autocomplete="off" spellcheck="true" aria-label="${task ? 'New task' : 'New note'}" aria-keyshortcuts="Meta+N" aria-describedby="capture-line"${cap.error ? ' aria-invalid="true"' : ''}>
+      <div class="ws-segmented ws-capture-modes" role="radiogroup" aria-label="Add as" data-capture-part="modes">${mode('task', 'Task')}${mode('note', 'Note')}</div>
       <button type="button" class="ws-btn ws-btn-primary ws-capture-add" data-action="capture-add" data-capture-part="add"${cap.busy ? ' disabled' : ''}>Add</button>
-      <p id="capture-line" class="ws-capture-line" role="status" aria-live="polite" data-capture-part="line">${parts.join('<span class="ws-capture-sep" aria-hidden="true">·</span>')}</p>
+      <p id="capture-line" class="ws-capture-line" role="status" aria-live="polite" data-capture-part="line">${parts.join('')}</p>
       <p class="ws-capture-error" role="alert" data-capture-part="error"${cap.error ? '' : ' hidden'}>${e(cap.error)}</p>
     </form>`;
 }

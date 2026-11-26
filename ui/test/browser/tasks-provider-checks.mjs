@@ -628,8 +628,20 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
       assert(await page.evaluate(() => document.activeElement?.id) === 'capture-input', 'the box takes focus');
       assert((await page.locator('[data-capture-target]').innerText()).trim() === 'Task in Todoist', 'Task in Todoist');
       assert(/^From: Review: Q4 workspace roadmap/.test((await page.locator('[data-capture-source]').innerText()).trim()), await page.locator('[data-capture-source]').innerText());
-      await page.keyboard.type('send the deck by fri');
+      // The line is one polite live region for the whole time the bar is open: its words change
+      // once, when the read date settles, not with every keystroke.
+      await page.evaluate(() => {
+        const line = document.getElementById('capture-line');
+        window.__captureLine = line;
+        window.__captureSaid = [line.textContent];
+        new MutationObserver(() => { if (line.textContent !== window.__captureSaid.at(-1)) window.__captureSaid.push(line.textContent); }).observe(line, { childList: true, subtree: true, characterData: true });
+      });
+      await page.keyboard.type('send the deck by fri', { delay: 30 });
       await page.waitForSelector('[data-capture-due="2026-11-27"]');
+      await page.waitForTimeout(200);
+      const said = await page.evaluate(() => ({ same: document.getElementById('capture-line') === window.__captureLine, said: window.__captureSaid }));
+      assert(said.same, 'the line was replaced while typing');
+      assert(said.said.length === 2 && /Due Fri 27 Nov/.test(said.said[1]) && !/Due/.test(said.said[0]), `the line changed ${said.said.length - 1} times: ${JSON.stringify(said.said)}`);
       assert(/^Due Fri 27 Nov/.test((await page.locator('[data-capture-due]').innerText()).trim()), 'Due Fri 27 Nov');
       const after = await page.locator('#workspace-page').boundingBox();
       assert(before.y === after.y && before.height === after.height, `the page moved: ${JSON.stringify([before, after])}`);
@@ -668,10 +680,17 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
         assert((await calls(page, 'task_delete')).length === 1, 'one task_delete');
         assert(errors.length === 0, errors.join(' | '));
       });
-      await check('tasks-provider P13: Esc clears the words first, then closes and puts focus back', async () => {
+      await check('tasks-provider P13: Tab goes from the box to Task, Note, then Add; Esc clears the words first, then closes and puts focus back', async () => {
         await page.click('#reply-body');
         await page.keyboard.press('ControlOrMeta+n');
         await page.waitForSelector('.ws-capture');
+        const order = [];
+        for (let i = 0; i < 3; i++) {
+          await page.keyboard.press('Tab');
+          order.push(await page.evaluate(() => document.activeElement?.dataset.captureMode || document.activeElement?.dataset.action || document.activeElement?.id));
+        }
+        assert(JSON.stringify(order) === JSON.stringify(['task', 'note', 'capture-add']), `Tab order ${JSON.stringify(order)}`);
+        await page.click('#capture-input');
         await page.keyboard.type('Half a thought');
         await page.keyboard.press('Escape');
         assert(await page.locator('.ws-capture').count() === 1 && await page.inputValue('#capture-input') === '', 'the first Esc clears');
