@@ -3497,7 +3497,8 @@ document.addEventListener('toggle', ev => {
     menu.removeAttribute('open');
     return;
   }
-  for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
+  // A menu inside another (a thread's ⋯ in the Ask page's History ▾) leaves the one around it open.
+  for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu && !other.contains(menu)) other.removeAttribute('open');
   if (menu.closest('.ws-reply-bar')) placeReplyMenu(menu);
   if (menu.matches('.ws-mtg-strip > .ws-menu')) fitSectionMenu(menu);
 }, true);
@@ -3530,7 +3531,8 @@ document.addEventListener('click', ev => {
 }, true);
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
-  const menu = document.querySelector('details.ws-menu[open]');
+  // The innermost open menu first (the last in document order), then the one around it.
+  const menu = [...document.querySelectorAll('details.ws-menu[open]')].at(-1);
   if (!menu || (modalOpen() && !menu.closest('.ws-modal'))) return;
   ev.preventDefault();
   ev.stopImmediatePropagation();
