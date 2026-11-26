@@ -10,7 +10,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates, withVoice } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates, withVoice, withAsk } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingsViewChecks } from './meetings-view-checks.mjs';
@@ -26,6 +26,7 @@ import { automationsChecks } from './automations-checks.mjs';
 import { menuBarChecks } from './menu-bar-checks.mjs';
 import { aiRoutesChecks } from './ai-routes-checks.mjs';
 import { voiceChecks } from './voice-checks.mjs';
+import { askChecks } from './ask-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -117,7 +118,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [], askThread = null }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [], askThread = null, askLive = false }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -457,6 +458,8 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       const job = s.jobs.find(j => j.id === d.id);
       if (job && !['queued', 'running', 'blocked'].includes(job.state)) fail('conflict', 'This job already completed.');
       if (job) job.state = 'cancelled';
+      // ask/ops.rs `stop_turn` (ask-checks.mjs, `open({ ask })` only): the turn reads `stopped`.
+      if (askLive && job?.kind === 'ask') askSettle(job.payload?.threadId, { state: 'stopped' });
       // save.rs `note_save_stopped`: a stopped save of a meeting still in Teams is not started again by itself.
       const stopped = job?.kind === 'transcript_download' && s.records.find(r => r.kind === 'meeting' && r.id === job.payload?.meetingId);
       if (stopped && stopped.data.state === 'available') {
@@ -818,6 +821,37 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
     for (const j of jobs) { s.jobs = s.jobs.filter(x => x.id !== j.id); s.jobs.unshift(j); }
     update();
   };
+  // ask-checks.mjs: the `ask` job settling a running turn, as ask/ops.rs writes it — the turn in
+  // `window.__askThreads[threadId]` (what `ask_read` answers) takes `fields`, the snapshot's
+  // `ask` stops running and its summary takes the turn's state, the job ends. Answers the turn.
+  const askSettle = (threadId, fields) => {
+    const t = window.__askThreads?.[threadId];
+    if (!t) return null;
+    const runId = s.ask?.running?.threadId === threadId ? s.ask.running.turnId : null;
+    const at = t.turns.findIndex(x => (runId ? x.id === runId : ['queued', 'running'].includes(x.state)));
+    if (at < 0) return null;
+    const was = t.turns[at];
+    t.turns[at] = { ...was, ...fields, id: was.id, jobId: was.jobId };
+    t.updatedAt = now();
+    if (s.ask) {
+      s.ask = { ...s.ask, running: s.ask.running?.threadId === threadId ? null : s.ask.running, threads: s.ask.threads.map(x => (x.id === threadId ? { ...x, last: t.turns.at(-1).state, updatedAt: t.updatedAt } : x)) };
+    }
+    const job = s.jobs.find(j => j.id === was.jobId);
+    if (job && ['queued', 'running'].includes(job.state)) job.state = fields.state === 'stopped' ? 'cancelled' : fields.state === 'failed' ? 'failed' : 'succeeded';
+    return t.turns[at];
+  };
+  // `window.__askJob = {threadId, turn}` finishes that thread's running turn as the job would:
+  // `turn` holds what the job writes (`state`, `answer`, `cites`, `actions`, `searched`, `took`,
+  // `error` …); the snapshot and the `ask_read` answer move together, so the page reads it again.
+  let askJobLast = null;
+  Object.defineProperty(window, '__askJob', {
+    configurable: true,
+    get: () => askJobLast,
+    set: v => {
+      askJobLast = v;
+      if (askSettle(v?.threadId, { state: 'done', ...(v?.turn || {}) })) update();
+    },
+  });
   // Another window (or a run) changes a document while the person edits it.
   window.__docChanged = (id, docId) => {
     const m = meetingRec(id);
@@ -1170,7 +1204,24 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
         throw refusal.field ? { code: refusal.code, message: refusal.message, field: refusal.field } : { code: refusal.code, message: refusal.message };
       }
       const threadId = d.threadId || `ask-${crypto.randomUUID().slice(0, 12)}`;
-      return { threadId, turnId: 'turn-1', jobId: `job-${crypto.randomUUID().slice(0, 8)}` };
+      const jobId = `job-${crypto.randomUUID().slice(0, 8)}`;
+      if (!askLive) return { threadId, turnId: 'turn-1', jobId };
+      // ask-checks.mjs (`open({ ask })`): as ask/ops.rs, one answer at a time; the turn is written
+      // `running` into the thread `ask_read` answers, with its `ask` job and the snapshot's
+      // `running`, until `__askJob` (or Stop) settles it.
+      if (s.ask?.running) throw { code: 'busy', message: 'Connect is still answering. Stop it or wait.' };
+      const threads = (window.__askThreads ||= {});
+      const kept = askThread && threadId === askThread.id && !(window.__askDeleted || []).includes(threadId) ? clone(askThread) : null;
+      const t = threads[threadId] || kept || { id: threadId, createdAt: now(), updatedAt: now(), nextRef: 1, turns: [] };
+      if (d.threadId && !threads[threadId] && !kept) fail('not_found', 'That conversation is gone. Ask again.');
+      const turnId = `turn-${t.turns.length + 1}`;
+      t.turns.push({ id: turnId, at: now(), question: d.question, about: d.about ? clone(d.about) : null, state: 'running', answer: null, cites: [], actions: [], searched: null, cut: false, profile: 'claude', model: null, fellBackFrom: null, fallbackReason: null, error: null, jobId, took: null });
+      t.updatedAt = now();
+      threads[threadId] = t;
+      const summary = { id: threadId, title: [...t.turns[0].question].slice(0, 80).join(''), updatedAt: t.updatedAt, turns: t.turns.length, last: 'running' };
+      s.ask = { ...(s.ask || { inMenu: true }), threads: [summary, ...(s.ask?.threads || []).filter(x => x.id !== threadId)], running: { threadId, turnId, jobId, startedAt: now() } };
+      s.jobs.unshift({ id: jobId, kind: 'ask', key: `ask:${threadId}`, state: 'running', dueAt: now(), attempts: 1, connectionId: null, workspaceId: 'personal', policy: {}, payload: { threadId, turnId, purpose: 'ask', profile: 'claude', model: null, runModel: 'claude-sonnet-4-5', startedAt: now() }, result: null });
+      return { threadId, turnId, jobId };
     },
     // `ask_read` answers `window.__askThreads[id]` (a check's own threads), else ask-thread.json
     // for its own id, else not_found as native does; `ask_delete` drops the threads from the
@@ -1727,7 +1778,7 @@ function aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch } = {}) {
   return out;
 }
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null, voice = null, draftVoice = false, replyPlugin = false } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null, voice = null, draftVoice = false, replyPlugin = false, ask = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1758,11 +1809,14 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   // `draftVoice: true` gives AI drafts draft-ai-voice.json's `provenance.voice`; `replyPlugin`
   // offers an invented reply-context plugin in a folder marketplace.
   if (voice) withVoice(snapshot, voice);
+  // ask-checks.mjs: `ask` names an ask-states.json state for the snapshot's `ask` (`empty`
+  // otherwise), and makes the mock's `ask_start` and Stop write the turn as native does.
+  if (ask) withAsk(snapshot, ask);
   // A check's own changes to the snapshot (e.g. a task provider and its tasks), before the page loads.
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary, draftVoice: voiceDraft } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES, askThread: ASK_THREAD })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES, askThread: ASK_THREAD, askLive: !!ask })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
@@ -1780,8 +1834,8 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`, `voice`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes', 'voice'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`, `voice`, `ask`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes', 'voice', 'ask'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
@@ -1796,6 +1850,7 @@ if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'com
   else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
   else if (process.env.WORKSPACE_E2E_ONLY === 'ai-routes') await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'voice') await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'ask') await askChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -3679,6 +3734,13 @@ await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, O
 // draft's voice and facts provenance, the role's sheet line, Default/Compact parity, nothing sent
 // or stored by drawing, and the skill import's pick, preview, Shorten with AI, save and layout.
 await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Ask and quick capture (spec docs/superpowers/specs/2026-11-26-ask-capture-design.md), Q1–Q11:
+// the Ask page in both views/themes/three widths, the field and its About chip, ⌘K and where it
+// does nothing, a question answered by the job and a follow-up, every state, the actions,
+// history, quick capture with every when-cases.json text, Settings, parity and nothing sent by
+// rendering.
+await askChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
 // primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
