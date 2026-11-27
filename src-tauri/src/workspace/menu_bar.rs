@@ -765,7 +765,7 @@ impl Refresher {
     /// Whether a sink has already taken the slot. A test seam for callers (`commands::tour`'s
     /// `install_quiet_menu_bar`) that need to prove they claimed it, since [`install`] itself
     /// answers nothing and a second call is silently ignored.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tour"))]
     pub(crate) fn has_sink(&self) -> bool {
         self.sink.get().is_some()
     }
@@ -1132,8 +1132,10 @@ mod tests {
     #[test]
     fn tasks_are_my_open_tasks_due_today_or_late() {
         let now = 1_000_000; // 1970-01-12 13:46:40 UTC
-        let mut settings = Settings::default();
-        settings.time_zone = "Europe/Vilnius".into();
+        let settings = Settings {
+            time_zone: "Europe/Vilnius".into(),
+            ..Default::default()
+        };
         let today = day_key("Europe/Vilnius", now);
         let yesterday = day_key("Europe/Vilnius", now - 86_400);
         let tomorrow = day_key("Europe/Vilnius", now + 86_400);
@@ -1358,12 +1360,14 @@ mod tests {
     #[test]
     fn only_counted_sources_add_up() {
         let now = 1_000_000;
-        let mut settings = Settings::default();
-        settings.menu_bar = MenuBarSettings {
-            replies: true,
-            tasks: true,
-            meetings: false,
-            automations: false,
+        let mut settings = Settings {
+            menu_bar: MenuBarSettings {
+                replies: true,
+                tasks: true,
+                meetings: false,
+                automations: false,
+            },
+            ..Default::default()
         };
         let me = MeAlias {
             name: "Me".into(),

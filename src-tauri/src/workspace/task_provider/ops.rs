@@ -1217,11 +1217,12 @@ mod tests {
         e.fake.fail_all(None);
         e.fake.forget_remote(&rid2);
         e.core.task_provider_check().await.unwrap();
-        let mut r = e.core.repo().unwrap();
-        let mut st = sync::load_state(&r, P).unwrap();
-        st["backoffUntil"] = Value::Null;
-        sync::save_state(&mut r, P, &st, now()).unwrap();
-        drop(r);
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut st = sync::load_state(&r, P).unwrap();
+            st["backoffUntil"] = Value::Null;
+            sync::save_state(&mut r, P, &st, now()).unwrap();
+        }
         e.sync().await;
         assert!(e.task("t2").is_some(), "its waiting change keeps it");
     }

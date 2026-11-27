@@ -255,7 +255,7 @@ mod tests {
             "  \n ".to_string(),
             cut.to_string(),
             format!("```json\n{cut}"),
-            format!("Here you go:\n{{\"notesMarkdown\": \"# Sync"),
+            "Here you go:\n{\"notesMarkdown\": \"# Sync".to_string(),
             "<think>Still thinking about the".to_string(),
             "<think>Done.</think>".to_string(),
             "# Notes\n\n```\nleft open".to_string(),
