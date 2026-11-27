@@ -295,7 +295,7 @@ The import preview takes the Instructions list's place while it is open (§ 11):
 - **Off** (the radio): Connect stops asking the provider, stops adding the voice, the examples and the facts. The copy stays, and the card says so with Delete Connect's copy beside it.
 - **Facts off** (the checkbox): Connect stops the `facts` ask; the voice is unchanged.
 - **Delete Connect's copy** (`voice_forget`): sets Off and deletes every copy record and every Ask thread (ask-capture design § 5) in one transaction; an Ask answer still running is stopped first. Ask threads go because an answer, its cites and the earlier turns a follow-up replays may quote people's `about` text and facts, and no turn records which voice items it was given, so deleting only the turns that cite a person or a fact would not be enough. `deleted` counts every record that went. Nothing in the provider's folder is touched. Drafts already made keep their text.
-- **Another provider, or removing the plugin**: the copy is deleted (it came from that provider).
+- **Another provider, or removing the plugin**: the copy is deleted (it came from that provider), and with it every Ask thread, in the same transaction, after a running answer is stopped, as `voice_forget` does. A change that finds no copy to delete leaves Ask's history alone.
 - **Turning the plugin off** in Settings › Plugins: the state becomes `unavailable`, drafts use the copy and get no facts, and the card says "Turned off in Settings › Plugins".
 
 ### 7. Native operations and shapes

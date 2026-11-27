@@ -465,26 +465,21 @@ pub fn set_state(r: &mut Repository, provider: &str, state: VoiceState, at: i64)
     r.put_global_records(&[item_record(KIND_META, "meta", &meta, provider, at)])
 }
 
-/// Deletes every copy record, whatever provider it belongs to (design §6's "Delete Connect's
-/// copy"), with the stored acks of voice edits, in one transaction. Answers how many copy records
-/// were removed.
-pub fn forget(r: &mut Repository) -> Result<usize> {
-    r.forget_voice(None, &KINDS)
-}
-
-/// `forget` together with writing `settings` (the voice turned Off), in one transaction (design
+/// Deletes every copy record, whatever provider it belongs to, with the stored acks of voice
+/// edits, together with writing `settings` (the voice turned Off), in one transaction (design
 /// §6's "sets Off and deletes every copy record in one transaction").
 pub fn forget_with(r: &mut Repository, settings: &Settings) -> Result<usize> {
     r.forget_voice(Some(settings), &KINDS)
 }
 
-/// [`forget_with`] that also deletes every Ask thread in the same transaction (`voice_forget`):
-/// an answer, its cites and the turns a follow-up replays may quote people's about text and
-/// facts, and no turn records which of them it was given. Answers how many records went.
-pub fn forget_with_ask_history(r: &mut Repository, settings: &Settings) -> Result<usize> {
+/// [`forget_with`] (`settings` written only when given) that also deletes every Ask thread in the
+/// same transaction (`voice_forget`, another provider chosen, the plugin removed): an answer, its
+/// cites and the turns a follow-up replays may quote people's about text and facts, and no turn
+/// records which of them it was given. Answers how many records went.
+pub fn forget_with_ask_history(r: &mut Repository, settings: Option<&Settings>) -> Result<usize> {
     let mut kinds = KINDS.to_vec();
     kinds.push(crate::workspace::ask::store::KIND);
-    r.forget_voice(Some(settings), &kinds)
+    r.forget_voice(settings, &kinds)
 }
 
 /// Reads the stored copy, or `None` when nothing has ever been replaced into it.
@@ -622,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn forget_deletes_every_copy_record() {
+    fn forget_with_ask_history_deletes_every_copy_record() {
         let mut r = repo();
         let c = from_export(&json!({
             "style": {"text": "Short.", "updatedAt": "t", "source": "s"},
@@ -632,7 +627,7 @@ mod tests {
         replace(&mut r, "plugin:knowledge", &c, 1_000).unwrap();
         assert!(read_copy(&r).unwrap().is_some());
 
-        let removed = forget(&mut r).unwrap();
+        let removed = forget_with_ask_history(&mut r, None).unwrap();
         assert!(removed > 0);
         assert!(read_copy(&r).unwrap().is_none());
     }

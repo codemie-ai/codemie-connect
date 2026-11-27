@@ -8,7 +8,7 @@
 //! the `AiSettingsSave` detection pattern: never await a plugin call under the lock); the locked
 //! part (`voice_op`) writes its answer into the copy and queues a refresh. Choosing Off keeps the
 //! copy; Delete Connect's copy turns the voice off and deletes it; another provider, or removing
-//! the plugin, deletes it (ruling 12).
+//! the plugin, deletes it (ruling 12). Each deletion clears Ask history with the copy.
 //!
 //! The skill import (design §11, rulings 36–38): `voice_import_scan` and `voice_import_distil`
 //! are read-style (no operation id, before the lock); `voice_import` asks the provider's
@@ -250,12 +250,20 @@ fn set(core: &Core, r: &mut Repository, data: &Value, now: i64) -> Result<Value>
     if let Some(on) = facts {
         s.voice.facts = on;
     }
-    if provider != "off" && copy::read_copy(r)?.is_none_or(|c| c.provider != provider) {
-        // The copy came from another provider (ruling 12): gone with the choice, in one write.
+    let kept = copy::read_copy(r)?.map(|c| c.provider);
+    if provider != "off" && kept.as_deref() != Some(provider) {
+        // The copy came from another provider (ruling 12): gone with the choice, in one write,
+        // and with it Ask history, which may quote it.
         core.voice_epoch.fetch_add(1, Ordering::SeqCst);
-        let gone = copy::forget_with(r, &s)?;
+        let gone = if kept.is_some() {
+            forget_copy_and_ask(core, r, Some(&s))?
+        } else {
+            copy::forget_with(r, &s)?
+        };
         if gone > 0 {
-            log::info!("voice: another provider chosen, copy deleted ({gone} records)");
+            log::info!(
+                "voice: another provider chosen, copy and Ask history deleted ({gone} records)"
+            );
         }
     } else {
         r.settings_update(&s)?;
@@ -306,16 +314,25 @@ fn forget(core: &Core, r: &mut Repository) -> Result<Value> {
     core.voice_epoch.fetch_add(1, Ordering::SeqCst);
     let mut s = r.settings()?;
     s.voice.provider = "off".into();
+    let deleted = forget_copy_and_ask(core, r, Some(&s))?;
+    log::info!("voice: copy and Ask history deleted ({deleted} records)");
+    Ok(json!({"deleted": deleted, "provider": "off"}))
+}
+
+/// Deletes the copy and every Ask thread in one transaction (writing `settings` when given),
+/// after stopping an Ask answer still coming: an answer may quote what came from the voice.
+/// Answers how many records went.
+fn forget_copy_and_ask(
+    core: &Core,
+    r: &mut Repository,
+    settings: Option<&crate::workspace::models::Settings>,
+) -> Result<usize> {
     let stopped = stop_answers(r, |_| true)?;
-    let deleted = copy::forget_with_ask_history(r, &s)?;
+    let deleted = copy::forget_with_ask_history(r, settings)?;
     for job_id in &stopped {
         core.cancel_ai_job(job_id);
     }
-    log::info!(
-        "voice: copy and Ask history deleted ({deleted} records), stopped {}",
-        stopped.len()
-    );
-    Ok(json!({"deleted": deleted, "provider": "off"}))
+    Ok(deleted)
 }
 
 impl Core {
@@ -452,7 +469,8 @@ impl Core {
     }
 
     /// Plugin `plugin` was removed (Settings › Plugins): when it is the chosen provider the voice
-    /// turns Off, and when it is (or its copy is kept) the copy is deleted (design §6).
+    /// turns Off, and when it is (or its copy is kept) the copy is deleted (design §6), with Ask
+    /// history when there was a copy.
     pub(crate) fn voice_plugin_removed(&self, plugin: &str) -> Result<()> {
         let provider = format!("plugin:{plugin}");
         let mut r = self.repo()?;
@@ -463,13 +481,16 @@ impl Core {
             return Ok(());
         }
         self.voice_epoch.fetch_add(1, Ordering::SeqCst);
-        let deleted = if chosen {
+        if chosen {
             s.voice.provider = "off".into();
-            copy::forget_with(&mut r, &s)?
+        }
+        let settings = chosen.then_some(&s);
+        let deleted = if owned {
+            forget_copy_and_ask(self, &mut r, settings)?
         } else {
-            copy::forget(&mut r)?
+            copy::forget_with(&mut r, &s)?
         };
-        log::info!("voice: provider removed, copy deleted ({deleted} records)");
+        log::info!("voice: provider removed, copy and Ask history deleted ({deleted} records)");
         drop(r);
         self.emit("workspace:changed");
         Ok(())
@@ -1572,6 +1593,70 @@ pub(crate) mod tests {
         assert_eq!(acks(), 1);
         e.core.voice_plugin_removed("knowledge").unwrap();
         assert_eq!(acks(), 0, "the plugin removed");
+    }
+
+    /// A provider change or a plugin removal that deletes the copy clears Ask history too, and
+    /// stops an answer still coming, as `voice_forget` does; one that deletes no copy keeps it.
+    #[tokio::test]
+    async fn a_provider_change_or_removal_that_deletes_the_copy_clears_ask_history() {
+        use crate::workspace::ask::store::{self, tests as ask_t, TurnState};
+        let e = env();
+        let write_thread = || {
+            let mut t = ask_t::turn(1, 100, "What does Priya prefer?", TurnState::Done);
+            t.answer = Some(format!("Mornings, {SENTINEL}."));
+            let mut r = e.core.repo().unwrap();
+            store::write(&mut r, &ask_t::thread("ask-voice", 100, vec![t])).unwrap();
+        };
+        let threads = || store::list(&e.core.repo().unwrap()).unwrap().len();
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_profile = Some("claude".into());
+            r.settings_update(&s).unwrap();
+        }
+        e.choose_with_copy().await;
+        write_thread();
+        let asked = e
+            .op(
+                Operation::AskStart,
+                json!({"threadId": "ask-voice", "question": "Anything else?"}),
+            )
+            .await
+            .unwrap();
+        e.op(Operation::VoiceSet, json!({"provider": "plugin:other"}))
+            .await
+            .unwrap();
+        assert_eq!(threads(), 0, "a provider change that deleted the copy");
+        let job = e
+            .core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| asked["jobId"] == j.id.as_str())
+            .unwrap();
+        assert_eq!(job.state, "cancelled");
+
+        // No copy to delete (Other's refresh never ran): Ask history stays.
+        write_thread();
+        e.op(Operation::VoiceSet, json!({"provider": KNOWLEDGE}))
+            .await
+            .unwrap();
+        assert_eq!(threads(), 1, "a change that deleted no copy");
+        e.fake.answer("export", export_answer(""));
+        e.run_jobs().await;
+        assert!(e.copy().is_some());
+        e.core.voice_plugin_removed("other").unwrap();
+        assert_eq!(threads(), 1, "another plugin's removal");
+        e.core.voice_plugin_removed("knowledge").unwrap();
+        assert_eq!(threads(), 0, "the provider's plugin removed");
+        assert!(!e
+            .core
+            .repo()
+            .unwrap()
+            .all_text_for_tests()
+            .contains(SENTINEL));
     }
 
     /// Review N1: Delete Connect's copy and choosing the same provider again while an edit is
