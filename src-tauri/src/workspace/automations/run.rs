@@ -251,8 +251,9 @@ fn recent_since(last_ok: Option<i64>, now: i64) -> i64 {
 
 #[cfg(test)]
 thread_local! {
-    /// Fails the next run commit once, after the run made its tasks (a crash between the two).
-    /// Thread-local is enough: `#[tokio::test]` runs the job on the test's own thread.
+    /// Makes the next run commit fail once, after the run made its tasks, which leaves the same
+    /// state as a crash between the two. Thread-local is enough: `#[tokio::test]` runs the job
+    /// on the test's own thread.
     static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

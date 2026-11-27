@@ -326,6 +326,15 @@ test('run_log_expands_output_sources_and_error', () => {
   assert.match(ms, /Sign in to Microsoft 365 in Settings/);
   assert.match(ms, /data-tab="microsoft"/);
 
+  // A failed meeting summary run offers no Run again: Run now is refused for a summary.
+  const storage = { class: null, code: 'storage', message: 'The run could not be stored.' };
+  const failedPlain = { ...runs[1], id: 'run-p', data: { ...runs[1].data, error: storage } };
+  assert.match(runLog([failedPlain], { s, expanded: ['run-p'], ai: AI }), /data-action="automation-run"/);
+  const failedSummary = { ...failedPlain, id: 'run-y', data: { ...failedPlain.data, trigger: { kind: 'event', event: 'meeting_ready', sourceId: 'meeting-1' } } };
+  const summaryLog = runLog([failedSummary], { s, expanded: ['run-y'], ai: AI });
+  assert.match(summaryLog, /The run could not be stored\./);
+  assert.doesNotMatch(summaryLog, /data-action="automation-run"/);
+
   // Rendered only from blocks: every text is escaped, only web links get an address, \n breaks.
   const hostile = { ...runs[2], id: 'run-h', data: { ...runs[2].data, output: { title: '<b>t</b>', summaryMarkdown: '<script>x</script>', items: [{ text: '<img src=x>' }], summaryBlocks: [
     { type: 'paragraph', inlines: [{ text: '<script>alert(1)</script>' }, { text: 'bad', href: 'javascript:alert(1)' }, { text: 'one\ntwo' }] },

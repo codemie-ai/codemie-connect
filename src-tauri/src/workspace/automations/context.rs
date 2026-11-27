@@ -29,8 +29,6 @@ const PREVIEW_CHARS: usize = 500;
 const SENDER_MAIL_CHARS: usize = 1_000;
 const COMMITMENT_CHARS: usize = 500;
 const NOTE_CHARS: usize = 2_000;
-/// Valid commitment kinds (`tasks::KINDS`); an absent or unknown one reads as "task".
-const TASK_KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 /// Where a block's id goes in its template; sanitised text never holds a NUL.
 const ID: &str = "\u{0}id\u{0}";
 
@@ -666,8 +664,9 @@ fn sender_mail(
 /// dismissed), newest first, each saying who promised it: "You promised: …" for the user's own
 /// (`"You"`, their address or name), "Sam Stone promised you: …" for someone else's (by name when
 /// known), "Nobody named: …" for one without an owner. Each block carries the task's own kind
-/// (`task-kind=`, absent for a plain task) and `handled="true"` when already flagged, so
-/// `parse_automation` can tell a reply or waiting commitment from a plain one.
+/// (`task-kind=`, absent for a plain task), `handled="true"` when already flagged and
+/// `kept="true"` when the user pressed Keep open on it, so `parse_automation` can tell a reply or
+/// waiting commitment from a plain one.
 fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Block>, usize)> {
     let open: Vec<Record> = tasks::active(repo, &w.id)?
         .into_iter()
@@ -681,7 +680,7 @@ fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Bl
             let body = prompts::sanitize_text(&text(c, "text"), COMMITMENT_CHARS);
             let kind = c.data["kind"]
                 .as_str()
-                .filter(|k| TASK_KINDS.contains(k))
+                .filter(|k| crate::workspace::tasks::KINDS.contains(k))
                 .unwrap_or("task")
                 .to_string();
             let task_kind_attr = if kind == "task" {

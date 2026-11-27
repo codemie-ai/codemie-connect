@@ -4,10 +4,9 @@
 //! (`{text, notes, due, done, kind, owner}`, the shape of `remote.base`).
 use super::keys;
 use crate::workspace::models::Record;
+use crate::workspace::tasks::KINDS;
 use serde_json::{json, Value};
 
-/// The kinds a task can be (design §1); `task` is the default.
-const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 /// The fields of [`fields`], in the order the merge walks them.
 pub(crate) const FIELDS: [&str; 6] = ["text", "notes", "due", "done", "kind", "owner"];
 

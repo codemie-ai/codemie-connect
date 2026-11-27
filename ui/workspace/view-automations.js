@@ -337,7 +337,10 @@ export function runError(run, ai = {}) {
   }
   // Not Claude: the run could not read Microsoft 365, or storage failed. The stored sentence says what.
   if (err.code === 'needs_login') return { tone: 'warning', sentence: err.message, action: { label: 'Open Microsoft 365 settings', action: 'settings-tab', iconName: 'settings', attrs: { 'data-tab': 'microsoft' } } };
-  return { tone: 'error', sentence: err.message || 'The automation could not run.', action: { label: 'Run again', action: 'automation-run', iconName: 'refresh', attrs: { 'data-id': run.data.automationId } } };
+  // A meeting summary can't be run by hand (SUMMARY_RUN_NOW), so its failure offers no Run again.
+  const summary = run.data.trigger?.event === SUMMARY_EVENT;
+  const action = summary ? null : { label: 'Run again', action: 'automation-run', iconName: 'refresh', attrs: { 'data-id': run.data.automationId } };
+  return { tone: 'error', sentence: err.message || 'The automation could not run.', action };
 }
 
 function errorBox(failure) {

@@ -84,27 +84,27 @@ export async function automationsChecks({ open, check, assert, shot, settled, ca
           await noOverflow(page, assert, `${theme} ${view} ${width} editor`);
           await shot(page, `automations-editor-${theme}-${view}-${width}`);
           assert(errors.length === 0, errors.join(' | '));
+        });
+        if (canonical) await check('automations A2: unticking the last message read hides the switch, and a fresh template saves with Tasks on', async () => {
+          // Unticking "Needs your reply" leaves no read that gives messages: the switch hides
+          // (readsMessages(draft) is false), but stays in the form (checked, just hidden).
+          await page.click('.ws-check:has([data-read="needsReply"])');
+          await page.waitForFunction(() => document.querySelector('[data-deliver="createTasks"]')?.closest('[hidden]'));
+          assert(!(await page.locator('[data-deliver="createTasks"]').isVisible()), 'the Tasks switch stayed visible');
+          assert(await page.locator('[data-deliver="createTasks"]').isChecked(), 'the hidden switch lost its own checked state');
+          await page.click('.ws-modal[open] .ws-modal-footer [data-modal-close]');
+          await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
 
-          if (canonical) {
-            // Unticking "Needs your reply" leaves no read that gives messages: the switch hides
-            // (readsMessages(draft) is false), but stays in the form (checked, just hidden).
-            await page.click('.ws-check:has([data-read="needsReply"])');
-            await page.waitForFunction(() => document.querySelector('[data-deliver="createTasks"]')?.closest('[hidden]'));
-            assert(!(await page.locator('[data-deliver="createTasks"]').isVisible()), 'the Tasks switch stayed visible');
-            assert(await page.locator('[data-deliver="createTasks"]').isChecked(), 'the hidden switch lost its own checked state');
-            await page.click('.ws-modal[open] .ws-modal-footer [data-modal-close]');
-            await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-
-            // A fresh template, saved as it prefills: one automation_save with the Tasks delivery on.
-            await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
-            await page.click('[data-action="automation-template"][data-id="inbox-triage"]');
-            await editorOpen(page);
-            const before = (await calls(page, 'automation_save')).length;
-            await page.click('.ws-modal[open] button[type=submit]');
-            await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'automation_save').length > n, before);
-            const saved = (await calls(page, 'automation_save')).at(-1);
-            assert(saved.deliver.createTasks === true && saved.read.needsReply === true && saved.trigger.time === '08:00', JSON.stringify(saved));
-          }
+          // A fresh template, saved as it prefills: one automation_save with the Tasks delivery on.
+          await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
+          await page.click('[data-action="automation-template"][data-id="inbox-triage"]');
+          await editorOpen(page);
+          const before = (await calls(page, 'automation_save')).length;
+          await page.click('.ws-modal[open] button[type=submit]');
+          await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'automation_save').length > n, before);
+          const saved = (await calls(page, 'automation_save')).at(-1);
+          assert(saved.deliver.createTasks === true && saved.read.needsReply === true && saved.trigger.time === '08:00', JSON.stringify(saved));
+          assert(errors.length === 0, errors.join(' | '));
         });
         await context.close().catch(() => {});
       }

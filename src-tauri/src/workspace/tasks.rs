@@ -45,7 +45,7 @@ const NAMES: [(&str, &str); 6] = [
 const OPEN: [&str; 3] = ["todo", "doing", "waiting"];
 /// Every kind a task can be (design §1): the reference task schema's kinds minus `client`.
 /// Absent reads as `"task"`.
-const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
+pub(crate) const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 
 const ID_MAX: usize = 200;
 const TEXT_MAX: usize = 2000;

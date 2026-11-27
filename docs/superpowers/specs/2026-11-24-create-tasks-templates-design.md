@@ -66,7 +66,7 @@ This step adds one delivery, **Create tasks**, which makes tasks in the active p
 
 Validation (each refusal carries `field`):
 - `createTasks` needs something to make tasks from: `needsReply`, `recentMessages`, or a message trigger (`mail_from`, `chat_from`, `critical`) with `triggerConversation`. Otherwise: "Tasks are made from messages. Tick Needs your reply or Messages since the last run, or start it from a message." (`field: deliver`).
-- `meetingSummary` goes only with the `meeting_ready` event, and a `meeting_ready` automation must have one: "A meeting summary starts when a meeting's transcript is ready." / "Choose the template to make." (`field: deliver`). The template must exist (`templates::all`): "Choose a note template." A summary automation reads nothing (`read` all off), creates no tasks and no reply draft; its `prompt` is optional and becomes the run's wishes (up to 4,000 characters).
+- `meetingSummary` goes only with the `meeting_ready` event, and a `meeting_ready` automation must have one: "A meeting summary starts when a meeting's transcript is ready." / "Choose the template to make." (`field: deliver`; asked before the instructions, which a summary automation may leave empty). The template must exist (`templates::all`): "Choose a note template." One that reads something or makes tasks: "A meeting summary automation reads nothing and makes no tasks." A summary automation reads nothing (`read` all off), creates no tasks and no reply draft; its `prompt` is optional and becomes the run's wishes (up to 4,000 characters).
 - Every other automation keeps its rules (a prompt is required).
 
 **Event cooldown per sender.** Today an event automation waits ten minutes after any event run, so three budget mails in one sync round start one run. The cooldown is now kept per automation and sender: the mail sender's address, the Teams chat id, or the meeting for `meeting_ended`; `meeting_ready` has no cooldown (one run per meeting, deduped by key). The hourly cap of 30 runs and "one run at a time per automation" stay.
@@ -103,13 +103,13 @@ The task rules tell Claude: one task per message and kind; `kind` is `reply` (th
 - **Order and retries.** Tasks are made before the run record is committed. A crash or a failed commit in between makes nothing new when the job runs again: the keys find the tasks.
 - **Looks handled:** each checked `handled` entry flags its task through the same code as `task_handled {id, evidence}` (moved to `task_provider::handled::flag`), which skips a task already flagged with that evidence or kept open against it, and never completes anything.
 
-**What the run records:** `tasks: {made: [{id, text, kind}], existing: <n>, dropped: <n>}` and `handled: <n>`; `delivered` gains `"tasks"` whenever Create tasks is on and the run is `ok`. A run that made nothing still says "Tasks: none needed".
+**What the run records:** `tasks: {made: [{id, text, kind}], existing: <n>, dropped: <n>}` and `handled: <n>`; `delivered` gains `"tasks"` whenever Create tasks is on and the run is `ok`. A run that made nothing still says "Tasks: none needed", or "Tasks: none made" when entries were left out.
 
 **Local never makes a removed task again.** Step 4's ledger is consulted for a provider only. With Local, a deleted task leaves no trace, so tomorrow's triage would make it again. `task_delete` of a Local task that has a key now writes the ledger entry `local|<key>` `removed` in the same transaction, and `create_by_key` reads the ledger for Local too. Undo of the delete still saves the task back (`task_save` does not read the ledger). A Local task that is done stays a record, so its key is found.
 
 ### 3. What a run reads
 
-- **Messages since the last run** (`recentMessages`, section `recentMessages`, after `needsReply`): every synced mail and Teams message the workspace shows, both directions, newest first, since this automation's last `ok` run started (the first run: the last 24 hours; never more than 3 days back), at most 40, each cut to 500 characters, with `received=` and `by="user"` on the user's own. It reads Microsoft, so it needs the signed-in account like the other message reads.
+- **Messages since the last run** (`recentMessages`, section `recentMessages`, after `needsReply`): every synced mail and Teams message the workspace shows, both directions, newest first, since this automation's last `ok` run started, or first stored by Connect since then (`seenAt`, so a message synced late is still read; the first run: the last 24 hours; never more than 3 days back), at most 40, each cut to 500 characters, with `received=` and `by="user"` on the user's own. It reads Microsoft, so it needs the signed-in account like the other message reads.
 - **Commitment blocks say their kind.** `<item kind="commitment">` gains `task-kind="reply|waiting|budget"` (absent for a plain task) and `handled="true"` when flagged, so the briefing can put budget requests first and the triage knows which reply tasks exist.
 - The system prompt documents both (`recentMessages`, the `task-kind` attribute, `createTasks`).
 
@@ -230,7 +230,7 @@ No new operation. `automation_save` accepts the new fields; `automation_runs` an
 - **Editor:** "Messages since the last run", "Mail and Teams messages, yours too, since this automation last ran (at most 3 days).", "Tasks in <provider>", "One task per message that needs it. A rerun, or a task you deleted or finished, never makes it again.", event "A meeting's transcript is ready", "Make", "Wishes (optional)", "Runs with the Claude route for meeting notes (Settings › Claude). Pin it as a summary tab in Settings › Meetings to open meetings on it."
 - **Refusals:** "Tasks are made from messages. Tick Needs your reply or Messages since the last run, or start it from a message.", "A meeting summary starts when a meeting's transcript is ready.", "Choose the template to make.", "Choose a note template."
 - **Sentences:** "Delivers to Today and tasks in <provider>.", "Makes a <template> for each meeting."
-- **Run log:** "Tasks: <n> made in <provider>, <m> already there", "Tasks: none needed", "<n> left out (no message given)", "Looks handled: <n> task(s) flagged", "<Template> queued for <meeting>", "Open meeting ›", skipped "<Meeting> already has a <template>."
+- **Run log:** "Tasks: <n> made in <provider>, <m> already there", "Tasks: none needed", "Tasks: none made", "<n> left out (no message given)", "Looks handled: <n> task(s) flagged", "<Template> queued for <meeting>", "Open meeting ›", skipped "<Meeting> already has a <template>."
 - **Today:** "Made <n> task(s) in <provider> ›".
 - **Task history:** "Made by <automation name>"; notes "From <sender> · <subject> · <date>".
 - **Note template:** "Formal summary", blurb above.

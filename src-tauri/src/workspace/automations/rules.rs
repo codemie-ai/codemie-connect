@@ -297,8 +297,16 @@ pub fn validate(a: &Automation, templates: &[Template]) -> Result<()> {
         ));
     }
     let prompt = a.prompt.trim();
-    // A summary automation's prompt becomes the run's wishes and may be empty.
-    if prompt.is_empty() && !a.is_summary() {
+    let is_meeting_ready = matches!(
+        a.trigger,
+        Trigger::Event {
+            event: EventKind::MeetingReady,
+            ..
+        }
+    );
+    // A summary automation's prompt becomes the run's wishes and may be empty; a `meeting_ready`
+    // one with no template yet is asked for the template first.
+    if prompt.is_empty() && !a.is_summary() && !is_meeting_ready {
         return Err(invalid_at(
             "prompt",
             "Write the instructions for the automation.",
@@ -389,13 +397,6 @@ pub fn validate(a: &Automation, templates: &[Template]) -> Result<()> {
             }
         }
     }
-    let is_meeting_ready = matches!(
-        a.trigger,
-        Trigger::Event {
-            event: EventKind::MeetingReady,
-            ..
-        }
-    );
     if a.deliver.meeting_summary.is_some() && !is_meeting_ready {
         return Err(invalid_at(
             "deliver",
@@ -526,9 +527,9 @@ impl State {
         None
     }
     /// `sender` is recorded for the cooldown only when given (see `refusal`). Several sources
-    /// for the same automation (different senders) may each start a run in the same round; the
-    /// job queue's own state, read fresh each round, still holds back an automation with a
-    /// genuinely overlapping earlier run.
+    /// for the same automation (different senders) may each start a run, in the same round or
+    /// while an earlier run is still queued; the runs queue behind each other, since background
+    /// runs are claimed one at a time (`claim_ready`).
     pub fn started(&mut self, id: &str, sender: Option<&str>, now: i64) {
         self.runs.retain(|t| now - *t < 3600);
         self.runs.push(now);
@@ -1221,6 +1222,37 @@ mod tests {
             10_000 + 3_601,
         );
         assert_eq!(later.len(), HOURLY_CAP);
+    }
+
+    #[test]
+    fn a_meeting_ready_automation_with_no_template_asks_for_one_before_instructions() {
+        let mut no_template = event("e", EventKind::MeetingReady, &[], &[]);
+        no_template.prompt = String::new();
+        let err = validate(&no_template, &[template("formal-summary")]).unwrap_err();
+        assert_eq!(err.message, "Choose the template to make.");
+        assert_eq!(err.field.as_deref(), Some("deliver"));
+    }
+
+    #[test]
+    fn the_sender_key_is_the_chat_or_the_address_in_any_case() {
+        let mut chat = mail("m1", "", "", "");
+        chat.channel = "chat".into();
+        chat.chat_id = "19:abc@thread.v2".into();
+        chat.from_name = "Ann Lee".into();
+        assert_eq!(sender_key(&chat), "chat:19:abc@thread.v2");
+        assert_eq!(
+            sender_key(&mail("m2", " Ann.Lee@EPAM.com ", "", "")),
+            "ann.lee@epam.com"
+        );
+    }
+
+    #[test]
+    fn forget_drops_when_the_automation_was_armed() {
+        let mut state = State::default();
+        state.armed_at.insert("e".into(), 1_000);
+        state.armed_at.insert("other".into(), 1_000);
+        state.forget("e");
+        assert_eq!(state.armed_at.keys().collect::<Vec<_>>(), ["other"]);
     }
 
     #[test]

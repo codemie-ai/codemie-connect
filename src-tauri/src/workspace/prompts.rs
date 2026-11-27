@@ -1066,8 +1066,6 @@ pub struct HandledEntry {
     pub evidence: String,
 }
 
-/// Valid task kinds (mirrors `tasks::KINDS`); an absent or unknown one reads as `task`.
-const TASK_KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 pub const MAX_AUTOMATION_TASKS: usize = 10;
 const MAX_HANDLED_ENTRIES: usize = 10;
 const MAX_OWNER_CHARS: usize = 100;
@@ -1142,7 +1140,7 @@ pub fn parse_automation(
                     .filter(|t| !t.is_empty())?;
                 let kind = item["kind"]
                     .as_str()
-                    .filter(|k| TASK_KINDS.contains(k))
+                    .filter(|k| crate::workspace::tasks::KINDS.contains(k))
                     .unwrap_or("task")
                     .to_string();
                 if !seen.insert((source.record_id.clone(), kind.clone())) {
@@ -1997,6 +1995,10 @@ mod tests {
             [("msg-1", "reply"), ("msg-1", "waiting"), ("msg-1", "task")]
         );
         assert_eq!(out.dropped, 3, "the duplicate, s2 and s9");
+        assert_eq!(
+            out.tasks[0].text, "Reply to Olga",
+            "the first reply is kept"
+        );
         // One entry per task: the second for s3 neither writes again nor counts toward the cap.
         assert_eq!(
             out.handled,
@@ -2005,6 +2007,24 @@ mod tests {
                 evidence: "Olga replied".into(),
             }]
         );
+
+        // Evidence is cut to 200 characters, and at most 10 entries are read.
+        let open_replies: Vec<AutomationSource> = (0..12)
+            .map(|i| {
+                let mut s = source(&format!("c{i}"), "commitment", &format!("task-{i}"));
+                s.task_kind = Some("reply".into());
+                s.open = true;
+                s
+            })
+            .collect();
+        let entries: Vec<Value> = (0..12)
+            .map(|i| json!({"sourceId": format!("c{i}"), "evidence": "e".repeat(300)}))
+            .collect();
+        let capped =
+            json!({"title": "t", "summary_markdown": "s", "items": [], "handled": entries});
+        let out = parse_automation(&capped, &open_replies, false, true).unwrap();
+        assert_eq!(out.handled.len(), MAX_HANDLED_ENTRIES);
+        assert_eq!(out.handled[0].evidence.chars().count(), MAX_EVIDENCE_CHARS);
 
         // allow_tasks false asks nothing, regardless of what Claude sent.
         let off = parse_automation(&answer, &sources, false, false).unwrap();
