@@ -662,7 +662,9 @@ const AMBER: [u8; 3] = [245, 166, 35];
 
 /// The template glyph recoloured amber, alpha kept (ruling 9: no new image ships).
 pub fn amber_rgba(rgba: &[u8]) -> Vec<u8> {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|px| [AMBER[0], AMBER[1], AMBER[2], px[3]])
         .collect()
 }

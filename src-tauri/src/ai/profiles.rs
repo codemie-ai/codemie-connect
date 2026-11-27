@@ -475,7 +475,7 @@ fn apply_ollama(p: &mut AiProfile, default_model: &Option<String>, probe: &Ollam
                     label: name.clone(),
                 })
                 .collect();
-            for m in p.models.drain(..).collect::<Vec<_>>() {
+            for m in std::mem::take(&mut p.models) {
                 if !pulled.iter().any(|name| same_ollama_model(name, &m.id)) {
                     models.push(m);
                 }
