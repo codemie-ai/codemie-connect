@@ -953,7 +953,7 @@ async function boot() {
     if (await ensureAuthenticated()) {
       clearDisconnected(homeStorage);
       refreshConnection();
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
+      runAction('Connect Claude Desktop', 'codemie proxy connect --claude-desktop', 'connect', 'Running automatically — no input needed.');
     }
   });
   restartBtn.addEventListener('click', async () => {
@@ -962,7 +962,7 @@ async function boot() {
       refreshConnection();
       // Stop the running proxy first, then connect again. `;` (not `&&`) so a
       // no-op stop (nothing running) still proceeds to connect.
-      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
+      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect --claude-desktop', 'connect');
     }
   });
   noticeClose.addEventListener('click', hideNotice);
