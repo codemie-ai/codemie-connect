@@ -640,9 +640,16 @@ impl Core {
         }
         log.extend(change.log.iter().cloned());
         let mut added = 0;
+        let mut push_to: Option<String> = None;
         for body in &found {
             match tasks::task_save(&mut r, &plan.workspace, body, now()) {
-                Ok(_) => added += 1,
+                Ok(task) => {
+                    added += 1;
+                    // A task a provider takes at once (review off) is pushed at once.
+                    if task.data["pending"] == true {
+                        push_to = Some(tasks::provider_of(&task.data).to_string());
+                    }
+                }
                 Err(e) => {
                     log::warn!("meetings: a task from the notes was not saved: {}", e.code);
                     log.push(format!("A task could not be saved: {}", e.message));
@@ -651,6 +658,12 @@ impl Core {
         }
         r.commit_job_record(&stored, &record_of(c, &source, &m).map_err(written)?)
             .map_err(written)?;
+        if let Some(provider) = &push_to {
+            if let Err(e) = crate::workspace::task_provider::sync::queue(&mut r, provider, now()) {
+                // The background round pushes them anyway.
+                log::warn!("meetings: the tasks' push was not queued: {}", e.code);
+            }
+        }
         if plan.find_tasks {
             let asked: HashSet<u64> = out.tasks.iter().map(|t| t.line as u64).collect();
             let kept = asked.intersection(&on_board).count();

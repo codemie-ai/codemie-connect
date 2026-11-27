@@ -228,6 +228,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Network:** `uses.network.hosts` is exactly `["api.todoist.com"]`. The host refuses any other address. No sign-in host, no `hosts_from`.
 - **Known limits:**
   - A create whose answer was lost is adopted on replay only while its task is still open in the project. If the user completes it or moves it to another project in Todoist before the replay, the replay makes a second task (the ledger has no remote id to recognise it by).
+  - A create whose answer was lost and whose task was then edited in Todoist is adopted by the pull with Connect's fields: there is no last-seen base to merge against, so where the two differ Connect's words are sent and the Todoist edit is overwritten.
   - With Show = `project`, a task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen, and edits still reach it by id, until the next full pull (a switch, Check, or a changed setting) drops it from the cache, deleting nothing.
   - `create`'s key lookup is a list of the project's open tasks kept for 60 s. A task with the same key made meanwhile somewhere else (Connect on another Mac, or another app writing the same key) is not in that list, so a create in that window makes a second task. Within one Connect, the ledger and the outbox order rule this out.
   - Lists stop at 100 pages (20,000 items) without a signal.
@@ -316,7 +317,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Under the chosen provider**, its declared settings, drawn by Connect:
   - a secret as a password field ("API token") with "Save" and the line "Saved on this Mac. Connect never shows it again." once set ("Replace" and "Remove" then);
   - each string setting as a text field (Project, App label).
-  - Also "Check", which runs `status` and says "Connected to Todoist as <account>, project “Connect”." or the error sentence; "Sync now"; and the pending, parked and last-sync line.
+  - Also "Check", which runs `status` and says "Connected to Todoist as <account>, project “Connect”." (followed by the `message` `status` gave, such as the project made again, unless it would echo the token) or the error sentence; "Sync now"; and the pending, parked and last-sync line.
   - A link "Get your token in Todoist ↗" opens `https://app.todoist.com/app/settings/integrations/developer` through the existing link confirmation.
 - **Choosing a provider** saves `task_provider_set`. The first time a provider is chosen, while Local has open tasks, a dialog offers the copy:
   - title "Copy your open tasks to Todoist?";

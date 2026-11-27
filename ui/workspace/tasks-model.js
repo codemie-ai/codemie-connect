@@ -126,7 +126,7 @@ export function ownerOf(task, me) {
 }
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
-const daysBetween = (from, to) => Math.round((dateFromKey(to) - dateFromKey(from)) / DAY_MS);
+export const daysBetween = (from, to) => Math.round((dateFromKey(to) - dateFromKey(from)) / DAY_MS);
 
 /** A due date as a chip, relative to today in the workspace `zone`: `{tone, text, title}` with
  *  tone `overdue`, `today`, `soon` (within six days) or `later`; null without a date. */

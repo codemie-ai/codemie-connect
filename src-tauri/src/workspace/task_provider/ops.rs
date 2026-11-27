@@ -196,11 +196,21 @@ impl Core {
             Ok(v) => {
                 // Check reads the project again in full (design §4 "Budget").
                 sync::reread(&mut *self.repo()?, &provider, now())?;
-                Ok(json!({
+                let mut answer = json!({
                     "ok": true,
                     "account": v.get("account").cloned().unwrap_or(Value::Null),
                     "project": v.get("project").cloned().unwrap_or(Value::Null),
-                }))
+                });
+                // What the provider says it did (design §7: the project made again), unless the
+                // sentence would echo its stored secret.
+                if let Some(message) = v["message"].as_str().filter(|m| {
+                    !m.is_empty()
+                        && !providers.secret_matches(plugin, m)
+                        && m.chars().count() <= 300
+                }) {
+                    answer["message"] = message.into();
+                }
+                Ok(answer)
             }
             Err(e) => Err(self.check_error(plugin, e)),
         }
@@ -444,12 +454,13 @@ fn withdraw_one(r: &mut Repository, wid: &str, tid: &str, now: i64) -> Result<()
             }
         } else if let Some(rid) = rid {
             let seq = outbox::next_seq(r)?;
-            // The remote as it was, for a Discard change of this remove to give it back.
+            // The remote and the status as they were, for a Discard change of this remove to
+            // give them back.
             let remove = outbox::entry(
                 &record,
                 "remove",
                 json!({"id": rid, "key": key, "ledger": "withdrawn",
-                    "remote": record.data["remote"]}),
+                    "remote": record.data["remote"], "status": status_of(&stored.data)}),
                 seq,
                 now,
             );
@@ -618,8 +629,9 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
     let mut puts: Vec<Record> = Vec::new();
     let mut gone: Vec<Record> = Vec::new();
     let mut unsent = false;
-    // A withdraw's remove discarded: the task's remote, to link it back.
+    // A withdraw's remove discarded: the task's remote, to link it back, and its status before.
     let mut relink: Option<Value> = None;
+    let mut relink_status = "todo";
     for e in entries {
         if action == "retry" {
             if e.data["op"] == "remove" && outbox::remove_is_stale(r, &e.data)? {
@@ -659,6 +671,13 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
                         } else {
                             json!({"id": rid})
                         });
+                        // A remove queued before the status was kept reads as To do.
+                        if let Some(was) = e.data["patch"]["status"]
+                            .as_str()
+                            .filter(|s| matches!(*s, "todo" | "doing" | "waiting" | "done"))
+                        {
+                            relink_status = was;
+                        }
                     }
                 }
             }
@@ -699,7 +718,12 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
         Ok(stored) if relink.is_some() && stored.data["remote"]["id"].is_null() => {
             // The withdraw is undone: the task is in the provider again, one record for it.
             // Nothing is queued: it is there already.
-            let p = tasks::prepare(r, wid, &json!({"id": task_id, "status": "todo"}), now)?;
+            let p = tasks::prepare(
+                r,
+                wid,
+                &json!({"id": task_id, "status": relink_status}),
+                now,
+            )?;
             before = p.before;
             let mut task = p.record;
             task.data["remote"] = relink.take().unwrap_or_default();
@@ -1054,6 +1078,30 @@ mod tests {
             e.core.task_provider_check().await.unwrap(),
             json!({"ok": true, "account": "Taylor Morgan", "project": "Connect"})
         );
+
+        // A status that says what it did (the project made again) keeps its sentence, unless
+        // the sentence would echo the stored secret.
+        e.fake.answer(
+            "status",
+            Ok(
+                json!({"ok": true, "account": "Taylor Morgan", "project": "Connect",
+                "message": "Connect made the Todoist project “Connect” again."}),
+            ),
+        );
+        assert_eq!(
+            e.core.task_provider_check().await.unwrap()["message"],
+            "Connect made the Todoist project “Connect” again."
+        );
+        e.fake.set_secret(SENTINEL);
+        e.fake.answer(
+            "status",
+            Ok(
+                json!({"ok": true, "account": "Taylor Morgan", "project": "Connect",
+                "message": format!("x {SENTINEL}")}),
+            ),
+        );
+        let answer = e.core.task_provider_check().await.unwrap();
+        assert!(answer.get("message").is_none(), "{answer}");
 
         e.fake.answer("status", Err(ProviderError::NeedsToken));
         let err = e.core.task_provider_check().await.unwrap_err();
@@ -1764,7 +1812,7 @@ mod tests {
     #[tokio::test]
     async fn discarding_a_withdraws_parked_remove_relinks_the_task() {
         let e = env(P);
-        e.save(json!({"id": "t1", "text": "Book a room for demo day"}));
+        e.save(json!({"id": "t1", "text": "Book a room for demo day", "status": "doing"}));
         e.sync().await;
         let rid = e.task("t1").unwrap()["remote"]["id"].clone();
         e.op(Operation::TaskWithdraw, json!({"ids": ["t1"]}))
@@ -1786,7 +1834,10 @@ mod tests {
         .unwrap();
         let t = e.task("t1").unwrap();
         assert_eq!(t["remote"]["id"], rid);
-        assert_eq!(t["status"], "todo");
+        assert_eq!(
+            t["status"], "doing",
+            "the status it had before the withdraw"
+        );
         e.fake.put_remote(
             json!({"id": rid, "key": t["key"], "text": "Book a room for Friday",
             "done": false, "labels": ["connect"]}),
@@ -1837,6 +1888,47 @@ mod tests {
                 "folder": folder.to_string_lossy()}),
         })
         .unwrap();
+    }
+
+    /// Final review M4: a change pulled from the provider rewrites the meeting's `tasks.json`
+    /// too, so other tools never read a stale list; so does a task deleted there.
+    #[tokio::test]
+    async fn a_pulled_change_rewrites_the_meetings_tasks_json() {
+        let e = env(P);
+        let folder = e._dir.path().join("m1");
+        std::fs::create_dir_all(&folder).unwrap();
+        with_meeting(&e.core, &folder);
+        let items = || -> Vec<String> {
+            let v: Value =
+                serde_json::from_slice(&std::fs::read(folder.join("tasks.json")).unwrap()).unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["task"].as_str().unwrap().to_string())
+                .collect()
+        };
+        e.save(json!({"id": "a", "text": "Send the deck", "meetingId": "m1", "line": 1}));
+        e.save(json!({"id": "b", "text": "Book a room", "meetingId": "m1", "line": 2}));
+        e.sync().await;
+        assert_eq!(items(), ["Send the deck", "Book a room"]);
+        let rid = |id: &str| {
+            e.task(id).unwrap()["remote"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let mut changed = e
+            .fake
+            .tasks()
+            .into_iter()
+            .find(|t| t["id"] == rid("a").as_str())
+            .unwrap();
+        changed["text"] = "Send the final deck".into();
+        e.fake.put_remote(changed);
+        e.fake.remove_remote(&rid("b"));
+        sync::run(&e.core, P, now() + 3600).await.unwrap();
+        assert_eq!(e.task("a").unwrap()["text"], "Send the final deck");
+        assert_eq!(items(), ["Send the final deck"]);
     }
 
     /// Review Important 2: a meeting's `tasks.json` (what `echo.read('calls')` and other tools

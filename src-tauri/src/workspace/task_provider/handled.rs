@@ -110,6 +110,13 @@ pub(crate) fn sweep(core: &Core, now: i64) -> Result<usize> {
         .filter(|m| m.connection_id.as_deref() == Some(cid.as_str()) && m.data["deleted"] != true)
         .collect();
     let by_id: HashMap<&str, &Record> = messages.iter().map(|m| (m.id.as_str(), m)).collect();
+    // The user's own messages by conversation, read once for every task.
+    let mut mine: HashMap<&str, Vec<(&Record, i64)>> = HashMap::new();
+    for m in messages.iter().filter(|m| m.data["isMine"] == true) {
+        if let (Some(c), Some(at)) = (m.data["conversationId"].as_str(), m.data["at"].as_i64()) {
+            mine.entry(c).or_default().push((m, at));
+        }
+    }
     let open: Vec<Record> = r
         .records_of_kind(tasks::KIND)?
         .into_iter()
@@ -128,10 +135,10 @@ pub(crate) fn sweep(core: &Core, now: i64) -> Result<usize> {
             continue;
         };
         let after = source.data["at"].as_i64().unwrap_or(0);
-        let Some((reply, at)) = messages
-            .iter()
-            .filter(|m| m.data["conversationId"] == conversation && m.data["isMine"] == true)
-            .filter_map(|m| m.data["at"].as_i64().map(|at| (m, at)))
+        let Some(&(reply, at)) = mine
+            .get(conversation)
+            .into_iter()
+            .flatten()
             .filter(|(_, at)| *at > after)
             .min_by_key(|(_, at)| *at)
         else {

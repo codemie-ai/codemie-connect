@@ -2507,3 +2507,33 @@ async fn a_cut_off_answer_fails_and_run_log_keeps_its_beginning() {
         .iter()
         .all(|r| !r.data.to_string().contains("SENTINEL")));
 }
+
+/// Final review M3: with review off, the tasks the notes find go straight to the active
+/// provider, so their push is queued at once rather than left for the background round.
+#[tokio::test]
+async fn tasks_the_notes_hand_to_a_provider_are_pushed_at_once() {
+    let n = notes_env(vec![outcome(
+        "# Sync\n\n## Action Items\n- Send the notes",
+        json!([{"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"}]),
+    )]);
+    let e = &n.e;
+    {
+        let mut r = e.core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.tasks.provider = "plugin:todoist".into();
+        s.meetings.review = false;
+        r.settings_update(&s).unwrap();
+    }
+    downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let tasks = tasks_of(&e.core, "m1");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].data["pending"], true, "{}", tasks[0].data);
+    assert!(
+        !jobs(&e.core, "task_sync").is_empty(),
+        "a task_sync job was queued"
+    );
+}

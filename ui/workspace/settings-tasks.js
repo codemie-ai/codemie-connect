@@ -87,7 +87,7 @@ export function whereTasksLive(p) {
 
 function checkLine(check, name) {
   if (!check) return '';
-  if (check.ok) return `<p class="ws-inline-note ws-success" role="status">${icon('check')}<span>Connected to ${e(name)} as ${e(check.account || '—')}, project “${e(check.project || '—')}”.</span></p>`;
+  if (check.ok) return `<p class="ws-inline-note ws-success" role="status">${icon('check')}<span>Connected to ${e(name)} as ${e(check.account || '—')}, project “${e(check.project || '—')}”.${check.message ? ` ${e(check.message)}` : ''}</span></p>`;
   return `<p class="ws-inline-note ws-error" role="alert">${icon('alert')}<span>${e(check.message || `${name} can’t be reached.`)}</span></p>`;
 }
 

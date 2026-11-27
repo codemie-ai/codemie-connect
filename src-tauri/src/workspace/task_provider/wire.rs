@@ -265,5 +265,17 @@ mod tests {
             keys::task_key("remote:9", "Added in Todoist")
         );
         assert_eq!(unkeyed["kind"], "reply");
+        // Neither a label nor a kind: a plain task, whose body leaves `kind` out (absent reads
+        // as `task`).
+        let plain = from_wire(&json!({"id": "10", "text": "Plain"}), "plugin:todoist");
+        assert!(plain.get("kind").is_none());
+        assert_eq!(fields(&plain)["kind"], "task");
+    }
+
+    #[test]
+    fn fields_without_a_kind_make_a_plain_task() {
+        let mut body = json!({"text": "Answer Olga", "status": "todo", "kind": "reply"});
+        apply_fields(&mut body, &json!({"text": "Answer Olga", "done": false}), 0);
+        assert_eq!(kind_of(&body), "task");
     }
 }

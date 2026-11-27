@@ -602,9 +602,12 @@ fn provider_ops(before: &Value, after: &Value, creating: bool) -> Vec<(&'static 
         return ops;
     }
     let mut ops = Vec::new();
+    // Done or reopened, with the stored kind unchanged: the kind the fields read follows the
+    // status (`wire::fields`), which is no edit of the kind (re-review N3).
+    let completion_only = a["done"] != b["done"] && after["kind"] == before["kind"];
     let changed: serde_json::Map<String, Value> = ["text", "notes", "due", "kind", "owner"]
         .into_iter()
-        .filter(|k| a[*k] != b[*k])
+        .filter(|k| a[*k] != b[*k] && !(completion_only && *k == "kind"))
         .map(|k| (k.to_string(), Value::Bool(true)))
         .collect();
     if !changed.is_empty() {
@@ -1358,6 +1361,27 @@ mod tests {
             .records_of_kind("task_outbox")
             .unwrap();
         assert!(outbox.is_empty(), "no outbox entry for Local: {outbox:?}");
+    }
+
+    /// Final review M3: a provider task changed through `local_save` (Today's checkbox) is pushed
+    /// at once, as `task_save` does, not on the next background round.
+    #[tokio::test]
+    async fn a_local_save_of_a_provider_task_queues_its_push() {
+        let e = env();
+        set_provider(&e.core, "plugin:todoist");
+        op(
+            &e.core,
+            Operation::LocalSave,
+            json!({"kind": "commitment", "text": "Book the workshop room", "owner": "You", "due": null}),
+        )
+        .await
+        .unwrap();
+        let jobs = e.core.repo().unwrap().jobs().unwrap();
+        assert!(
+            jobs.iter()
+                .any(|j| j.kind == "task_sync" && j.state == "queued"),
+            "a task_sync job is queued: {jobs:?}"
+        );
     }
 
     #[tokio::test]

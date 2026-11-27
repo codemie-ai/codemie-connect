@@ -1207,7 +1207,7 @@ mod tests {
         );
     }
 
-    /// Every file under `dir` whose bytes contain `needle`.    /// Every file under `dir` whose bytes contain `needle`.
+    /// Every file under `dir` whose bytes contain `needle`.
     fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {

@@ -420,7 +420,7 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
 
   // ---------------------------------------------------------------- P8: states, pending and a real parked sentence
 
-  for (const [name, pattern] of [['offline', /^Todoist can't be reached · 1 change waits · trying again at \d{1,2}:\d{2}(\s?[AP]M)?$/], ['rate_limited', /^Todoist asked Connect to slow down · trying again at \d{1,2}:\d{2}(\s?[AP]M)?$/]]) {
+  for (const [name, prefix] of [['offline', "Todoist can't be reached · 1 change waits · trying again at "], ['rate_limited', 'Todoist asked Connect to slow down · trying again at ']]) {
     const patch = snapshot => {
       snapshot.taskProvider = STATES[name];
       for (const r of snapshot.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
@@ -430,7 +430,10 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
       await page.waitForSelector('.ws-tdate[data-provider]');
       await settled(page);
       const line = await page.locator('.ws-tasks-line').innerText();
-      assert(pattern.test(line), line);
+      // The retry time as this page's locale writes it: AM/PM exactly when it uses a 12-hour clock.
+      const hour12 = await page.evaluate(() => new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12 === true);
+      const time = hour12 ? '\\d{1,2}:\\d{2}\\s?[AP]M' : '\\d{1,2}:\\d{2}';
+      assert(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${time}$`).test(line), line);
       assert(errors.length === 0, errors.join(' | '));
     });
     await context.close().catch(() => {});

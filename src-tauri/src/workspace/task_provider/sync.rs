@@ -31,7 +31,7 @@ use crate::workspace::models::{id, Job, Record, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::{new_job, tasks, Core};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 /// The record kind of the sync state (shared with the due-today reminder's bookkeeping).
@@ -199,6 +199,18 @@ struct Run<'a> {
     pulled: bool,
     /// The re-read token the run started with (`null`: none asked for).
     reread: Value,
+    /// The meetings (`(workspace, meeting)`) whose tasks this run changed: their `tasks.json`
+    /// is written again at the end.
+    meetings: BTreeSet<(String, String)>,
+}
+
+/// `task`'s meeting, for [`Run::meetings`].
+fn meeting_of(task: &Record) -> Option<(String, String)> {
+    let meeting = task.data["meetingId"].as_str().filter(|m| !m.is_empty())?;
+    Some((
+        task.workspace_id.clone().unwrap_or_default(),
+        meeting.to_string(),
+    ))
 }
 
 /// The `task_sync` job's executor: one push and pull with `provider` (`plugin:<id>`), at `now`.
@@ -243,7 +255,13 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
     let waiting_state = st["state"].as_str().unwrap_or("ready").to_string();
     let backoff_until = st["backoffUntil"].as_i64().unwrap_or(0);
     if waiting_state == "needs_token" || backoff_until > now {
-        save_state(&mut *core.repo()?, provider, &st, now)?;
+        let mut r = core.repo()?;
+        save_state(&mut r, provider, &st, now)?;
+        // A save or a focus brought the queued retry forward to this run: it goes back to its
+        // time, so the retry the header names still happens.
+        if backoff_until > now {
+            queue(&mut r, provider, backoff_until)?;
+        }
         return Ok(SyncOutcome::of(&waiting_state));
     }
     // A new plugin version or setting (amended 2026-11-27): what it lists may have changed (a
@@ -282,6 +300,7 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
         message: None,
         pulled: false,
         reread: Value::Null,
+        meetings: BTreeSet::new(),
     };
     run.reread = run.st["reread"].clone();
     let mut stop = None;
@@ -621,9 +640,10 @@ impl Run<'_> {
     /// the create was on its way, or a task adopted by its key that holds older words), an update
     /// is queued (design §4 "an update if fields differ").
     /// Answers whether something new was queued (a remove), for another pass.
-    fn created(&self, entry: &Record, answer: &Value) -> Result<bool> {
+    fn created(&mut self, entry: &Record, answer: &Value) -> Result<bool> {
         let now = self.clock.secs();
-        let mut r = self.repo()?;
+        let core = self.core;
+        let mut r = core.repo()?;
         let rid = wire::remote_of(answer, None)["id"]
             .as_str()
             .unwrap_or_default()
@@ -718,6 +738,7 @@ impl Run<'_> {
             ));
         }
         task.updated_at = now;
+        self.meetings.extend(meeting_of(&task));
         puts.push(task);
         let wid = entry.workspace_id.clone().unwrap_or_default();
         let mut gone = vec![(outbox::KIND, entry.id.as_str(), wid.as_str())];
@@ -735,9 +756,10 @@ impl Run<'_> {
     /// An update or complete answered: the task's `remote` follows the answer; the entry goes
     /// unless it was changed (an edit coalesced into it, which gives it a new revision) while it
     /// was on its way.
-    fn answered(&self, entry: &Record, answer: &Value) -> Result<()> {
+    fn answered(&mut self, entry: &Record, answer: &Value) -> Result<()> {
         let now = self.clock.secs();
-        let mut r = self.repo()?;
+        let core = self.core;
+        let mut r = core.repo()?;
         let stored = outbox::current(&r, &entry.data)?;
         let unchanged = stored
             .as_ref()
@@ -750,6 +772,27 @@ impl Run<'_> {
         }
         if let Some(mut task) = Self::task_of(&r, &entry.data)? {
             let except: &[&str] = if unchanged { &[entry.id.as_str()] } else { &[] };
+            // The answer holds what Connect sent: those fields are the provider's last-seen
+            // values now, so an edit made here while the entry was on its way stays Connect's
+            // own change, whatever the provider's clock stamped on the answer.
+            if task.data["remote"]["base"].is_object() {
+                let theirs = wire::remote_fields(answer);
+                let mut sent: Vec<&str> = entry.data["patch"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, _)| k.as_str())
+                    .collect();
+                if sent.contains(&"owner") {
+                    sent.push("kind");
+                }
+                if entry.data["op"] == "complete" {
+                    sent.push("done");
+                }
+                for k in sent.into_iter().filter(|k| wire::FIELDS.contains(k)) {
+                    task.data["remote"]["base"][k] = theirs[k].clone();
+                }
+            }
             Self::settled(&r, &mut task, answer, now, except)?;
             if entry.data["op"] == "complete" {
                 if let Some(key) = task.data["key"].as_str() {
@@ -768,6 +811,7 @@ impl Run<'_> {
                     ));
                 }
             }
+            self.meetings.extend(meeting_of(&task));
             puts.push(task);
         }
         r.commit_local(&puts, &gone, true)
@@ -812,7 +856,11 @@ impl Run<'_> {
             // done or deleted there meanwhile follows the usual rules (I1). A cursor the provider
             // no longer takes is skipped for the full list.
             match self.changed_since(cursor.clone()).await {
-                Ok(changes) => self.apply(&changes, false)?,
+                Ok(changes) => {
+                    self.apply(&changes, false)?;
+                    // Kept, so a full list that then fails doesn't replay these changes.
+                    self.st["cursor"] = changes["cursor"].clone();
+                }
                 Err(None) => {}
                 Err(Some(stop)) => return Ok(Some(stop)),
             }
@@ -917,6 +965,7 @@ impl Run<'_> {
                 updated.data = body;
                 updated.revision = id();
                 updated.updated_at = now;
+                self.meetings.extend(meeting_of(&updated));
                 puts.push(updated);
                 self.outcome.pulled += 1;
                 continue;
@@ -989,6 +1038,7 @@ impl Run<'_> {
                     "created",
                     now,
                 ));
+                self.meetings.extend(meeting_of(&adopted));
                 puts.push(adopted);
                 self.outcome.pulled += 1;
                 continue;
@@ -1059,6 +1109,7 @@ impl Run<'_> {
                 continue;
             };
             let wid = t.workspace_id.clone().unwrap_or_default();
+            self.meetings.extend(meeting_of(t));
             gone.push((tasks::KIND.into(), t.id.clone(), wid));
             for e in entries.iter().filter(|e| e.data["taskId"] == t.id.as_str()) {
                 gone.push((
@@ -1100,6 +1151,7 @@ impl Run<'_> {
                     t.id.clone(),
                     t.workspace_id.clone().unwrap_or_default(),
                 ));
+                self.meetings.extend(meeting_of(t));
                 self.outcome.removed += 1;
             }
         }
@@ -1172,6 +1224,15 @@ impl Run<'_> {
         save_state(&mut r, &self.provider, &self.st, now)?;
         if let Some(due) = next {
             queue(&mut r, &self.provider, due)?;
+        }
+        drop(r);
+        if !self.meetings.is_empty() {
+            // The meeting folders' lock first, then the repository, as every writer of them.
+            let _folders = self.core.meeting_lock();
+            let r = self.core.repo()?;
+            for (wid, meeting) in &self.meetings {
+                tasks::write_tasks_json(&r, wid, meeting);
+            }
         }
         Ok(self.outcome)
     }
@@ -1807,6 +1868,98 @@ mod tests {
         assert_eq!(e.fake.tasks()[0]["text"], "Send the list");
     }
 
+    /// Final review M1: a second edit of the field an update is sending, made while the update
+    /// is on its way, is kept and sent, even when Todoist's clock stamps the answer later than
+    /// the edit; the answer is what Connect sent, not a newer Todoist edit.
+    #[tokio::test]
+    async fn an_edit_of_the_field_in_flight_is_kept_though_todoist_stamps_later() {
+        let e = env();
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        e.save(json!({"id": "t1", "text": "Send the list"}), NOW + 10);
+        e.fake.set_time(NOW + 20);
+        let core = e.core.clone();
+        e.fake.during("update", move || {
+            tasks::task_save(
+                &mut core.repo().unwrap(),
+                "personal",
+                &json!({"id": "t1", "text": "Send the final list"}),
+                NOW + 10,
+            )
+            .unwrap();
+        });
+        e.sync(NOW + 10).await;
+        let t = e.task("t1").unwrap();
+        assert_eq!(t["text"], "Send the final list");
+        assert!(
+            !t["history"].to_string().contains("newer"),
+            "no line says Todoist had a newer text: {}",
+            t["history"]
+        );
+        e.sync(NOW + 11).await;
+        assert_eq!(e.fake.tasks()[0]["text"], "Send the final list");
+    }
+
+    /// Final review M2: a save or a window focus during a backoff brings the queued retry
+    /// forward; the run it starts makes no call and queues the retry again at its time.
+    #[tokio::test]
+    async fn a_run_held_by_a_backoff_keeps_the_retry_queued() {
+        let e = env();
+        e.fake.fail_all(Some(ProviderError::Offline));
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        assert_eq!(e.state()["backoffUntil"], NOW + 30);
+        let queued = || -> Vec<i64> {
+            e.core
+                .repo()
+                .unwrap()
+                .jobs()
+                .unwrap()
+                .into_iter()
+                .filter(|j| of_provider(j, P) && j.state == "queued")
+                .map(|j| j.due_at)
+                .collect()
+        };
+        queue(&mut e.core.repo().unwrap(), P, NOW + 5).unwrap();
+        assert_eq!(queued(), [NOW + 5]);
+        // The background loop claims it and runs it.
+        let job = e.core.repo().unwrap().claim_ready(NOW + 5, true).unwrap();
+        assert!(job.is_some_and(|j| of_provider(&j, P)));
+        assert!(queued().is_empty());
+        let calls = e.fake.calls().len();
+        e.sync(NOW + 5).await;
+        assert_eq!(e.fake.calls().len(), calls, "no call during the backoff");
+        assert_eq!(queued(), [NOW + 30], "the retry is queued at its time");
+    }
+
+    /// Re-review N2: the first, incremental part of a re-read keeps its cursor, so a full list
+    /// that then fails doesn't replay the same changes next time.
+    #[tokio::test]
+    async fn a_reread_keeps_the_cursor_of_its_incremental_part() {
+        let e = env();
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        e.fake
+            .put_remote(json!({"id": "77", "text": "Added in Todoist", "labels": [],
+            "done": false}));
+        reread(&mut e.core.repo().unwrap(), P, NOW + 1).unwrap();
+        let before = e.calls_of("changedSince").len();
+        let fake = e.fake.clone();
+        e.fake.during("changedSince", move || {
+            fake.fail_all(Some(ProviderError::Offline));
+        });
+        let o = e.sync(NOW + 1).await;
+        assert_eq!(o.state, "offline");
+        assert!(
+            e.task("todoist-77").is_some(),
+            "the incremental part applied"
+        );
+        let cursor = e.calls_of("changedSince")[before]["cursor"].clone();
+        assert!(cursor.is_string());
+        assert_ne!(e.state()["cursor"], cursor, "the cursor moved on");
+        assert!(!e.state()["reread"].is_null(), "the full list is still due");
+    }
+
     /// Review fix 3: a task deleted in Connect whose create reached Todoist (answer lost) is
     /// removed there, not brought back by the pull; nor while its remove is parked.
     #[tokio::test]
@@ -2029,6 +2182,19 @@ mod tests {
         e.save(json!({"id": "t2", "status": "waiting"}), NOW + 110);
         let waiting: Vec<Value> = e.outbox().iter().map(|w| w["op"].clone()).collect();
         assert_eq!(waiting, ["complete"]);
+
+        e.sync(NOW + 110).await;
+
+        // Re-review N3: someone else's To do task done, and undone: only the completion goes,
+        // no update of the kind it already has there.
+        e.save(json!({"id": "t1", "status": "done"}), NOW + 120);
+        let waiting: Vec<Value> = e.outbox().iter().map(|w| w["op"].clone()).collect();
+        assert_eq!(waiting, ["complete"]);
+        e.sync(NOW + 120).await;
+        e.save(json!({"id": "t1", "status": "todo"}), NOW + 130);
+        let waiting: Vec<Value> = e.outbox().iter().map(|w| w["op"].clone()).collect();
+        assert_eq!(waiting, ["complete"]);
+        e.sync(NOW + 130).await;
 
         // Mine now: the kind goes with the owner, so the plugin drops the label and prefix.
         e.save(json!({"id": "t1", "owner": "You"}), NOW + 200);

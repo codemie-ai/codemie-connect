@@ -3,13 +3,11 @@
 // the workspace time zone; "Check with <name>" rows; the date chips; the header's status line;
 // and which views the page offers. view-tasks-dates.js draws them.
 import { addDaysToKey, agoLabel, dateFromKey, dayKey, formatDate, formatTime } from './format.js';
-import { activeProvider, dueInfo, meetingOf, ownerOf, taskOrder, taskStatus } from './tasks-model.js';
+import { activeProvider, daysBetween, dueInfo, meetingOf, ownerOf, taskOrder, taskStatus } from './tasks-model.js';
 
 /** Statuses By date lists by their due date (To review has its own section). */
 const OPEN = ['todo', 'doing', 'waiting'];
-const DAY_MS = 86_400_000;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-const daysFrom = (today, due) => Math.round((dateFromKey(due) - dateFromKey(today)) / DAY_MS);
 /** A due date By date can place: a real `YYYY-MM-DD` day (dueInfo's own check). */
 const dueOf = (r, now, zone) => (dueInfo(r.data.due, now, zone) ? r.data.due : null);
 
@@ -32,7 +30,7 @@ export function dateGroups(records, { now = Date.now(), zone } = {}) {
       if (at && dayKey(at * 1000, zone) === today) g.doneToday.push(r);
     } else if (OPEN.includes(status)) {
       const due = dueOf(r, now, zone);
-      const d = due ? daysFrom(today, due) : null;
+      const d = due ? daysBetween(today, due) : null;
       if (d === null) g.noDate.push(r);
       else if (d < 0) g.late.push(r);
       else if (d === 0) g.today.push(r);
@@ -54,7 +52,7 @@ export function foldOf(records, id, options) {
 /** A row's due as By date shows it: "2d late", "Today", a weekday within six days, else the day. */
 function dueTone(due, now, zone) {
   if (!due) return null;
-  const d = daysFrom(dayKey(now, zone), due);
+  const d = daysBetween(dayKey(now, zone), due);
   const date = dateFromKey(due);
   if (d < 0) return { tone: 'late', text: `${-d}d late` };
   if (d === 0) return { tone: 'today', text: 'Today' };

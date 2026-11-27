@@ -1306,7 +1306,12 @@ impl Core {
                         }
                     }
                     let _folders = self.meeting_lock();
-                    let task = tasks::task_save(&mut *self.repo()?, &w.id, &data, now())?;
+                    let mut r = self.repo()?;
+                    let task = tasks::task_save(&mut r, &w.id, &data, now())?;
+                    if task.data["pending"] == true {
+                        // Pushed at once, as `task_save` is (task-provider ruling 4).
+                        task_provider::sync::queue(&mut r, tasks::provider_of(&task.data), now())?;
+                    }
                     json!({"id": task.id})
                 } else {
                     let text = required(&req.data, "text", 20000)?;

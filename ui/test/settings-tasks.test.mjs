@@ -143,6 +143,9 @@ test('Check and Sync now, and the quiet copy link only once the copy was offered
   assert.match(html, /Connected to Todoist as Taylor Morgan, project “Connect”\./);
   assert.match(html, /data-action="tasks-provider-sync"[^>]*>(?:(?!<\/button>).)*Sync now/s);
   assert.doesNotMatch(html, /Copy open tasks from Connect…/);
+  // What the provider's status said it did shows too.
+  const remade = providerSettings(provider({ check: { ok: true, account: 'Taylor Morgan', project: 'Connect', message: 'Connect made the Todoist project “Connect” again.' } }));
+  assert.match(remade, /Connected to Todoist as Taylor Morgan, project “Connect”\. Connect made the Todoist project “Connect” again\./);
 
   // The Rust side now names the provider in its own sentence; the client just shows it.
   const failed = providerSettings(provider({ check: { ok: false, message: 'Todoist needs your API token.' } }));

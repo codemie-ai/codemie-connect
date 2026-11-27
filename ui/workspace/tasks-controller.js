@@ -447,7 +447,7 @@ export function createTasksController({
     await render();
     try {
       const answer = await query('task_provider_check', {});
-      v.check = { ok: true, account: answer?.account, project: answer?.project };
+      v.check = { ok: true, account: answer?.account, project: answer?.project, message: answer?.message };
     } catch (err) {
       v.check = { ok: false, message: err?.message || String(err) };
     } finally {
