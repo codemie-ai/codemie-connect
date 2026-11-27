@@ -5,6 +5,8 @@
 //! - Both changed it: the later change by time, Connect's edit time against the provider's
 //!   `updatedAt`; when the provider's won, the history says so.
 //! - Done or reopened in the provider wins over an edit (the edit's other fields stay).
+//! - The `waiting` label removed in the provider moves the task out of Waiting: it becomes the
+//!   user's own, with a history line.
 //!
 //! Deleted in the provider wins over everything; the sync job removes such a record before any
 //! merge.
@@ -71,9 +73,20 @@ pub(crate) fn merge(local: &Value, remote: &Value, edited_at: i64) -> (Value, Ve
             }
         }
     }
+    // The `waiting` label removed in the provider: it says the task is no longer someone
+    // else's, so it leaves Waiting and is the user's own again, whatever owner line remains.
+    let unwaited = base["kind"] == "waiting" && theirs["kind"] != "waiting";
+    if unwaited && mine["kind"] == "waiting" {
+        merged["kind"] = theirs["kind"].clone();
+        merged["owner"] = Value::Null;
+        history.push("Waiting label removed in Todoist".to_string());
+    }
     let mut body = local.clone();
     let done_at = if remote_at > 0 { remote_at } else { edited_at };
     wire::apply_fields(&mut body, &merged, done_at);
+    if unwaited && body["status"] == "waiting" {
+        body["status"] = "todo".into();
+    }
     let synced_at = local["remote"]["syncedAt"].as_i64();
     body["remote"] = wire::remote_of(remote, synced_at);
     (body, history)

@@ -2207,6 +2207,44 @@ mod tests {
         assert_eq!(last["patch"]["kind"], "task", "{last}");
     }
 
+    /// The `waiting` label removed in Todoist: Todoist is the source of truth, so the task
+    /// leaves Waiting and is the user's own again (no "Check with" row), with a history line.
+    #[tokio::test]
+    async fn a_waiting_label_removed_in_todoist_moves_the_task_out_of_waiting() {
+        let e = env();
+        e.save(
+            json!({"id": "t2", "text": "Book a room", "status": "waiting",
+                "owner": "marek.novak@example.test", "ownerName": "Marek Novak"}),
+            NOW,
+        );
+        e.sync(NOW).await;
+        let mut remote = e.fake.tasks().pop().unwrap();
+        assert_eq!(remote["labels"], json!(["connect", "waiting"]));
+        // The owner line stays in the description; only the label goes.
+        remote["labels"] = json!(["connect"]);
+        remote["kind"] = "task".into();
+        e.fake.set_time(NOW + 50);
+        e.fake.put_remote(remote);
+        let o = e.sync(NOW + 100).await;
+        assert_eq!(o.pulled, 1);
+        let t2 = e.task("t2").unwrap();
+        assert_eq!(t2["status"], "todo");
+        assert_eq!(t2["kind"], "task");
+        assert_eq!(t2["owner"], Value::Null);
+        assert_eq!(t2["ownerName"], Value::Null);
+        assert_eq!(
+            t2["history"].as_array().unwrap().last().unwrap()["text"],
+            "Waiting label removed in Todoist"
+        );
+        // Nothing is sent back, and the next pull changes nothing more.
+        assert!(e.outbox().is_empty(), "{:?}", e.outbox());
+        e.sync(NOW + 200).await;
+        assert_eq!(
+            e.task("t2").unwrap()["history"].as_array().unwrap().len(),
+            t2["history"].as_array().unwrap().len()
+        );
+    }
+
     /// Re-review N1: a re-read asked for while a run is on its way (the project changed during
     /// a push) is kept by that run's end, so the next run reads the new project.
     #[tokio::test]

@@ -133,7 +133,8 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - only Todoist changed a field → Todoist's value;
 - only Connect changed it → Connect's (it is in the outbox);
 - both changed it → the later change wins by time (Connect's edit time against Todoist's `updatedAt`), and the history says "Todoist had a newer <field>; Connect kept it." when Todoist's won;
-- done or reopened in either place wins over an edit of the same task; deleted in Todoist wins over everything.
+- done or reopened in either place wins over an edit of the same task; deleted in Todoist wins over everything;
+- **the `waiting` label removed in Todoist (amended 2026-11-27)** → Todoist is the source of truth: the task leaves Waiting (status To do, kind `task`), its owner becomes the user, so its "Check with <name>" row goes, whatever `owner:` line the description still holds, and the history says "Waiting label removed in Todoist". Nothing is sent back.
 
 **Cadence and backoff:**
 - a pull at most every 60 s; every 5 minutes from the background loop; at once after a push; when the Tasks page opens and when the window gains focus (the window asks `task_sync_now`, which the core runs at most once every 30 s);
@@ -380,7 +381,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Views:** "Board", "List", "By date".
 - **Meeting column with a provider:** "Add <n> to <provider>", "In <provider>", "<n> in <provider> ›", "Added <n> to <provider> · Undo".
 - **Delete:** "Delete “<text>” in Todoist too? Undo makes it again as a new task."
-- **History lines:** "Todoist had a newer <text|notes|due date|owner>; Connect kept it.", "Done in Todoist", "Reopened in Todoist", "Closed: you replied in Teams at <time>" / "… in Outlook at <time>", "Copied from Connect".
+- **History lines:** "Todoist had a newer <text|notes|due date|owner>; Connect kept it.", "Done in Todoist", "Reopened in Todoist", "Closed: you replied in Teams at <time>" / "… in Outlook at <time>", "Copied from Connect", "Waiting label removed in Todoist" (amended 2026-11-27).
 - **Native refusals:** "Choose Connect or an installed task plugin.", "Turn <name> on in Settings › Plugins first.", "Choose up to 200 tasks."
 - **Permission sheet:** "Hold your tasks: what you add and change in Connect goes to it, and Connect shows the tasks it lists."
 - **Plugin refusals** (`refused:`): "Todoist didn't accept the change (<status>)", "Todoist needs a date like 2026-11-20."
