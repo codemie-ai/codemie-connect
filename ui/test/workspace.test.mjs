@@ -492,6 +492,28 @@ test('Needs your reply opens a row in place with the thread, the composer and Se
   assert.doesNotMatch(tile(today(s, ctx({ todayOpen: 'gone', threadAll: new Set() }))), /aria-expanded="true"|data-form="reply"/);
 });
 
+// A short widget cannot fit Compact's 260 px thread and still show the composer (reply design
+// ruling 20): Today's open row offers Earlier before the 12-message cap Compact uses, so app.js
+// can reveal it (CSS `.ws-msg-tight`) when the widget is too short for the header, the thread and
+// the composer together. Closed by default; Compact Inbox never gets it (see compact-inbox.test.mjs).
+test("Today's open row can offer Earlier before 12 messages, for a short widget", () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const tile = html => html.slice(html.indexOf('data-tile="inbox"'), html.indexOf('data-tile=', html.indexOf('data-tile="inbox"') + 1));
+  // c-reply-1 + c-reply-1b: a thread of 2, well under the 12-message cap.
+  const open = tile(today(s, ctx({ todayOpen: 'c-reply-1', threadAll: new Set() })));
+  assert.equal((open.match(/class="ws-bubble[ "]/g) || []).length, 2);
+  assert.match(open, /<button type="button" class="ws-thread-earlier ws-thread-earlier-auto" data-action="inbox-earlier" data-id="c-reply-1">Earlier<\/button>/);
+  // A single-message thread (c-reply-2) has nothing to collapse to: no Earlier at all.
+  const single = tile(today(s, ctx({ todayOpen: 'c-reply-2', threadAll: new Set() })));
+  assert.doesNotMatch(single, /ws-thread-earlier/);
+  // Past the 12-message cap, Earlier is the plain (always-shown) one, same as Compact's.
+  const first = s.records.find(r => r.id === 'c-reply-1b');
+  for (let i = 0; i < 12; i++) s.records.push({ ...first, id: `c-old-${i}`, revision: `r-old-${i}`, data: { ...first.data, text: `older ${i}`, at: first.data.at - 600 * (i + 1), lane: 'fyi' } });
+  const over = tile(today(s, ctx({ todayOpen: 'c-reply-1', threadAll: new Set() })));
+  assert.match(over, /<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="c-reply-1">Earlier<\/button>/);
+  assert.doesNotMatch(over, /ws-thread-earlier-auto/);
+});
+
 test('Tasks no longer draws Notes; Notes keeps the textarea id today-note', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
   const html = today(s, ctx());

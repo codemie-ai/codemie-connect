@@ -157,10 +157,11 @@ A box the app focused (Today's Draft reply, a draft arriving) is not touched. Th
 
 ### Today: "Needs your reply"
 
-Amended 2026-11-26 at the user's request (ruling 19).
+Amended 2026-11-26 at the user's request (ruling 19), then again the same day for a short widget (ruling 20).
 
 - A click on a row opens it in place inside the widget, in both views; a click again or Esc closes it. One row is open at a time, and leaving Today closes it.
-- The open row shows the Compact open row's body (`openRow`): the unavailable note, the summary, the thread (260 px, Earlier), then the same composer and action line as the Inbox: the ✦ draft link and one Send named for its target. A Teams Send sends on the click; a mail Send asks the short confirm with To and Cc. Autosave, the change line and ⋯ work as in the Inbox, through the same send and save paths and the store's `mutate`.
+- The open row shows the Compact open row's body (`openRow`), with two differences from Compact's: the thread caps at min(140 px, 35% of the widget) instead of Compact's 260 px, and past 1 message it can offer Earlier before Compact's 12-message cap (ruling 20). Otherwise it is the same composer and action line as the Inbox: the ✦ draft link and one Send named for its target. A Teams Send sends on the click; a mail Send asks the short confirm with To and Cc. Autosave, the change line and ⋯ work as in the Inbox, through the same send and save paths and the store's `mutate`.
+- Opening a row, or starting a draft in it (Draft reply or ✦ draft with AI), scrolls the widget's own body so the composer sits fully in view, the header too when there is room for both (ruling 20). A widget too short for the header, the capped thread and the composer together collapses the thread to its last message, with Earlier to show the rest.
 - The widget keeps its grid cell: its body scrolls when the open row is taller than the cell, never sideways.
 - The row's hover pill stays, labelled "Draft reply" with the ✦ icon (`draft-reply`). It opens the row in place and starts a draft there with the remembered options. The open row has no pill (its ✦ is the composer's link).
 - The box gets focus so the user can type. That focus is the app's, so ⌘↩ stays unarmed until the user clicks or types (ruling 16). Only the open row has a composer, so there is one ⌘↩ target on the screen.
@@ -221,6 +222,7 @@ Because a Teams reply now goes on the click, the copy says so before the user tu
 17. **After a send the row stays where it is.** No automatic Done or lane move, and the box empties. *Why:* moving a conversation is the user's decision. The next sync files a replied thread as it does today.
 18. **The Allow actions copy changes** to say a Teams reply goes on the click. *Why:* the user turns on `chat_send` knowing what it now does, and the gate itself is unchanged.
 19. **Today's Needs your reply rows open in place with the thread and the same composer and Send as Inbox (amended 2026-11-26 at the user's request).** *Why:* the user answers from Today without leaving it; the thread and the named Send come along, so nothing about sending changes.
+20. **A short Today widget keeps the composer reachable (amended 2026-11-26 at the user's request, found testing the real app).** The open row's thread caps at min(140 px, 35% of the widget) instead of Compact's 260 px; opening a row or starting a draft scrolls the widget so the composer is fully visible, the header too when it fits; and a widget too short for the header, the capped thread and the composer together collapses the thread to its last message, with Earlier to show more. Compact Inbox is unchanged. *Why:* ruling 19's Compact-sized thread filled a short widget and pushed the composer behind two nested scroll areas, where it could not be reached.
 
 ## Left to the builder
 

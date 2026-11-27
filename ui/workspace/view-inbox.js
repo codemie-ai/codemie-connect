@@ -140,19 +140,28 @@ function compactRow(s, m, zone, state, { isSelected, isOpen, count = 0, drafting
   </button>${isOpen ? openRow(s, m, zone, state, body) : ''}</div>`;
 }
 
-/** The open Compact row's body, and Today's open "Needs your reply" row: the unavailable note, the
- *  summary, the last messages, then the composer and its action line (the same as the Default
- *  reader's). */
-export function openRow(s, m, zone, state, bodyId) {
+/**
+ * The open Compact row's body, and Today's open "Needs your reply" row: the unavailable note, the
+ * summary, the last messages, then the composer and its action line (the same as the Default
+ * reader's). `today` (reply design ruling 20) is Today only: its thread caps lower than Compact's
+ * (CSS) and, past 1 message, always offers Earlier — hidden until app.js finds the widget too
+ * short for the header, the thread and the composer together (`.ws-msg-tight`), when it is shown
+ * in place of the rest of the thread. Compact keeps Earlier only past the 12-message cap.
+ */
+export function openRow(s, m, zone, state, bodyId, { today = false } = {}) {
   const d = m.data;
   const fullThread = conversation(s, m);
   const all = state.threadAll?.has(m.id);
   const thread = all ? fullThread : fullThread.slice(-12);
   const unavailable = d.unavailable || d.deleted;
+  const pastCap = fullThread.length > 12;
+  const earlier = !all && (pastCap || (today && thread.length > 1))
+    ? `<button type="button" class="ws-thread-earlier${pastCap ? '' : ' ws-thread-earlier-auto'}" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>`
+    : '';
   return `<div class="ws-crow-body" id="${e(bodyId)}" data-message-id="${e(m.id)}">
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${summarySection(s, m, zone, state)}
-    <div class="ws-thread ws-thread-compact" data-id="${e(m.id)}">${!all && fullThread.length > 12 ? `<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>` : ''}${bubbles(s, m, thread, zone)}</div>
+    <div class="ws-thread ws-thread-compact" data-id="${e(m.id)}">${earlier}${bubbles(s, m, thread, zone)}</div>
     ${composer(s, m, zone, state)}
   </div>`;
 }

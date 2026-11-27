@@ -169,6 +169,15 @@ test('a thread longer than 12 shows Earlier until expanded', () => {
   assert.doesNotMatch(all, /inbox-earlier/);
 });
 
+// Today's open row offers Earlier before 12 messages, for a short widget (reply design ruling 20);
+// the Compact Inbox is unchanged: no Earlier under 12, however short the pane.
+test('a short thread (under 12) shows no Earlier in Compact Inbox', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1' }));
+  assert.equal([...html.matchAll(/class="ws-bubble[ "]/g)].length, 2, 'c-reply-1 + c-reply-1b');
+  assert.doesNotMatch(html, /ws-thread-earlier/);
+});
+
 test('Default Inbox keeps the dock and the reading pane', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
   const html = inbox(s, ctx({ selectedMessage: 'm-reply-1', openMessage: 'm-reply-1' }, 'default'));

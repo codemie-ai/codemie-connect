@@ -596,6 +596,41 @@ export async function replyChecks({ open, check, assert, shot, settled, calls, O
     }
   }
 
+  // R16 (short widget, reply design ruling 20): "Needs your reply" shrunk to Height M (≈344 px,
+  // the closest grid row count to the reported ~380 px widget) still keeps the composer reachable:
+  // the reply textarea's bounding box sits fully inside the widget's own visible area, both after
+  // opening a row and after Draft reply fills the box. Both views.
+  for (const view of ['default', 'compact']) {
+    const { page, context, errors } = await open({ theme: 'dark', width: 1200, height: 900, hash: '#/today', enable: ['chat_send', 'mail_send'], settings: view === 'compact' ? { view: 'compact' } : null });
+    await check(`reply R16 (${view}): a short Today widget (~380 px) still shows the composer`, async () => {
+      await page.click('[data-tile="inbox"] [data-menu="today-w-inbox"] > summary');
+      await page.click('[data-tile="inbox"] [data-menu="today-w-inbox"] [data-action="today-height"][data-h="5"]');
+      await page.waitForSelector('[data-tile="inbox"][style*="--h:5"]');
+      const insideWidget = () => page.evaluate(() => {
+        const field = document.getElementById('reply-body')?.getBoundingClientRect();
+        const widget = document.querySelector('[data-tile="inbox"]')?.getBoundingClientRect();
+        if (!field || !widget) return false;
+        return field.top >= widget.top - 0.5 && field.bottom <= widget.bottom + 0.5 && field.left >= widget.left - 0.5 && field.right <= widget.right + 0.5;
+      });
+      const jordan = TODAY_ROW('c-reply-1');
+      await page.click('.ws-attention .ws-msg-row[data-id="c-reply-1"]');
+      await page.waitForSelector(`${jordan} .ws-reply-bar`);
+      assert(await insideWidget(), 'the composer is not fully inside the short widget after opening the row');
+      await shot(page, `reply-today-short-${view}`);
+
+      await plan(page, { outcome: 'hold' });
+      await page.click(`${jordan} .ws-reply-hint [data-action="ai-draft-quick"]`);
+      await page.waitForSelector(`${jordan} .ws-draft-running`, { timeout: 4000 });
+      assert(await insideWidget(), 'the composer is not fully inside the short widget while a draft runs');
+      await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, will do.', questions: [] }));
+      await page.waitForFunction(() => document.getElementById('reply-body')?.value.length > 0, null, { timeout: 4000 });
+      assert(await insideWidget(), 'the composer is not fully inside the short widget after Draft reply filled the box');
+      await shot(page, `reply-today-short-draft-${view}`);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
   // R11: an unacknowledged critical item's bar is Send, Acknowledge and ⋯; ⋯ holds Snooze and its
   // four choices; Acknowledge records the decision.
   for (const theme of ['dark', 'light']) {

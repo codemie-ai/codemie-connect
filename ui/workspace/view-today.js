@@ -452,7 +452,7 @@ function messageRow(s, msg, zone, canDraft, state, isOpen) {
     <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
     <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
-  </button>${draft}${isOpen ? openRow(s, msg, zone, state, body) : ''}</div>`;
+  </button>${draft}${isOpen ? openRow(s, msg, zone, state, body, { today: true }) : ''}</div>`;
 }
 
 /** 1:1 Teams chats are titled with the other person, so show the channel instead of a repeat. */

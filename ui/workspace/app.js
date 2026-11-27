@@ -777,7 +777,33 @@ function openTodayRow(id) {
   flushReplySave();
   const m = id && getRecord('message', id);
   Object.assign(state, { todayOpen: m ? id : null, todayOpenKey: m ? messageKey(m) : null });
-  return render().then(() => root.querySelector('.ws-attention .ws-msg-open')?.scrollIntoView({ block: 'nearest' }));
+  return render().then(fitTodayRow);
+}
+
+/**
+ * Today's open row (reply design ruling 20): keeps the widget's own scroll area (`.ws-tile-body`)
+ * showing the composer in full, with the header too when there is room for both — the minimal
+ * scroll that brings the composer's bottom into view also satisfies that, since the header sits
+ * above it. When the header, the (already capped) thread and the composer together do not fit
+ * even so, `.ws-msg-tight` collapses the thread to its last message, with Earlier to show more
+ * (CSS, workspace.css). A no-op off Today or with no row open.
+ */
+function fitTodayRow() {
+  if (state.route !== 'today') return;
+  const body = root.querySelector('.ws-attention .ws-tile-body');
+  const row = root.querySelector('.ws-attention .ws-msg-open');
+  const header = row?.querySelector('.ws-msg-row');
+  const crowBody = row?.querySelector('.ws-crow-body');
+  const composer = crowBody?.lastElementChild;
+  if (!body || !row || !header || !crowBody || !composer) return;
+  row.classList.remove('ws-msg-tight');
+  const thread = crowBody.querySelector('.ws-thread-compact');
+  const fits = header.offsetHeight + (thread?.offsetHeight || 0) + composer.offsetHeight <= body.clientHeight;
+  row.classList.toggle('ws-msg-tight', !fits);
+  const top = body.getBoundingClientRect().top;
+  const composerBottom = composer.getBoundingClientRect().bottom - top + body.scrollTop;
+  const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
+  body.scrollTop = Math.min(maxScroll, Math.max(0, composerBottom - body.clientHeight));
 }
 
 /** Closes the open Compact row. */
@@ -2847,6 +2873,7 @@ async function handle(action, el, ev) {
       if (!m) return toast('This message is no longer available. Refresh and try again.', 'error');
       await openTodayRow(id);
       await startDraft(m, rememberedOptions(m.data.channel));
+      fitTodayRow();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }
@@ -2859,6 +2886,7 @@ async function handle(action, el, ev) {
     case 'ai-draft-quick': {
       const m = getRecord('message', el.closest('form')?.dataset.id);
       await startDraft(m, rememberedOptions(m?.data.channel));
+      fitTodayRow();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }
@@ -2876,6 +2904,7 @@ async function handle(action, el, ev) {
       const options = rememberedOptions(m.data.channel);
       state.drafts[key] = startChange(draftUi(key), box.value);
       await startDraft(m, options, words, changeRequest(m, options, words, box.value));
+      fitTodayRow();
       const field = document.getElementById('reply-change');
       if (field) field.value = '';
       return;
@@ -2904,6 +2933,7 @@ async function handle(action, el, ev) {
       setLocalPref(optionsKey(m?.data.channel), JSON.stringify(pop.options));
       closeDraftPopover(false);
       await startDraft(m, pop.options, pop.instructions);
+      fitTodayRow();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }

@@ -1091,6 +1091,14 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-thread-compact{max-height:260px;overflow:auto;gap:6px;align-content:start}
 .ws-thread-earlier{justify-self:start;border:0;background:none;padding:2px 4px;border-radius:4px;color:var(--ws-accent);font-size:var(--ws-fs-meta);font-weight:600}
 .ws-thread-earlier:hover{background:var(--ws-hover)}
+/* Today's open row (reply design ruling 20): a thread capped lower than Compact's 260 px, so a
+   short widget still has room for the composer below it; app.js adds `.ws-msg-tight` when even
+   that does not fit, collapsing the thread to its last message with Earlier (ws-thread-earlier-auto,
+   hidden the rest of the time). */
+.ws-attention .ws-thread-compact{max-height:min(140px,35cqh)}
+.ws-attention .ws-thread-earlier-auto{display:none}
+.ws-attention .ws-msg-tight .ws-thread-earlier-auto{display:inline-block}
+.ws-attention .ws-msg-tight .ws-thread-compact .ws-bubble:not(:last-child){display:none}
 .ws-thread-compact .ws-bubble-head{margin-bottom:4px}
 .ws-thread-compact .ws-bubble-body{line-height:var(--ws-lh-body)}
 
