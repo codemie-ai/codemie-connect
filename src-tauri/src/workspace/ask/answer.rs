@@ -75,7 +75,12 @@ pub fn check(
         return Err(INVALID);
     }
     let (answer, _) = cut_at_line_end(text, ANSWER_MAX);
-    let cites = ids.iter().filter_map(|id| cite(id, refs, facts)).collect();
+    // A cite whose every mark fell past the cut is no longer in the answer.
+    let cites = ids
+        .iter()
+        .filter(|id| answer.contains(&format!("[{id}]")))
+        .filter_map(|id| cite(id, refs, facts))
+        .collect();
 
     let offered = raw["actions"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let valid: Vec<Value> = offered.iter().filter_map(|a| action(a, refs)).collect();
@@ -468,6 +473,22 @@ mod tests {
             &c.answer[c.answer.len() - 40..]
         );
         assert!(!c.answer.contains('z'));
+    }
+
+    /// A cite whose only mark falls past the cut leaves the cites too.
+    #[test]
+    fn a_cite_cut_off_with_its_mark_is_dropped() {
+        let lines: String = (0..210)
+            .map(|i| format!("Line {i:03} of the Atlas answer."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let answer = format!("Fine [t10].\n{lines}\nAnd the room [e11].");
+        let c = checked(json!({"answer": answer, "cites": ["t10", "e11"], "actions": []}));
+        assert!(!c.answer.contains("[e11]"));
+        assert_eq!(
+            c.cites.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["t10"]
+        );
     }
 
     #[test]

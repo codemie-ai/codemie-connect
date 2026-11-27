@@ -222,6 +222,11 @@ test('⌘K focuses the field with its text selected; with the field hidden or th
   await button.ctl.handle('ask-rail');
   assert.deepEqual(button.calls.go, ['#/ask']);
   assert.deepEqual(button.calls.focus, [['#ask-follow-up', null]]);
+  // Final review M2: reading a thread with the field hidden, ⌘K asks a follow-up in place.
+  const reading = harness({ shown: false, state: { route: 'ask' }, here: '#/ask/ask-7f2c' });
+  await reading.ctl.focusField();
+  assert.deepEqual(reading.calls.go, [], 'the open thread stays');
+  assert.deepEqual(reading.calls.focus, [['#ask-follow-up', null]]);
 });
 
 test('the page box asks a new question on #/ask and a follow-up on #/ask/<id>, with no About', async () => {

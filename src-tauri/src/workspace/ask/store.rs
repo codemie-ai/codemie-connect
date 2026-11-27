@@ -232,6 +232,7 @@ pub fn prune(r: &mut Repository, now: i64) -> Result<usize> {
     let gone: Vec<String> = list(r)?
         .into_iter()
         .enumerate()
+        // Strictly older than 30 days: a thread exactly 30 days old to the second is kept.
         .filter(|(n, t)| t.updated_at < cutoff || *n >= MAX_THREADS)
         .map(|(_, t)| t.id)
         .collect();

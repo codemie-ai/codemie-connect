@@ -224,6 +224,7 @@ struct Read {
     tasks_provider: String,
     m365: bool,
     zone: String,
+    columns: std::collections::BTreeMap<String, String>,
 }
 
 /// How the facts are found this time.
@@ -257,6 +258,14 @@ struct Ran {
     fell_back_from: Option<String>,
     fallback_reason: Option<String>,
     about_gone: bool,
+}
+
+/// Whether a meeting's summary file is read for a question at `now`: only one the context may
+/// give, held in the last 90 days (`context::MEETING_DAYS`) or the turn's About (final review
+/// M4: reading every meeting's file first cost each question disk reads across the history).
+fn summary_wanted(at: i64, meeting_id: &str, about: Option<&RefItem>, now: i64) -> bool {
+    at >= now - context::MEETING_DAYS * 86_400
+        || about.is_some_and(|a| a.kind == "meeting" && a.record_id == meeting_id)
 }
 
 /// One meeting's summary: the first pinned summary template's document that can be read, else
@@ -627,6 +636,7 @@ impl Core {
             tasks_provider: &read.tasks_provider,
             m365: read.m365,
             voice: voice.on,
+            columns: &read.columns,
         };
         let about = turn.about.as_ref().filter(|a| !a.gone);
         let now = now();
@@ -864,10 +874,16 @@ impl Core {
                     .filter(|t| t.data["meetingId"] == meeting_id.as_str())
                     .filter_map(|t| t.data["text"].as_str().map(String::from))
                     .collect();
+                let at = graph::timestamp(&m.start);
+                let summary = if summary_wanted(at, &meeting_id, about, now()) {
+                    meeting_summary(&m, &settings.meetings.summary_tabs)
+                } else {
+                    String::new()
+                };
                 MeetingDigest {
-                    at: graph::timestamp(&m.start),
+                    at,
                     title: m.title.clone(),
-                    summary: meeting_summary(&m, &settings.meetings.summary_tabs),
+                    summary,
                     id: meeting_id,
                     attendees,
                     action_items,
@@ -881,6 +897,7 @@ impl Core {
             meetings: digests,
             tasks_provider,
             m365: c.is_some(),
+            columns: settings.meetings.columns.clone(),
             zone: settings.time_zone,
         })
     }
@@ -1403,6 +1420,30 @@ mod tests {
         );
         assert!(context.contains("Status: Done"), "{context}");
         assert!(!context.contains("no longer in Connect"), "{context}");
+
+        // The workspace's own column names, as the board shows them (re-review deferred minor).
+        let e2 = env(vec![Ok(outcome(
+            json!({"answer": "Jordan asked for it.", "cites": [], "actions": []}),
+        ))]);
+        {
+            let mut r = e2.core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.meetings.columns.insert("done".into(), "Shipped".into());
+            r.settings_update(&s).unwrap();
+        }
+        let mut shipped = task("t-done", "Send the Atlas budget");
+        shipped.data["status"] = "done".into();
+        put(&e2.core, shipped);
+        ask(
+            &e2.core,
+            json!({"question": "Who asked for this?",
+                "about": {"kind": "task", "recordId": "t-done", "label": "Task · Send the Atlas budget"}}),
+        )
+        .await
+        .unwrap();
+        run_jobs(&e2.core).await;
+        let context = context_of(&e2.fake.calls()[0]);
+        assert!(context.contains("Status: Shipped"), "{context}");
 
         // A done task of another provider than the active one is still found by its id.
         let e = env(vec![Ok(outcome(
@@ -2056,6 +2097,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn only_a_recent_or_about_meetings_summary_is_read() {
+        let now = 1_795_690_800;
+        let about = RefItem {
+            kind: "meeting".into(),
+            record_id: "old".into(),
+            label: "Meeting · Kickoff".into(),
+            gone: false,
+        };
+        assert!(summary_wanted(now - 89 * DAY, "recent", None, now));
+        assert!(summary_wanted(now - 90 * DAY, "edge", None, now));
+        assert!(!summary_wanted(now - 91 * DAY, "old", None, now));
+        assert!(summary_wanted(now - 400 * DAY, "old", Some(&about), now));
+        assert!(!summary_wanted(now - 400 * DAY, "other", Some(&about), now));
     }
 
     fn bump_policy(core: &Core) {

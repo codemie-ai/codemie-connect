@@ -65,7 +65,7 @@ const TURN_ANSWER: usize = 1_500;
 const MAX_KEYWORDS: usize = 6;
 const KEYWORD_MIN_LETTERS: usize = 4;
 const MESSAGE_DAYS: i64 = 30;
-const MEETING_DAYS: i64 = 90;
+pub(super) const MEETING_DAYS: i64 = 90;
 /// Events matching a term count within this many days either side of today ("the 60 days
 /// around today", design § 3).
 const EVENT_TERM_DAYS: i64 = 30;
@@ -251,6 +251,8 @@ pub struct Records<'a> {
     pub tasks_provider: &'a str,
     pub m365: bool,
     pub voice: bool,
+    /// The workspace's own board column names (Settings › Meetings), for the About task's status.
+    pub columns: &'a BTreeMap<String, String>,
 }
 
 /// The gathered context (design § 3). `text` is the items, one `<item>` block each, in source
@@ -656,7 +658,7 @@ fn about_item(about: &RefItem, records: &Records, tz: Tz, id_attr: &str) -> Opti
             let t = records.tasks.iter().find(|t| t.id == id)?;
             let mut item = task_item(t);
             // Its status, so a done task reads as done (the task list holds open ones only).
-            let status = tasks::column_name(tasks::status_of(&t.data), &Default::default());
+            let status = tasks::column_name(tasks::status_of(&t.data), records.columns);
             let mut body = vec![item.body.clone(), format!("Status: {status}")];
             if let Some(due) = valid_due(t) {
                 body.push(format!("Due: {due}"));
@@ -1229,8 +1231,8 @@ fn fact_items(facts: &[Fact], provider: &str) -> Vec<Item> {
         .collect()
 }
 
-/// `answer` with every `[id]` mark rendered as `[label]` from `labels`; a mark whose id has no
-/// label is removed. Anything else in brackets stays.
+/// `answer` with every `[id]` mark rendered as `[label]` from `labels` (the label's own brackets
+/// dropped); a mark whose id has no label is removed. Anything else in brackets stays.
 fn label_marks(answer: &str, labels: &BTreeMap<&str, &str>) -> String {
     let chars: Vec<char> = answer.chars().collect();
     let mut out = String::with_capacity(answer.len());
@@ -1246,8 +1248,10 @@ fn label_marks(answer: &str, labels: &BTreeMap<&str, &str>) -> String {
                 let id: String = chars[i + 1..close].iter().collect();
                 match labels.get(id.as_str()) {
                     Some(label) => {
+                        // A label is built from names and titles: its own brackets go, so it can
+                        // never read as an id mark (final review M8).
                         out.push('[');
-                        out.push_str(label);
+                        out.extend(label.chars().filter(|c| !matches!(c, '[' | ']')));
                         out.push(']');
                     }
                     // A removed mark takes the space before it along.
@@ -1287,7 +1291,9 @@ fn replay(thread: &Thread, room: usize, tz: Tz, cut: &mut bool) -> Option<String
                     .map(|l| (c.id.as_str(), l))
             })
             .collect();
-        let (question, qc) = cut_at_line_end(&clean(&turn.question), TURN_QUESTION);
+        // The question may quote an earlier answer's mark: it reads as a label too, or goes.
+        let question = label_marks(&turn.question, &labels);
+        let (question, qc) = cut_at_line_end(&clean(&question), TURN_QUESTION);
         let answer = label_marks(turn.answer.as_deref().unwrap_or(""), &labels);
         let (answer, ac) = cut_at_line_end(&clean(&answer), TURN_ANSWER);
         let block = format!(
@@ -1333,6 +1339,8 @@ mod tests {
         tasks_provider: String,
         m365: bool,
         voice: bool,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        columns: BTreeMap<String, String>,
     }
 
     impl Seed {
@@ -1348,6 +1356,7 @@ mod tests {
                 tasks_provider: &self.tasks_provider,
                 m365: self.m365,
                 voice: self.voice,
+                columns: &self.columns,
             }
         }
     }
@@ -1574,6 +1583,7 @@ mod tests {
             tasks_provider: "Todoist".into(),
             m365: true,
             voice: true,
+            columns: BTreeMap::new(),
         }
     }
 
@@ -2254,6 +2264,31 @@ mod tests {
         let fresh = gather("Where is Atlas?", None, None, &atlas().records(), NOW, ZONE);
         assert_eq!(expect(&fresh)["ids"][0], "t1");
         assert!(fresh.conversation.is_none());
+    }
+
+    /// Final review M8 and a deferred minor: a replayed turn carries no text that reads as one
+    /// of this turn's ids, neither from a label (a sender named "[m5]") nor from the earlier
+    /// question (which may quote an earlier answer's mark).
+    #[test]
+    fn a_replay_holds_no_mark_from_a_label_or_an_earlier_question() {
+        let mut thread = follow_up_thread();
+        thread.turns[0].question = "Is [m3] the budget mail? And [p2]?".into();
+        thread.turns[0].cites[0].label = Some("[m5] Priya · mail".into());
+        let ctx = gather(
+            "And Jordan Lee?",
+            Some(&thread),
+            None,
+            &atlas().records(),
+            NOW,
+            ZONE,
+        );
+        let conversation = ctx.conversation.unwrap();
+        assert!(!conversation.contains("[m5]"), "{conversation}");
+        assert!(conversation.contains("[m5 Priya · mail]"), "{conversation}");
+        assert!(
+            conversation.contains("Question: Is [m5 Priya · mail] the budget mail? And?"),
+            "{conversation}"
+        );
     }
 
     #[test]

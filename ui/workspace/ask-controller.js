@@ -85,10 +85,12 @@ export function createAskController({ state, snap, mutate, query = async () => n
     if (hadError || wasEmpty !== !text) render();
   }
 
-  /** The Ask page with its box focused (the field hidden, the rail, the rail's ✦). */
+  /** The Ask page with its box focused (the field hidden, the rail, the rail's ✦); on an open
+   *  thread, that thread's box. */
   async function openPage() {
     Object.assign(ask(), { open: false, active: -1 });
-    await goAsk('#/ask');
+    // Reading a thread: its own box asks the follow-up, and the thread stays in view.
+    if (!/^#\/ask\/./.test(hash())) await goAsk('#/ask');
     focus('#ask-follow-up');
   }
 
