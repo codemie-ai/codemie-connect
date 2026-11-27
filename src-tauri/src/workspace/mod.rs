@@ -971,7 +971,7 @@ impl Core {
         }
         // Read-only: queues a sync job at most once in 30 s; no operation id.
         if req.op == Operation::TaskSyncNow {
-            return self.task_sync_now();
+            return self.task_sync_now(&req.data);
         }
         // Read-only: Settings › Tasks's Check, the active provider's `status`; no operation id.
         if req.op == Operation::TaskProviderCheck {

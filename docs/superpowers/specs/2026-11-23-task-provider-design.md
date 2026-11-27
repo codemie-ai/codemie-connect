@@ -126,6 +126,8 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
    - known task → the merge rule below.
    - **While an `update` waits, the pull runs before the push**, so the merge decides a field changed on both sides; the update then sends only the fields that still differ from the provider's last-seen values (nothing when the provider's newer value won).
    - **Reading everything again** (a switch, Check, or a changed provider setting such as the project) pulls what changed since the kept cursor first, so what was done or deleted there meanwhile follows the rules above, then the full list. A cached open task the full list doesn't hold (done or deleted with no cursor to say which, or in a project no longer chosen) leaves the cache and is deleted nowhere; one with a change still waiting stays for the push to settle.
+   - **A new provider version or setting (amended 2026-11-27).** The sync state keeps a `fingerprint` beside the cursor: the provider plugin's id, its installed version and its plain settings as they apply (each setting the manifest declares, set or else its default, secrets left out), e.g. `todoist@1.1.0|{"project":"Connect","scope":"all"}`. When a run finds a different fingerprint, or none kept, it drops the cursor without asking for changes since it (a cursor from another version or scope may not mean the same thing) and reads the full list, under the full-list rules above: local unsent outbox items and the tasks they belong to stay, and a cached open task the list doesn't hold leaves the cache, deleted nowhere. The new fingerprint is kept at once; the dropped cursor keeps the full pull due until one succeeds. *Why:* updating Todoist from 1.0.1 (one project) to 1.1.0 (every project) changes no setting the user saved, so nothing asked for a re-read, and the kept cursor only reported changes since: the other projects' tasks never came in.
+   - **Sync now reads everything (amended 2026-11-27).** "Sync now" in Settings › Tasks and in the Tasks page's "⋯" asks `task_sync_now {full: true}`: the re-read above (changes since the cursor, then the full list), even within 30 s of the last run. It is the user's own, rare request, so a long press or a second command isn't needed. The window's own `task_sync_now {}` on opening Tasks and on focus stays a pull since the cursor.
 
 **The merge rule** (three-way, per field, against `remote.base`):
 - only Todoist changed a field → Todoist's value;
@@ -139,7 +141,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - `rate_limited`: nothing is sent until `retryAt` (`Retry-After`, else 60 s), shown in Settings and the Tasks header;
 - `needs_token` (401 or 403): no call until the token is saved again, which queues a sync;
 - `off` or `failed`: no call; changes keep queueing.
-- **Budget:** at most 4 requests a second and 300 in any 15 minutes. That is well under Todoist's published per-user limits (about 1,000 requests and 100 full syncs per 15 minutes at the time of writing). A full pull happens on the first sync, on a switch, on "Check", and when a provider setting (its project) changes.
+- **Budget:** at most 4 requests a second and 300 in any 15 minutes. That is well under Todoist's published per-user limits (about 1,000 requests and 100 full syncs per 15 minutes at the time of writing). A full pull happens on the first sync, on a switch, on "Check", on "Sync now", and when the provider plugin's version or a provider setting (its project, its Show scope) changes (amended 2026-11-27).
 
 ### 5. Plugin role and host wiring
 
@@ -411,7 +413,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 7. **Later folds: Next 7 days, No date, and Later than that** (the reference app has the third). Folds are closed by default and drawn only with rows. *Why:* nothing due in three weeks is left out, and it matches the reference app.
 8. **The meeting column's Undo removes the Todoist task.** Before it was sent, the create is just dropped. After, it is a delete (not a close), the task returns to review, and its key is marked withdrawn so a later add works. *Why:* a closed task would sit in Todoist's completed list as if done.
 9. **Idempotent keys:** the reference app's normalized sha1 of `<source>#<text>`, 16 hex. The key is written as a `key:` line at the end of the description, with the `source:`, `meeting:` and `owner:` lines. A per-provider ledger remembers every key, and `create` adopts an open task with the same key before making one. *Why:* reruns, retries and crashes make nothing new, as in the reference app.
-10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch, Check or a changed provider setting. *Why:* a wide margin under Todoist's per-user limits, shared with the reference app while both run.
+10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch, Check, Sync now, or a changed provider version or setting (amended 2026-11-27). *Why:* a wide margin under Todoist's per-user limits, shared with the reference app while both run.
 11. **Offline outbox replay order:**
     - oldest first; one task's entries in order, waiting for its create;
     - updates coalesced;

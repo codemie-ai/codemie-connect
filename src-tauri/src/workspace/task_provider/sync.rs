@@ -18,9 +18,13 @@
 //! - **Budget**: at most 4 requests a second and 300 in any 15 minutes, kept by waiting (a short
 //!   wait in the pass, a later job for a long one).
 //!
-//! The state record holds `{cursor, lastSync, lastPull, lastRun, backoffUntil, backoff, state,
-//! message, requests, reread?}`; `requests` are the times (ms) of the calls of the last 15
-//! minutes. No provider text reaches it, a job record or a log unless it passed `secret_matches`.
+//! - **Fingerprint** (amended 2026-11-27): the provider plugin's id, version and plain settings
+//!   are kept beside the cursor; when they differ (or there is no cursor) the cursor is dropped
+//!   and the run reads everything, so a version or setting that lists more brings it in.
+//!
+//! The state record holds `{cursor, fingerprint, lastSync, lastPull, lastRun, backoffUntil,
+//! backoff, state, message, requests, reread?}`; `requests` are the times (ms) of the calls of
+//! the last 15 minutes. No provider text reaches it, a job record or a log unless it passed `secret_matches`.
 use super::{merge, outbox, wire, ProviderError, TaskProviders};
 use crate::workspace::meetings::model::MeAlias;
 use crate::workspace::models::{id, Job, Record, Result, WorkspaceError};
@@ -241,6 +245,17 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
     if waiting_state == "needs_token" || backoff_until > now {
         save_state(&mut *core.repo()?, provider, &st, now)?;
         return Ok(SyncOutcome::of(&waiting_state));
+    }
+    // A new plugin version or setting (amended 2026-11-27): what it lists may have changed (a
+    // version that reads every project, a project or Show scope chosen), and the kept cursor
+    // only reports changes since, so it is dropped and everything is read again. The new
+    // fingerprint is kept now: the dropped cursor keeps the full pull due until one succeeds.
+    if let Some(fp) = providers.fingerprint(plugin) {
+        if st["fingerprint"].as_str() != Some(fp.as_str()) {
+            st["cursor"] = Value::Null;
+            st["lastPull"] = Value::Null;
+            st["fingerprint"] = fp.into();
+        }
     }
     let requests: Vec<i64> = st["requests"]
         .as_array()
@@ -1675,7 +1690,7 @@ mod tests {
     async fn task_sync_now_runs_at_most_once_in_30_seconds_and_local_queues_nothing() {
         let local = env_with("local");
         assert_eq!(
-            local.core.task_sync_now().unwrap(),
+            local.core.task_sync_now(&json!({})).unwrap(),
             json!({"queued": false})
         );
         local.core.task_sync_round(NOW).unwrap();
@@ -2054,6 +2069,127 @@ mod tests {
         );
         assert!(e.task("t1").is_none(), "the old project's task leaves");
         assert!(e.state().get("reread").is_none(), "{}", e.state());
+    }
+
+    /// Amended 2026-11-27: a provider plugin updated to a version that lists more (Todoist 1.1.0
+    /// lists every project; 1.0.1 read one) is read in full at once, its kept cursor dropped,
+    /// so tasks no change since that cursor reports appear. A local unsent change stays.
+    #[tokio::test]
+    async fn a_new_provider_version_drops_the_cursor_and_reads_everything() {
+        let e = env();
+        e.fake
+            .set_fingerprint(Some("todoist@1.0.1|{\"project\":\"Connect\"}"));
+        e.fake
+            .put_remote(json!({"id": "9001", "text": "In Connect", "labels": [], "done": false}));
+        e.sync(NOW).await;
+        assert!(e.task("todoist-9001").is_some());
+        assert!(e.state()["cursor"].is_string());
+        e.sync(NOW + 100).await;
+        let before = e.calls_of("changedSince").len();
+
+        // The update: Inbox's task was always there, unchanged since the cursor.
+        e.fake.put_remote_unchanged(
+            json!({"id": "9002", "text": "In the Inbox", "labels": [], "done": false}),
+        );
+        e.fake.fail_all(Some(ProviderError::Offline));
+        e.save(
+            json!({"id": "t1", "text": "Written while offline"}),
+            NOW + 150,
+        );
+        e.sync(NOW + 150).await;
+        e.fake.fail_all(None);
+        e.fake.set_fingerprint(Some(
+            "todoist@1.1.0|{\"project\":\"Connect\",\"scope\":\"all\"}",
+        ));
+        let o = e.sync(NOW + 200).await;
+        assert_eq!(o.state, "ready");
+        let pulls = &e.calls_of("changedSince")[before..];
+        assert_eq!(pulls.last().unwrap()["cursor"], Value::Null, "{pulls:?}");
+        assert!(
+            pulls.iter().all(|p| p["cursor"].is_null()),
+            "the old cursor is never sent again: {pulls:?}"
+        );
+        assert!(
+            e.task("todoist-9002").is_some(),
+            "the task it now lists appears"
+        );
+        assert!(e.task("todoist-9001").is_some());
+        assert!(e.task("t1").is_some(), "the local change stays");
+        assert_eq!(
+            e.state()["fingerprint"],
+            "todoist@1.1.0|{\"project\":\"Connect\",\"scope\":\"all\"}"
+        );
+    }
+
+    /// Amended 2026-11-27: a changed setting (its Show scope, its project) seen at a run is a
+    /// full pull too, even when no `task_setting_saved` reached the core.
+    #[tokio::test]
+    async fn a_changed_provider_setting_reads_everything() {
+        let e = env();
+        e.fake
+            .set_fingerprint(Some("todoist@1.1.0|{\"scope\":\"project\"}"));
+        e.sync(NOW).await;
+        e.fake.put_remote_unchanged(
+            json!({"id": "9003", "text": "Another project", "labels": [], "done": false}),
+        );
+        e.fake
+            .set_fingerprint(Some("todoist@1.1.0|{\"scope\":\"all\"}"));
+        e.sync(NOW + 30).await;
+        assert_eq!(
+            e.calls_of("changedSince").last().unwrap()["cursor"],
+            Value::Null
+        );
+        assert!(e.task("todoist-9003").is_some());
+    }
+
+    /// The same fingerprint: the usual pull since the cursor, nothing read in full.
+    #[tokio::test]
+    async fn the_same_fingerprint_pulls_since_the_cursor() {
+        let e = env();
+        e.fake.set_fingerprint(Some("todoist@1.1.0|{}"));
+        e.sync(NOW).await;
+        e.fake.put_remote_unchanged(
+            json!({"id": "9004", "text": "Never reported", "labels": [], "done": false}),
+        );
+        e.sync(NOW + 100).await;
+        let pulls = e.calls_of("changedSince");
+        assert_eq!(pulls.len(), 2);
+        assert!(pulls[1]["cursor"].is_string(), "{pulls:?}");
+        assert!(e.task("todoist-9004").is_none());
+    }
+
+    /// Amended 2026-11-27: Sync now (Settings › Tasks, the Tasks page's ⋯) is a full pull; the
+    /// Tasks page's own sync on open stays a pull since the cursor.
+    #[tokio::test]
+    async fn sync_now_from_a_button_reads_everything() {
+        let e = env();
+        let req = |data: Value| crate::workspace::models::Request {
+            op: crate::workspace::models::Operation::TaskSyncNow,
+            workspace_id: None,
+            expected_revision: None,
+            operation_id: None,
+            data,
+        };
+        let now = crate::workspace::models::now();
+        e.sync(now - 100).await;
+        e.fake.put_remote_unchanged(
+            json!({"id": "9005", "text": "Never reported", "labels": [], "done": false}),
+        );
+        assert_eq!(
+            e.core.request(req(json!({}))).await.unwrap(),
+            json!({"queued": true})
+        );
+        assert!(e.state().get("reread").is_none(), "{}", e.state());
+        e.sync(now).await;
+        assert!(e.task("todoist-9005").is_none());
+        // Within 30 s of that run, a button still asks for everything.
+        assert_eq!(
+            e.core.request(req(json!({"full": true}))).await.unwrap(),
+            json!({"queued": true})
+        );
+        assert!(e.state()["reread"].is_string(), "{}", e.state());
+        e.sync(now + 1).await;
+        assert!(e.task("todoist-9005").is_some());
     }
 
     /// A finished `taskProvider` part of the real snapshot for each state (design §2), and the

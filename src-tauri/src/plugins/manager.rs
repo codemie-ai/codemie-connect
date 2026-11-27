@@ -493,6 +493,29 @@ impl TaskProviders for PluginManager {
     fn secret_matches(&self, plugin: &str, text: &str) -> bool {
         secret_in(&self.paths, plugin, text)
     }
+
+    /// `<id>@<version>|<plain settings>`: each setting its manifest declares, but no secret, as
+    /// set or else its default, in key order (design §4, amended 2026-11-27).
+    fn fingerprint(&self, plugin: &str) -> Option<String> {
+        let reg = Registry::load(&self.paths).ok()?;
+        let p = reg.installed.get(plugin)?;
+        let m = super::install::installed_manifest(&self.paths, plugin, p)?;
+        let stored =
+            super::services::read_json(&settings::plain_file(&self.paths, plugin), json!({}));
+        let plain: BTreeMap<&str, Value> = m
+            .settings
+            .iter()
+            .filter(|d| d.kind != "secret")
+            .map(|d| {
+                let v = match stored.get(&d.key) {
+                    Some(v) if !v.is_null() => v.clone(),
+                    _ => d.default.clone().unwrap_or(Value::Null),
+                };
+                (d.key.as_str(), v)
+            })
+            .collect();
+        Some(format!("{plugin}@{}|{}", p.version, json!(plain)))
+    }
 }
 
 /// Connect's way into the reply-context providers (reply-voice design §1): a provider plugin's
@@ -602,6 +625,12 @@ impl TaskProviders for ManagerTasks {
         self.0
             .upgrade()
             .is_some_and(|m| m.secret_matches(plugin, text))
+    }
+
+    fn fingerprint(&self, plugin: &str) -> Option<String> {
+        self.0
+            .upgrade()
+            .and_then(|m| TaskProviders::fingerprint(&*m, plugin))
     }
 }
 
@@ -1198,6 +1227,36 @@ mod tests {
 
     fn providers(s: &Setup) -> &dyn TaskProviders {
         &*s.manager
+    }
+
+    /// The fingerprint a sync compares (amended 2026-11-27): the version and the plain settings
+    /// as they apply (defaults too), never a secret.
+    #[tokio::test]
+    async fn a_providers_fingerprint_follows_its_version_and_plain_settings() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install("todoist", "1.0.1", provider_manifest(), "", true);
+        let p = providers(&s);
+        assert_eq!(
+            p.fingerprint("todoist").as_deref(),
+            Some(r#"todoist@1.0.1|{"project":"Connect"}"#)
+        );
+        let paths = &s.manager.paths;
+        crate::plugins::extras::set_setting(paths, "todoist", "token", &json!("tk_secret_0123"))
+            .unwrap();
+        crate::plugins::extras::set_setting(paths, "todoist", "project", &json!("Work")).unwrap();
+        let fp = p.fingerprint("todoist").unwrap();
+        assert_eq!(fp, r#"todoist@1.0.1|{"project":"Work"}"#, "no secret in it");
+        let mut manifest = provider_manifest();
+        manifest["settings"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"key": "scope", "label": "Show", "type": "string", "default": "all"}));
+        s.install("todoist", "1.1.0", manifest, "", true);
+        assert_eq!(
+            p.fingerprint("todoist").as_deref(),
+            Some(r#"todoist@1.1.0|{"project":"Work","scope":"all"}"#)
+        );
+        assert_eq!(p.fingerprint("nope"), None);
     }
 
     #[tokio::test]

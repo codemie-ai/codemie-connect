@@ -382,7 +382,7 @@ test('By date: folds, a row unfolds alone, snooze, Sync now, Open in Todoist and
   await calls.modals.at(-1).onSubmit(new Map([['due', '2026-12-02']]));
   assert.deepEqual(calls.mutate.at(-1), ['task_save', { id: 'late-1', due: '2026-12-02' }]);
   await ctl.handle('tasks-sync', control());
-  assert.deepEqual(calls.queries, [['task_sync_now', {}]]);
+  assert.deepEqual(calls.queries, [['task_sync_now', { full: true }]], 'Sync now reads everything again');
   await ctl.handle('task-open-remote', control({ id: 'late-1' }));
   assert.deepEqual(calls.queries.at(-1), ['open_source', { kind: 'task', id: 'late-1' }]);
   // The view switch: with a provider the choice is the provider's, Local keeps its own.
@@ -539,7 +539,7 @@ test('the Tasks header: the provider status line, ⋯ › Sync now and Settings 
   assert.equal(state.tasks.filters.meeting, '');
   assert.ok(calls.html.includes('data-task="late-2"'));
   await ctl.handle('tasks-sync', control());
-  assert.deepEqual(calls.queries.at(-1), ['task_sync_now', {}]);
+  assert.deepEqual(calls.queries.at(-1), ['task_sync_now', { full: true }]);
   // Local: "Connect · on this Mac", no ⋯, the Board's own description.
   const local = harness();
   await local.ctl.handle('tasks-older', control());

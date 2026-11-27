@@ -538,13 +538,13 @@ export function createTasksController({
       case 'task-parked': return mutate('task_parked', { id, action: el.dataset.act === 'discard' ? 'discard' : 'retry' });
       case 'task-nudge': return nudge(id);
       case 'task-open-remote': return openRemote(id);
-      case 'tasks-sync': return query('task_sync_now', {});
+      case 'tasks-sync': return query('task_sync_now', { full: true });
       case 'tasks-meeting-clear': v.filters = { ...v.filters, meeting: '' }; return render();
       // Settings › Tasks (design §11).
       case 'tasks-provider-choose': return chooseProvider(el.dataset.provider);
       case 'tasks-provider-turn-on': return turnOnProvider(el.dataset.provider);
       case 'tasks-provider-check': return checkProvider();
-      case 'tasks-provider-sync': return query('task_sync_now', {});
+      case 'tasks-provider-sync': return query('task_sync_now', { full: true });
       case 'tasks-provider-copy': return copyQuietly();
       case 'tasks-provider-secret-save': return saveSecret(el);
       case 'tasks-provider-secret-remove': return removeSecret(el);

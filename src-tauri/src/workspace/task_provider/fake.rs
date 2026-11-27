@@ -33,6 +33,7 @@ struct Inner {
     /// How long each answer takes (tokio's clock).
     delay: Option<std::time::Duration>,
     secret: Option<String>,
+    fingerprint: Option<String>,
 }
 
 pub struct FakeProvider {
@@ -167,6 +168,11 @@ impl FakeProvider {
     /// Every answer takes `delay` from now on.
     pub fn set_delay(&self, delay: std::time::Duration) {
         self.lock().delay = Some(delay);
+    }
+
+    /// What `fingerprint` answers from now on (default `None`: no fingerprint kept).
+    pub fn set_fingerprint(&self, fingerprint: Option<&str>) {
+        self.lock().fingerprint = fingerprint.map(str::to_string);
     }
 
     /// The provider's stored secret, for `secret_matches`.
@@ -319,6 +325,10 @@ impl TaskProviders for FakeProvider {
             .secret
             .as_deref()
             .is_some_and(|secret| text.contains(secret))
+    }
+
+    fn fingerprint(&self, _plugin: &str) -> Option<String> {
+        self.lock().fingerprint.clone()
     }
 }
 

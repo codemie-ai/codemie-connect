@@ -108,6 +108,12 @@ pub trait TaskProviders: Send + Sync {
     fn loading(&self) -> bool;
     /// Whether `text` contains the plugin's stored secret (design §8's message check).
     fn secret_matches(&self, plugin: &str, text: &str) -> bool;
+    /// Plugin `plugin`'s id, version and plain (never secret) settings as one text (design §4,
+    /// amended 2026-11-27): when it differs from the one kept beside the cursor, the next sync
+    /// drops the cursor and reads everything. `None`: nothing to compare (not installed).
+    fn fingerprint(&self, _plugin: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The outcome of a provider call, mapped from the code a provider's thrown `Error` message
@@ -185,14 +191,20 @@ const SYNC_NOW_EVERY: i64 = 30;
 const BACKGROUND_EVERY: i64 = 300;
 
 impl super::Core {
-    /// `task_sync_now` (read-only): queues a sync with the active provider unless one ran in the
-    /// last 30 s. Answers `{queued}`.
-    pub(crate) fn task_sync_now(self: &std::sync::Arc<Self>) -> Result<Value> {
+    /// `task_sync_now {full?}` (read-only): queues a sync with the active provider unless one ran
+    /// in the last 30 s. `full` (the Sync now buttons, amended 2026-11-27) asks for everything
+    /// again (`sync::reread`), the 30 s too: it is the user's own, rare request. Answers
+    /// `{queued}`.
+    pub(crate) fn task_sync_now(self: &std::sync::Arc<Self>, data: &Value) -> Result<Value> {
         let now = super::models::now();
         let mut r = self.repo()?;
         let provider = active_provider(&r.settings()?).to_string();
         if provider == "local" {
             return Ok(json!({"queued": false}));
+        }
+        if data["full"] == true {
+            sync::reread(&mut r, &provider, now)?;
+            return Ok(json!({"queued": true}));
         }
         let st = sync::load_state(&r, &provider)?;
         if st["lastRun"]
