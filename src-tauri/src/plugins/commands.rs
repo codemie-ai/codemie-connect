@@ -14,13 +14,14 @@
 //! | `update` | `{id, agreed?, sheetHash?}` | the same, or `{status: "needs_consent", id, name, version, lines, sheet, sheetHash}` |
 //! | `set_enabled` | `{id, enabled, agreed?, sheetHash?}` | `Installed`, or turning it on with lines not agreed to: `{status: "needs_consent", …}` as `update` |
 //! | `set_addresses` | `{id, key, value}` | `Installed`: the addresses the user typed for a `hosts_from` setting |
+//! | `set_setting` | `{id, key, value}` | `Installed`: a declared setting the user set in Connect (not a `hosts_from` one); a `secret` is write-only (`""` or `null` clears it), and saving or clearing a task provider's secret queues a sync |
 //! | `client_storage` | `{id, items?}` | `{items}`: what its client half keeps (read, or replaced with `items`) |
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
-//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin` and `addresses` (`extras`), and `loadError` when it is on but its host half didn't load |
+//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin`, `addresses` and `settings` (`extras`; a secret only as `set: true\|false`), and `loadError` when it is on but its host half didn't load |
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
-//! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
+//! | `pick_folder` | `{purpose?}` | `{path}`: the folder the user chose for a marketplace (no `purpose`) or their skills (`purpose: "skills"`, the voice import), `null` when they cancelled |
 //! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
 //! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
 //! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
@@ -82,8 +83,9 @@ pub async fn plugins_request(
     not_restarting(&state)?;
     let running = counted?;
     if op == "pick_folder" {
-        let folder = manager_of(&window)?.pick_market_folder().await;
-        return Ok(json!({"path": folder.map(|f| f.display().to_string())}));
+        let services = manager_of(&window)?.services().clone();
+        let data = data.unwrap_or(Value::Null);
+        return pick_folder(&services, &data, crate::commands::tour::running()).await;
     }
     if op == "open_link" {
         let a: LinkArg = arg(data.unwrap_or(Value::Null))?;
@@ -119,15 +121,29 @@ pub async fn plugins_request(
             .map_err(host_error);
     }
     let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
+    if op == "set_setting" {
+        let core = core.clone();
+        return blocking(move || {
+            let _running = running;
+            set_setting_then_sync(&core, &paths, data.unwrap_or(Value::Null))
+        })
+        .await?;
+    }
     let changes = matches!(
         op.as_str(),
         "install" | "update" | "set_enabled" | "remove" | "registry_reset"
     );
     let listing = op == "installed";
+    let core = core.clone();
     // The count ends with the work itself, even if this future is dropped first.
     let answer = blocking(move || {
         let _running = running;
-        dispatch(&paths, &CliGit::default(), &op, data.unwrap_or(Value::Null))
+        let data = data.unwrap_or(Value::Null);
+        if op == "remove" {
+            remove_then_forget(&core, &paths, &CliGit::default(), data)
+        } else {
+            dispatch(&paths, &CliGit::default(), &op, data)
+        }
     })
     .await?;
     if changes && answer.is_ok() {
@@ -176,6 +192,33 @@ pub async fn plugin_call(
         .call_with_files(&id, &command, args.unwrap_or(Value::Null), &files)
         .await
         .map_err(host_error)
+}
+
+/// The native folder picker's title for what the folder is for: a marketplace (no `purpose`)
+/// or the skills folder the voice import scans (reply voice design §11).
+fn pick_title(data: &Value) -> Result<&'static str> {
+    match &data["purpose"] {
+        Value::Null => Ok("Choose a plugin marketplace folder"),
+        Value::String(p) if p == "skills" => Ok("Choose your skills folder"),
+        _ => Err(WorkspaceError::new(
+            "validation",
+            "Choose what the folder is for.",
+        )),
+    }
+}
+
+/// `pick_folder {purpose?}`: the user's choice in the native picker, `{path: null}` when they
+/// cancelled. A tour opens nothing on the user's screen (`tour`): refused before the picker.
+async fn pick_folder(
+    services: &super::services::Services,
+    data: &Value,
+    tour: bool,
+) -> Result<Value> {
+    crate::commands::tour::open_refused(tour, "plugins_request:pick_folder")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
+    let title = pick_title(data)?;
+    let folder = services.pick_folder(title).await;
+    Ok(json!({"path": folder.map(|f| f.display().to_string())}))
 }
 
 /// The plugin manager, which runs while the data folder is open.
@@ -248,6 +291,13 @@ struct AddressArg {
     id: String,
     key: String,
     value: String,
+}
+#[derive(Deserialize)]
+struct SettingArg {
+    id: String,
+    key: String,
+    #[serde(default)]
+    value: Value,
 }
 #[derive(Deserialize)]
 struct StorageArg {
@@ -501,6 +551,7 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             extras::set_addresses(paths, &a.id, &a.key, &a.value)?;
             to_json(installed_view(paths, &a.id)?)
         }
+        "set_setting" => set_setting(paths, data).map(|(view, _)| view),
         "host_phrases" => {
             let a: IdArg = arg(data)?;
             extras::host_phrases(paths, &a.id)
@@ -531,6 +582,58 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
                 other.escape_debug()
             ),
         )),
+    }
+}
+
+/// The window's `remove`: removes the plugin and, when it is the chosen voice provider or Connect's
+/// copy of the voice came from it, deletes the copy and sets the voice Off (reply-voice design
+/// §6).
+fn remove_then_forget(
+    core: &crate::workspace::Core,
+    paths: &PluginPaths,
+    git: &dyn Git,
+    data: Value,
+) -> Result<Value> {
+    let a: RemoveArg = arg(data.clone())?;
+    let answer = dispatch(paths, git, "remove", data)?;
+    // The plugin is gone either way: a storage failure here must not report the removal as
+    // failed (the plugins would not reload).
+    if let Err(e) = core.voice_plugin_removed(&a.id) {
+        log::warn!("voice: the copy wasn't deleted with its plugin: {}", e.code);
+    }
+    Ok(answer)
+}
+
+/// `set_setting`: sets a plugin's setting; answers its `installed` view and, when it was a task
+/// provider's setting, the plugin's id and which setting (the core is told).
+fn set_setting(
+    paths: &PluginPaths,
+    data: Value,
+) -> Result<(Value, Option<(String, extras::TaskSetting)>)> {
+    let a: SettingArg = arg(data)?;
+    let task_setting = extras::set_setting(paths, &a.id, &a.key, &a.value)?;
+    let view = to_json(installed_view(paths, &a.id)?)?;
+    Ok((view, task_setting.map(|t| (a.id, t))))
+}
+
+/// The window's `set_setting`: sets the setting and, for a task provider's, tells the core: its
+/// secret lifts a rejected token and queues a sync; another setting (its project) has it read
+/// again in full.
+fn set_setting_then_sync(
+    core: &crate::workspace::Core,
+    paths: &PluginPaths,
+    data: Value,
+) -> Result<Value> {
+    match set_setting(paths, data)? {
+        (view, Some((plugin, extras::TaskSetting::Secret))) => {
+            core.task_secret_saved(&plugin)?;
+            Ok(view)
+        }
+        (view, Some((plugin, extras::TaskSetting::Other))) => {
+            core.task_setting_saved(&plugin)?;
+            Ok(view)
+        }
+        (view, None) => Ok(view),
     }
 }
 
@@ -774,6 +877,40 @@ mod tests {
 
     const PINNED_TIME: &str = "2026-11-17T09:30:00Z";
 
+    #[tokio::test]
+    async fn pick_folder_for_skills_titles_the_dialog() {
+        let env = crate::plugins::services::testing::Env::new();
+        let skills = env.dir.path().join("skills");
+        env.picker.next(&skills);
+        let answer = pick_folder(&env.services, &json!({"purpose": "skills"}), false)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"path": skills.display().to_string()}));
+        // Cancelled: no path.
+        let answer = pick_folder(&env.services, &Value::Null, false)
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"path": null}));
+        assert_eq!(
+            *env.picker.3.lock().unwrap(),
+            [
+                "Choose your skills folder",
+                "Choose a plugin marketplace folder"
+            ]
+        );
+        let err = pick_folder(&env.services, &json!({"purpose": "nope"}), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "validation");
+        // A tour opens nothing: refused before any picker.
+        env.picker.next(&skills);
+        let err = pick_folder(&env.services, &json!({"purpose": "skills"}), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, "The tour opens nothing.");
+        assert_eq!(env.picker.3.lock().unwrap().len(), 2, "nothing opened");
+    }
+
     #[test]
     fn open_link_opens_only_https_and_obsidian_addresses() {
         let mut opened = Vec::new();
@@ -851,6 +988,327 @@ mod tests {
         }
         walk(&mut v);
         v
+    }
+
+    /// The token the tests save: it must never show up anywhere but the private secrets file.
+    const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+
+    /// A synthetic task provider (Todoist-like) installed from a local marketplace, every line of
+    /// its sheet agreed to.
+    fn installed_provider(env: &testkit::Env) {
+        let mut m = manifest("todoist", "1.0.0");
+        m.as_object_mut().unwrap().remove("client");
+        m["name"] = json!("Todoist");
+        m["summary"] = json!("Keeps Connect's tasks in your Todoist");
+        m["provides"] = json!(["tasks"]);
+        m["requires"] = json!(["tasks_provider"]);
+        m["uses"] = json!({"network": {"hosts": ["api.todoist.com"]}});
+        m["settings"] = json!([
+            {"key": "token", "label": "API token", "type": "secret", "help": "Todoist › Settings › Integrations › Developer"},
+            {"key": "project", "label": "Project", "type": "string", "default": "Connect"},
+            {"key": "label", "label": "App label", "type": "string", "default": "connect"}
+        ]);
+        testkit::local_market(env, &[m]);
+        let shown = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "inspect",
+            json!({"market": "local", "id": "todoist"}),
+        )
+        .unwrap();
+        let keys: Vec<Value> = shown["sheet"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["key"].clone())
+            .collect();
+        assert!(keys.contains(&json!("provides_tasks")), "{keys:?}");
+        let out = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "install",
+            json!({"market": "local", "id": "todoist", "agreed": keys, "sheetHash": shown["sheetHash"]}),
+        )
+        .unwrap();
+        assert_eq!(out["status"], "installed");
+    }
+
+    /// Removing the chosen voice provider through the window's `remove` deletes Connect's copy and
+    /// sets the voice Off; removing another plugin keeps both (reply-voice design §6).
+    #[test]
+    fn removing_the_voice_provider_plugin_deletes_the_copy() {
+        use crate::workspace::voice::copy;
+        let env = testkit::env();
+        let mut knowledge = manifest("knowledge", "1.0.0");
+        knowledge.as_object_mut().unwrap().remove("client");
+        let mut other = manifest("other", "1.0.0");
+        other.as_object_mut().unwrap().remove("client");
+        testkit::local_market(&env, &[knowledge, other]);
+        for id in ["knowledge", "other"] {
+            let shown = dispatch(
+                &env.paths,
+                &testkit::NoGit,
+                "inspect",
+                json!({"market": "local", "id": id}),
+            )
+            .unwrap();
+            let keys: Vec<Value> = shown["sheet"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["key"].clone())
+                .collect();
+            dispatch(
+                &env.paths,
+                &testkit::NoGit,
+                "install",
+                json!({"market": "local", "id": id, "agreed": keys, "sheetHash": shown["sheetHash"]}),
+            )
+            .unwrap();
+        }
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.voice.provider = "plugin:knowledge".into();
+            r.settings_update(&s).unwrap();
+            let c = copy::from_export(&json!({"style": {"text": "Short."}}));
+            copy::replace(&mut r, "plugin:knowledge", &c, 1).unwrap();
+        }
+        let provider = || core.repo().unwrap().settings().unwrap().voice.provider;
+        let kept = || copy::read_copy(&core.repo().unwrap()).unwrap().is_some();
+        remove_then_forget(
+            &core,
+            &env.paths,
+            &testkit::NoGit,
+            json!({"id": "other", "deleteData": false}),
+        )
+        .unwrap();
+        assert_eq!(provider(), "plugin:knowledge");
+        assert!(kept());
+        let gone = remove_then_forget(
+            &core,
+            &env.paths,
+            &testkit::NoGit,
+            json!({"id": "knowledge", "deleteData": false}),
+        )
+        .unwrap();
+        assert_eq!(gone, json!({"removed": "knowledge", "deletedData": false}));
+        assert_eq!(provider(), "off");
+        assert!(!kept());
+    }
+
+    /// Saving the provider's token through the window's `set_setting` lifts `needs_token` and
+    /// queues a sync.
+    #[test]
+    fn saving_the_token_lifts_needs_token_and_queues_a_sync() {
+        use crate::workspace::task_provider::{fake::FakeProvider, sync};
+        let env = testkit::env();
+        installed_provider(&env);
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        core.set_task_providers(std::sync::Arc::new(FakeProvider::new()));
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "plugin:todoist".into();
+            r.settings_update(&s).unwrap();
+            sync::save_state(
+                &mut r,
+                "plugin:todoist",
+                &json!({"state": "needs_token"}),
+                1,
+            )
+            .unwrap();
+        }
+        set_setting_then_sync(
+            &core,
+            &env.paths,
+            json!({"id": "todoist", "key": "token", "value": SENTINEL}),
+        )
+        .unwrap();
+        let r = core.repo().unwrap();
+        assert_eq!(
+            sync::load_state(&r, "plugin:todoist").unwrap()["state"],
+            "ready"
+        );
+        assert!(r
+            .jobs()
+            .unwrap()
+            .iter()
+            .any(|j| j.kind == "task_sync" && j.state == "queued"));
+    }
+
+    /// Review I2: a new Project is read again in full: its tasks come in, the old project's
+    /// leave the cache, and nothing is deleted in Todoist.
+    #[tokio::test]
+    async fn changing_the_project_reads_the_new_one() {
+        use crate::workspace::task_provider::{fake::FakeProvider, sync};
+        let env = testkit::env();
+        installed_provider(&env);
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        let fake = std::sync::Arc::new(FakeProvider::new());
+        core.set_task_providers(fake.clone());
+        let now = crate::workspace::models::now();
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "plugin:todoist".into();
+            r.settings_update(&s).unwrap();
+            crate::workspace::tasks::task_save(
+                &mut r,
+                "personal",
+                &json!({"id": "t1", "text": "In the Connect project"}),
+                now,
+            )
+            .unwrap();
+        }
+        sync::run(&core, "plugin:todoist", now).await.unwrap();
+        let old = fake.tasks()[0]["id"].as_str().unwrap().to_string();
+        // What the plugin lists once the setting names "Work".
+        fake.forget_remote(&old);
+        fake.put_remote_unchanged(json!({"id": "9001", "text": "Already in Work",
+            "labels": [], "done": false}));
+        set_setting_then_sync(
+            &core,
+            &env.paths,
+            json!({"id": "todoist", "key": "project", "value": "Work"}),
+        )
+        .unwrap();
+        sync::run(&core, "plugin:todoist", now + 1).await.unwrap();
+        let r = core.repo().unwrap();
+        let task = |id: &str| {
+            r.record(crate::workspace::tasks::KIND, id, None, Some("personal"))
+                .ok()
+        };
+        assert!(
+            task("t1").is_none(),
+            "the old project's task left the cache"
+        );
+        assert_eq!(
+            task("todoist-9001").unwrap().data["text"],
+            "Already in Work"
+        );
+        assert!(
+            !fake.ops().iter().any(|o| o == "remove"),
+            "{:?}",
+            fake.ops()
+        );
+    }
+
+    /// Every file under `dir` whose bytes contain `needle`.
+    fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files_containing(&path, needle));
+            } else if std::fs::read(&path)
+                .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn secret_settings_are_write_only() {
+        let env = testkit::env();
+        installed_provider(&env);
+        let run = |data: Value| dispatch(&env.paths, &testkit::NoGit, "set_setting", data);
+        let view = run(json!({"id": "todoist", "key": "token", "value": SENTINEL})).unwrap();
+        assert!(!view.to_string().contains(SENTINEL), "{view}");
+        assert_eq!(
+            view["settings"][0],
+            json!({"key": "token", "label": "API token", "type": "secret",
+                   "help": "Todoist › Settings › Integrations › Developer", "set": true})
+        );
+        assert_eq!(
+            view["settings"][1],
+            json!({"key": "project", "label": "Project", "type": "string", "help": null, "value": "Connect"})
+        );
+        // Stored once, owner-only, in the private root; nowhere in the data root.
+        let secrets = env.private.join("credentials/plugins/todoist/secrets.json");
+        assert!(std::fs::read_to_string(&secrets)
+            .unwrap()
+            .contains(SENTINEL));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert_eq!(
+            files_containing(&env.private, SENTINEL),
+            std::slice::from_ref(&secrets)
+        );
+        assert!(files_containing(&env.dir.path().join("data"), SENTINEL).is_empty());
+        let listed = dispatch(&env.paths, &testkit::NoGit, "installed", Value::Null).unwrap();
+        assert!(!listed.to_string().contains(SENTINEL));
+        assert_eq!(listed[0]["settings"][0]["set"], true);
+        // It is a task provider's secret: the caller queues a sync. A plain setting isn't.
+        assert_eq!(
+            extras::set_setting(&env.paths, "todoist", "token", &json!(SENTINEL)).unwrap(),
+            Some(extras::TaskSetting::Secret)
+        );
+        assert_eq!(
+            extras::set_setting(&env.paths, "todoist", "project", &json!("Work")).unwrap(),
+            Some(extras::TaskSetting::Other)
+        );
+        let view = run(json!({"id": "todoist", "key": "label", "value": "errands"})).unwrap();
+        assert_eq!(view["settings"][1]["value"], "Work");
+        assert_eq!(view["settings"][2]["value"], "errands");
+
+        // Refused: an undeclared key, a value of the wrong type (its words never echo the value).
+        let e = run(json!({"id": "todoist", "key": "nope", "value": "x"})).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("invalid", "todoist has no setting “nope” in its manifest")
+        );
+        let e = run(json!({"id": "todoist", "key": "project", "value": 5})).unwrap_err();
+        assert_eq!(e.code, "invalid");
+        let e = run(json!({"id": "ghost", "key": "token", "value": SENTINEL})).unwrap_err();
+        assert_eq!(e.code, "not_found");
+        assert!(!e.message.contains(SENTINEL));
+
+        // `""` and `null` clear it.
+        let view = run(json!({"id": "todoist", "key": "token", "value": ""})).unwrap();
+        assert_eq!(view["settings"][0]["set"], false);
+        assert!(!std::fs::read_to_string(&secrets)
+            .unwrap()
+            .contains(SENTINEL));
+        run(json!({"id": "todoist", "key": "token", "value": SENTINEL})).unwrap();
+        let view = run(json!({"id": "todoist", "key": "token", "value": null})).unwrap();
+        assert_eq!(view["settings"][0]["set"], false);
+        assert!(files_containing(env.dir.path(), SENTINEL).is_empty());
+    }
+
+    #[test]
+    fn contract_fixtures_match_the_plugin_settings() {
+        let env = testkit::env();
+        installed_provider(&env);
+        let mut view = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "set_setting",
+            json!({"id": "todoist", "key": "token", "value": SENTINEL}),
+        )
+        .unwrap();
+        assert!(!view.to_string().contains(SENTINEL));
+        view["source"] = json!("/Users/qa/Plugins/acme-market");
+        testkit::contract_fixture("plugin-settings.json", &pin(view));
     }
 
     fn standup(version: &str) -> Value {
@@ -1151,7 +1609,13 @@ mod tests {
         assert_eq!(catalog["market"]["ready"], false);
         assert_eq!(catalog["plugins"], json!([]));
         let markets = run("market_remove", json!({"market": "local"})).unwrap();
-        assert_eq!(markets.as_array().unwrap().len(), 1);
+        let names: Vec<_> = markets
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("codemie"), json!("onetest")]);
         // An unreadable list says so in every request, until it is reset.
         std::fs::write(env.paths.registry(), "{").unwrap();
         assert_eq!(
@@ -1167,7 +1631,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            1
+            2
         );
     }
 }

@@ -4,14 +4,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
+  applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, voiceContextLines, modelLabel, providerLabel, reconcile, answer,
   draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, draftChoices, readOptions, pickOption, draftRequest, defaultOptions,
+  startChange, changeRequest,
 } from '../workspace/draft-state.js';
 import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../workspace/selectors.js';
 import { REBASE_SAFE } from '../workspace/store.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { today } from '../workspace/view-today.js';
-import { buildSnapshot, aiStatus } from './fixtures/workspace-fixture.mjs';
+import { formatDateTime, formatTime } from '../workspace/format.js';
+import { buildSnapshot, aiStatus, contractFixtures } from './fixtures/workspace-fixture.mjs';
 
 const contract = name => JSON.parse(readFileSync(new URL(`./fixtures/contract/${name}.json`, import.meta.url), 'utf8'));
 const NOW = Date.now();
@@ -22,9 +24,11 @@ function snapshot() {
 }
 const message = (s, id) => s.records.find(r => r.kind === 'message' && r.id === id);
 
-/** The contract draft record (a Teams draft for chats, an Outlook one for mail), rebound to a message of the snapshot. */
-function aiDraftFor(s, id, data = {}, extra = {}) {
-  const tpl = contract(message(s, id).data.channel === 'chat' ? 'draft-ai-chat' : 'draft-ai');
+/** The contract draft record (a Teams draft for chats, an Outlook one for mail), rebound to a
+ *  message of the snapshot. `tplName` overrides the channel's default template (`draft-ai-voice`
+ *  for a draft shaped by the user's voice). */
+function aiDraftFor(s, id, data = {}, extra = {}, tplName) {
+  const tpl = contract(tplName || (message(s, id).data.channel === 'chat' ? 'draft-ai-chat' : 'draft-ai'));
   const m = message(s, id);
   const key = draftKeyOf(m);
   const ids = conversation(s, m).map(x => x.id);
@@ -60,25 +64,25 @@ const unescape = text => text.replace(/&#39;/g, "'").replace(/&quot;/g, '"').rep
 test('reply_box_offers_draft_with_ai_or_set_up_claude', () => {
   const s = snapshot();
   const ready = view(s);
-  assert.match(ready, /data-action="ai-draft-options"[^>]*aria-haspopup="dialog"/);
-  assert.match(ready, />Draft with AI</);
+  assert.match(ready, /<button[^>]*data-action="ai-draft-quick"[^>]*aria-label="Draft a reply with AI"[^>]*>✦ draft with AI<\/button>/);
+  assert.match(ready, /data-menu="reply-more"[^]*?data-action="ai-draft-options"[^>]*>(?:(?!<\/button>).)*Draft options…/);
   assert.doesNotMatch(ready, /id="draft-options"/, 'the popover is closed until asked for');
 
   const none = view(s, { ai: { status: 'ready', ...aiStatus('none') } });
-  assert.doesNotMatch(none, /data-action="ai-draft-options"/);
-  assert.match(none, /data-action="ai-open-settings"[^>]*>(?:(?!<\/button>).)*Set up Claude/);
+  assert.doesNotMatch(none, /data-action="ai-draft-quick"|data-action="ai-draft-options"/);
+  assert.match(none, /Write a reply, or <\/span><button[^>]*data-action="ai-open-settings"[^>]*>✦ set up AI<\/button>/);
 
   const unknown = view(s, { ai: { status: 'idle', profiles: [], settings: {} } });
-  assert.match(unknown, /data-action="ai-draft-options"/, 'offered until detection says nothing is ready');
+  assert.match(unknown, /data-action="ai-draft-quick"/, 'offered until detection says nothing is ready');
+  assert.match(unknown, /data-action="ai-draft-options"/);
 
   const own = view(s, { lane: 'fyi', selectedMessage: 'm-thread-mine' });
   assert.match(own, /data-message-id="m-thread-mine"/);
-  assert.doesNotMatch(own, /data-action="ai-draft-options"/, 'own mail cannot be replied to through Review & send');
+  assert.doesNotMatch(own, /data-action="ai-draft-(?:quick|options)"/, 'own mail cannot be replied to');
 
   const opts = { ...defaultOptions('chat'), intent: 'propose_times', tone: 'friendly', includeFreeTimes: true };
   const open = view(s, { draftPopover: { key: 'chat:chat:chat-jordan', id: 'c-reply-1', options: opts, instructions: 'Keep it short' } });
   assert.match(open, /id="draft-options"[^>]*role="dialog"/);
-  assert.match(open, /data-action="ai-draft-options"[^>]*aria-expanded="true"/);
   for (const v of ['reply', 'acknowledge', 'decline', 'ask', 'propose_times']) assert.match(open, new RegExp(`data-draft-intent="${v}"`));
   for (const v of ['neutral', 'friendly', 'formal']) assert.match(open, new RegExp(`data-draft-tone="${v}"`));
   for (const v of ['short', 'medium', 'detailed']) assert.match(open, new RegExp(`data-draft-length="${v}"`));
@@ -122,6 +126,7 @@ test('running_draft_shows_profile_model_and_stop', () => {
   assert.match(row, new RegExp(`data-action="ai-draft-stop"[^>]*data-id="${job.id}"`));
   assert.match(html, /<textarea id="reply-body"(?![^>]*disabled)/, 'the reply stays editable');
   assert.match(html, /data-action="ai-draft-options"[^>]*disabled/, 'one draft per conversation at a time');
+  assert.match(html, /<div class="ws-reply-hint" id="reply-hint" hidden>/, 'no ✦ draft with AI while one runs');
 
   const unknown = { ...job, payload: { ...job.payload, runModel: undefined } };
   assert.equal(runningLabel(unknown, { nowMs: NOW }).text, 'Drafting with Claude Code… 6 s', 'no model until Claude names it');
@@ -163,6 +168,84 @@ test('draft_result_fills_empty_box_and_shows_provenance', () => {
   const partial = snapshot();
   partial.records.push(aiDraftFor(partial, 'c-reply-1', { provenance: { ...draft.data.provenance, partialText: true } }));
   assert.match(view(partial), /Preview text only/);
+});
+
+// ---------------------------------------------------------------- the user's voice (reply voice design § Copy, ruling 20)
+
+test('a draft with a voice says " · in your voice"', () => {
+  const draftVoice = contractFixtures().draftVoice;
+  const withVoice = provenanceLabel(draftVoice.data.provenance);
+  assert.match(withVoice, / · in your voice$/);
+  const without = provenanceLabel({ ...draftVoice.data.provenance, voice: undefined });
+  assert.doesNotMatch(without, /in your voice/);
+});
+
+test('Context lists the voice parts, the facts and what was missed', () => {
+  const zone = 'UTC';
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: true, person: 'Priya N.', rules: 2, examples: 2, from: 'provider' }, zone),
+    ["Your voice (Knowledge): style card · Priya N.'s profile · 2 instructions · 2 earlier messages"],
+  );
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: true, person: 'Priya N.', rules: 1, examples: 1, from: 'provider' }, zone),
+    ["Your voice (Knowledge): style card · Priya N.'s profile · 1 instruction · 1 earlier message"],
+  );
+  // Only the parts used: no style card, no person, no examples.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: false, person: null, rules: 2, examples: 0, from: 'provider' }, zone),
+    ['Your voice (Knowledge): 2 instructions'],
+  );
+  // Facts.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', facts: [{ id: 'projects/atlas-rollout.md', title: 'Atlas rollout' }, { id: 'tickets/epm-1234.md', title: 'Budget 2026' }] }, zone),
+    ['Your voice (Knowledge): 1 instruction', 'Facts from Knowledge: Atlas rollout · Budget 2026'],
+  );
+  // A missed facts ask.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', factsMissed: true }, zone),
+    ['Your voice (Knowledge): 1 instruction', "Knowledge found no facts in time."],
+  );
+  // From the copy, with the copy's time.
+  const at = Date.parse('2026-11-18T13:15:00Z');
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'copy', at }, zone, Date.parse('2026-11-25T10:00:00Z')),
+    ['Your voice (Knowledge): 1 instruction', `Connect's copy from ${formatDateTime(at, zone)} — Knowledge didn't answer.`],
+  );
+  // Shortened to fit.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'provider', cut: true }, zone),
+    ['Your voice (Knowledge): 1 instruction', 'Shortened to fit.'],
+  );
+  // No voice part applied (only a facts miss): no "Your voice (...)" line.
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', style: false, person: null, rules: 0, examples: 0, from: 'provider', factsMissed: true }, zone),
+    ["Knowledge found no facts in time."],
+  );
+  // No provenance at all.
+  assert.deepEqual(voiceContextLines(undefined, zone), []);
+});
+
+test("the copy line reads the time of day when the copy is from today, else the date and time", () => {
+  const zone = 'UTC';
+  const now = Date.parse('2026-11-25T10:00:00Z');
+  const today = Date.parse('2026-11-25T07:40:00Z');
+  assert.deepEqual(
+    voiceContextLines({ provider: 'Knowledge', rules: 1, from: 'copy', at: today }, zone, now),
+    ['Your voice (Knowledge): 1 instruction', `Connect's copy from ${formatTime(today, zone)} — Knowledge didn't answer.`],
+  );
+  assert.doesNotMatch(formatTime(today, zone), /\d{4}|Nov/, 'a same-day time has no date in it');
+});
+
+test("the provenance row escapes the person name and fact titles", () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const s = snapshot();
+  const voice = { ...contractFixtures().draftVoice.data.provenance.voice, person: evil, facts: [{ id: 'a.md', title: evil }] };
+  const draft = aiDraftFor(s, 'm-reply-1', { provenance: { ...contractFixtures().draftVoice.data.provenance, voice } }, {}, 'draft-ai-voice');
+  s.records.push(draft);
+  const html = view(s, { selectedMessage: 'm-reply-1' });
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, / · in your voice/);
 });
 
 test('draft_result_asks_before_replacing_typed_text', () => {
@@ -218,9 +301,11 @@ test('each_error_class_shows_its_sentence_and_action', () => {
   const cases = [
     [{ errorClass: 'needs_login', errorCode: 'needs_login', state: 'blocked' }, 'claude', "Claude Code isn't signed in.", 'ai-copy-login', 'Copy sign-in steps'],
     [{ errorClass: 'needs_login', errorCode: 'needs_login', state: 'blocked' }, 'codemie:staging', "CodeMie · staging isn't signed in.", 'cm-profile-login', 'Sign in'],
-    [{ errorClass: 'not_installed', errorCode: 'not_installed', state: 'failed' }, 'claude', "Claude Code isn't installed on this Mac.", 'ai-open-settings', 'Open Claude settings'],
-    [{ errorClass: 'too_old', errorCode: 'too_old', state: 'failed' }, 'claude', 'This Claude Code is too old to draft replies.', 'ai-open-settings', 'Open Claude settings'],
+    [{ errorClass: 'not_installed', errorCode: 'not_installed', state: 'failed' }, 'claude', "Claude Code isn't installed on this Mac.", 'ai-open-settings', 'Open AI settings'],
+    [{ errorClass: 'too_old', errorCode: 'too_old', state: 'failed' }, 'claude', 'This Claude Code is too old to draft replies.', 'ai-open-settings', 'Open AI settings'],
     [{ errorClass: 'not_configured', errorCode: 'not_configured', state: 'failed' }, 'codemie:prod', "This CodeMie profile isn't fully set up.", 'cm-setup-open', 'Set up CodeMie'],
+    // A ready profile that lacks the row's model, with no fallback: native's own sentence, and AI settings.
+    [{ errorClass: 'not_configured', errorCode: 'not_configured', state: 'failed', result: "CodeMie · local doesn't offer llama3.2." }, 'codemie:local', "CodeMie · local doesn't offer llama3.2.", 'ai-open-settings', 'Open AI settings'],
     [{ errorClass: 'rate_limited', errorCode: 'rate_limited', state: 'failed' }, 'claude', "Claude's usage limit was reached. Try again later.", null, null],
     [{ errorClass: 'timeout', errorCode: 'timeout', state: 'failed' }, 'claude', 'Claude took too long to answer.', 'ai-draft-retry', 'Try again'],
     [{ errorClass: 'invalid_output', errorCode: 'invalid_output', state: 'failed' }, 'claude', "Claude's answer couldn't be used.", 'ai-draft-retry', 'Try again'],
@@ -258,6 +343,21 @@ test('each_error_class_shows_its_sentence_and_action', () => {
   dismissed.jobs.unshift(failed);
   assert.doesNotMatch(view(dismissed, { draftDismissed: [failed.id] }), /ws-draft-error/);
   assert.equal(draftError({ ...failed, state: 'succeeded', errorClass: undefined, errorCode: undefined }, {}), null);
+});
+
+test('after_a_fallback_the_label_and_error_card_name_the_profile_that_ran', () => {
+  // Claude Code hit its limit, so the same draft went to its fallback, CodeMie · prod, whose
+  // sign-in had expired (job-ai-draft-fallback-*.json, written by Rust).
+  const s = snapshot();
+  const running = jobFor(s, 'c-reply-1', { leaseUntil: null }, { startedAt: nowSec - 20 }, 'job-ai-draft-fallback-running');
+  assert.equal(runningLabel(running, { nowMs: NOW }).text, 'Drafting with CodeMie… 20 s');
+  const failed = jobFor(s, 'c-reply-1', {}, {}, 'job-ai-draft-fallback-failed');
+  assert.equal(failed.errorClass, 'needs_login');
+  s.jobs.unshift(failed);
+  const row = view(s).match(/<div class="ws-draft-error[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  assert.match(unescape(row), /CodeMie · prod isn't signed in\./);
+  assert.doesNotMatch(unescape(row), /Claude Code isn't signed in/);
+  assert.match(row, /data-action="cm-profile-login"[^>]*data-id="prod"/);
 });
 
 test('claude_detection_runs_at_most_every_15_s', () => {
@@ -342,14 +442,38 @@ test('a_draft_that_arrives_while_the_user_types_asks_instead_of_replacing', () =
   assert.equal(reconcile({ ui: {}, ai, manual, live: null }), null, 'nothing to do without an open reply box');
 });
 
+test('a change fills the box and offers Restore of the text it changed', () => {
+  const ui = startChange({}, 'Sure, 14:30');
+  assert.deepEqual(ui, { baseline: 'Sure, 14:30', changeFrom: 'Sure, 14:30', confirm: null, kept: null });
+  const ai = { revision: 'r2', data: { text: 'Sure, 15:00' } };
+  const filled = reconcile({ ui, ai, manual: null, live: 'Sure, 14:30' });
+  assert.equal(filled.action, 'fill');
+  assert.equal(filled.ui.restore.previous, 'Sure, 14:30');
+  assert.equal(filled.ui.changeFrom, null);
+  const edited = reconcile({ ui, ai, manual: null, live: 'Sure, 14:30 ok' });
+  assert.equal(edited.action, 'confirm');
+  assert.equal(edited.ui.changeFrom, null, 'a change that asks leaves no Restore for a later fill');
+
+  const s = snapshot();
+  assert.deepEqual(changeRequest(message(s, 'm-reply-1'), defaultOptions('mail'), 'Say 15:00 instead', 'Sure, 14:30, see you then.'), {
+    sourceId: 'm-reply-1', intent: 'reply', tone: 'neutral', length: 'medium', includeFreeTimes: false,
+    instructions: 'Say 15:00 instead', revise: 'Sure, 14:30, see you then.',
+  });
+});
+
 test('without_send_permission_the_reply_can_be_copied', () => {
   const s = snapshot();
   const html = view(s);
-  assert.match(html, /data-action="reply-copy"[^>]*>(?:(?!<\/button>).)*Copy reply/);
+  const bar = html.match(/<div class="ws-reply-bar"[^]*$/)[0];
+  assert.match(bar, /^<div class="ws-reply-bar"[^>]*>\s*<button[^>]*class="ws-btn ws-btn-primary"[^>]*data-action="reply-copy"[^>]*>(?:(?!<\/button>).)*Copy reply/);
+  assert.match(bar, /data-menu="reply-more"[^]*?data-action="source"[^>]*>(?:(?!<\/button>).)*Reply in Teams ↗/);
+  assert.doesNotMatch(bar, /data-action="reply-send"|>Open in Teams</);
   s.connection.enabled.push('chat_send');
   const allowed = view(s);
   assert.doesNotMatch(allowed, /data-action="reply-copy"/);
-  assert.match(allowed, /Review &amp; send/);
+  assert.match(allowed, /<button type="button" class="ws-btn ws-btn-primary"[^>]*data-action="reply-send"[^>]*aria-label="Send to Jordan, Teams"[^>]*>(?:(?!<\/button>).)*Send to Jordan</);
+  assert.match(allowed, /data-menu="reply-more"[^]*?>Open in Teams</);
+  assert.doesNotMatch(allowed, /Review &amp; send|Reply in Teams ↗/);
 });
 
 // ---------------------------------------------------------------- Today

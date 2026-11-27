@@ -1,0 +1,35 @@
+{
+  "connectionId": null,
+  "data": {
+    "automationId": "auto-summary",
+    "automationName": "Formal summary",
+    "connectionId": "acct",
+    "costUsd": null,
+    "delivered": [
+      "meeting_summary"
+    ],
+    "durationMs": 0,
+    "fallbackFrom": null,
+    "fallbackReason": null,
+    "meetingId": "m1",
+    "model": null,
+    "output": {
+      "title": "Formal summary queued for Weekly sync"
+    },
+    "profile": null,
+    "sources": [],
+    "startedAt": 1795000480,
+    "status": "ok",
+    "trigger": {
+      "event": "meeting_ready",
+      "kind": "event",
+      "sourceId": "m1"
+    }
+  },
+  "id": "run-1",
+  "kind": "automation_run",
+  "revision": "rev-1",
+  "source": "automation",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

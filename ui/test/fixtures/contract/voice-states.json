@@ -1,0 +1,939 @@
+{
+  "loading": {
+    "available": [],
+    "copy": true,
+    "facts": {
+      "offered": false,
+      "on": true
+    },
+    "name": null,
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "loading",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "needsSetup": {
+    "available": [
+      {
+        "facts": true,
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "facts": {
+      "offered": true,
+      "on": true
+    },
+    "name": "Knowledge",
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "needs_setup",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "noFacts": {
+    "available": [
+      {
+        "facts": false,
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "facts": {
+      "offered": false,
+      "on": true
+    },
+    "name": "Knowledge",
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "ready",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "off": {
+    "available": [],
+    "copy": false,
+    "facts": {
+      "offered": false,
+      "on": true
+    },
+    "name": null,
+    "people": [],
+    "provider": "off",
+    "refreshedAt": null,
+    "rules": [],
+    "state": "off",
+    "style": null
+  },
+  "offWithCopy": {
+    "available": [],
+    "copy": true,
+    "facts": {
+      "offered": false,
+      "on": true
+    },
+    "name": null,
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "off",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "off",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "pluginOff": {
+    "available": [
+      {
+        "facts": false,
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": false,
+        "ready": false
+      }
+    ],
+    "copy": true,
+    "facts": {
+      "offered": false,
+      "on": true
+    },
+    "name": "Knowledge",
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "unavailable",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "ready": {
+    "available": [
+      {
+        "facts": true,
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "facts": {
+      "offered": true,
+      "on": true
+    },
+    "name": "Knowledge",
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "ready",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  },
+  "unavailable": {
+    "available": [
+      {
+        "facts": true,
+        "id": "plugin:knowledge",
+        "name": "Knowledge",
+        "on": true,
+        "ready": true
+      }
+    ],
+    "copy": true,
+    "facts": {
+      "offered": true,
+      "on": true
+    },
+    "name": "Knowledge",
+    "people": [
+      {
+        "aboutChars": 0,
+        "addresses": [
+          "jordan@example.test"
+        ],
+        "chars": 20,
+        "id": "jordan-lee",
+        "ids": 0,
+        "name": "Jordan Lee",
+        "source": "People/jordan-lee.md"
+      },
+      {
+        "aboutChars": 0,
+        "addresses": [],
+        "chars": 16,
+        "id": "marek-novak",
+        "ids": 1,
+        "name": "Marek Novak",
+        "source": "People/marek-novak.md"
+      },
+      {
+        "aboutChars": 28,
+        "addresses": [
+          "priya.n@example.test"
+        ],
+        "chars": 43,
+        "id": "priya-n",
+        "ids": 0,
+        "name": "Priya N.",
+        "source": "People/priya-n.md"
+      }
+    ],
+    "provider": "plugin:knowledge",
+    "refreshedAt": 1764000000,
+    "rules": [
+      {
+        "applies": {
+          "channel": null,
+          "kind": "chat",
+          "value": "Platform review"
+        },
+        "editable": true,
+        "id": "chat-platform-review",
+        "source": "Voice/rules.md",
+        "text": "Terse, lower case."
+      },
+      {
+        "applies": {
+          "channel": "mail",
+          "kind": "domain",
+          "value": "bank.example.test"
+        },
+        "editable": true,
+        "id": "domain-bank-example-test",
+        "source": "Voice/rules.md",
+        "text": "Formal, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "everyone",
+          "value": null
+        },
+        "editable": true,
+        "id": "everyone",
+        "source": "Voice/rules.md",
+        "text": "Never promise a date."
+      },
+      {
+        "applies": {
+          "channel": "teams",
+          "kind": "no-profile",
+          "value": null
+        },
+        "editable": true,
+        "id": "no-profile-teams",
+        "source": "Voice/rules.md",
+        "text": "Polite, full sentences."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "to",
+          "value": "priya.n@example.test"
+        },
+        "editable": true,
+        "id": "to-priya-n-example-test",
+        "source": "Voice/rules.md",
+        "text": "Short, bullet points."
+      },
+      {
+        "applies": {
+          "channel": null,
+          "kind": "topic",
+          "value": "budget request"
+        },
+        "editable": true,
+        "id": "topic-budget-request",
+        "source": "Voice/rules.md",
+        "text": "Ask for the project code."
+      }
+    ],
+    "state": "unavailable",
+    "style": {
+      "basedOn": {
+        "mail": 12,
+        "teams": 140
+      },
+      "head": {
+        "source": "people/me.md",
+        "text": "Prefers short replies and plain words."
+      },
+      "source": "Voice/style.md",
+      "text": "Short and direct.\n\n## Mail\nOpens with \"Hi\".\n\n## Teams\nNo greeting.\n\n## Teams · ru\nБез приветствия.",
+      "updatedAt": "2026-11-24T09:00:00Z"
+    }
+  }
+}

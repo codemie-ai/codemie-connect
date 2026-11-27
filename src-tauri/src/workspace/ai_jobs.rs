@@ -1,7 +1,7 @@
 //! The reply-draft and thread-summary jobs (DESIGN 6.3-6.5): queueing them, reading the
 //! conversation, running Claude on the purpose's route, and storing the draft or summary.
 use super::{
-    ai::{chosen_profile, wire_name},
+    ai::{chosen_profile, wire_name, Resolved, RouteKey},
     graph,
     models::*,
     new_job,
@@ -10,9 +10,11 @@ use super::{
 };
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::AiProfile;
+use crate::ai::salvage;
 use crate::ai::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -93,6 +95,10 @@ impl FakeGraph {
         }
         (map.lock().unwrap().get(url).cloned().map(Ok), delay)
     }
+    /// Every URL read so far, in order.
+    pub(crate) fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 #[cfg(test)]
@@ -114,9 +120,6 @@ impl FakeGraph {
     /// Makes the read of `url` take `delay` before it answers.
     pub(crate) fn slow(&self, url: &str, delay: Duration) {
         self.delays.lock().unwrap().insert(url.into(), delay);
-    }
-    pub(crate) fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
     }
 }
 
@@ -306,9 +309,9 @@ impl Core {
         let channel = Channel::of(&source)
             .ok_or_else(|| invalid("Choose an Outlook message or a Teams chat."))?;
         let purpose = channel.draft_purpose();
-        let (profile, model) = self.route(purpose).await?;
+        let resolved = self.resolve_key(&RouteKey::Purpose(purpose)).await?;
         let draft_id = format!("ai:{}", draft_key(&source));
-        let run = self.start_run(job, &profile, &model)?;
+        let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let window = prompts::draft_window(&*self.repo()?, &w, &c, &source)?;
         let texts = self
             .full_mail_texts(&c, &window, &run.cancel, MAIL_READ_DEADLINE)
@@ -319,11 +322,23 @@ impl Core {
             zone: &zone,
             texts: &texts,
         };
-        let ctx = prompts::draft_context(&*self.repo()?, &w, &source, &c, &opts, &reading)?;
+        // Every reply draft carries the user's voice and facts (reply voice design §4, ruling
+        // 5); the asks run before the context is built, never under a lock.
+        let voice = self.voice_for_draft(&w, &c, &source, &run.cancel).await;
+        let ctx = prompts::draft_context(
+            &*self.repo()?,
+            &w,
+            &source,
+            &c,
+            &opts,
+            &reading,
+            voice.voice.as_deref(),
+            voice.facts.as_deref(),
+        )?;
         let spec = RunSpec {
             purpose: wire_name(purpose),
-            profile_id: profile.id.clone(),
-            model,
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system: channel.draft_system().into(),
             input: ctx.input.clone(),
             schema: Some(prompts::schema(prompts::DRAFT_SCHEMA)),
@@ -332,9 +347,8 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let requested_model = spec.model.clone();
-        let (outcome, (text, questions)) = self
-            .run_claude(&run, spec, &profile, &draft_id, prompts::parse_draft)
+        let (outcome, (text, questions), used) = self
+            .run_claude(&run, spec, &resolved, &draft_id, prompts::parse_draft)
             .await?;
         let mut r = self.repo()?;
         r.check_policy(
@@ -354,8 +368,19 @@ impl Core {
                 "The conversation changed while Claude was drafting. Draft again.",
             ));
         }
-        let made = provenance(&profile, &outcome, requested_model, &ctx);
-        let record = ai_draft_record(&of, &text, &questions, json!(opts), made);
+        let made = provenance(
+            resolved.profile_of(&used),
+            &outcome,
+            used.model,
+            &ctx,
+            voice.provenance.as_ref(),
+        );
+        // The reply being changed is only for this run; the stored draft keeps its own options.
+        let mut options = json!(opts);
+        if let Some(obj) = options.as_object_mut() {
+            obj.remove("revise");
+        }
+        let record = ai_draft_record(&of, &text, &questions, options, made);
         let stored = stored_job(&r, job)?;
         r.commit_job_record(&stored, &record)?;
         Ok("AI draft ready for review".into())
@@ -370,8 +395,10 @@ impl Core {
     /// [`Self::run_ai_summary`] with the time its Outlook reads may take.
     async fn run_ai_summary_within(&self, job: &Job, read_deadline: Duration) -> Result<String> {
         let (w, c, source) = self.repo()?.ai_job_source(job)?;
-        let (profile, model) = self.route(Purpose::Summary).await?;
-        let run = self.start_run(job, &profile, &model)?;
+        let resolved = self
+            .resolve_key(&RouteKey::Purpose(Purpose::Summary))
+            .await?;
+        let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let window = prompts::summary_window(&*self.repo()?, &w, &c, &source)?;
         let texts = self
             .full_mail_texts(&c, &window, &run.cancel, read_deadline)
@@ -386,8 +413,8 @@ impl Core {
         let summary_id = ctx.conversation_key.clone();
         let spec = RunSpec {
             purpose: wire_name(Purpose::Summary),
-            profile_id: profile.id.clone(),
-            model,
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system: prompts::SUMMARY_SYSTEM.into(),
             input: ctx.input.clone(),
             schema: Some(prompts::schema(prompts::SUMMARY_SCHEMA)),
@@ -396,9 +423,8 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let requested_model = spec.model.clone();
-        let (outcome, (text, asks)) = self
-            .run_claude(&run, spec, &profile, &summary_id, prompts::parse_summary)
+        let (outcome, (text, asks), used) = self
+            .run_claude(&run, spec, &resolved, &summary_id, prompts::parse_summary)
             .await?;
         let mut r = self.repo()?;
         r.check_policy(
@@ -423,7 +449,7 @@ impl Core {
                 "latestMessageId": ctx.newest.id,
                 "latestRevision": ctx.newest.revision,
                 "latestFingerprint": ctx.newest.fingerprint,
-                "provenance": provenance(&profile, &outcome, requested_model, &ctx),
+                "provenance": provenance(resolved.profile_of(&used), &outcome, used.model.clone(), &ctx, None),
             }),
         };
         let stored = stored_job(&r, job)?;
@@ -470,6 +496,30 @@ impl Core {
                 .filter(|j| j.state == "running");
             if let Some(mut job) = running {
                 job.payload["runModel"] = model.into();
+                if r.save_job(&job).is_err() {
+                    return;
+                }
+            }
+        }
+        self.emit("workspace:changed");
+    }
+
+    /// Notes on a running job the fallback its retry runs on (its own default model), so the
+    /// "Drafting with…" row and an error card that ends the job name the profile that ran.
+    /// The first attempt's reported model goes with it. The ledger keeps `fallbackFrom`.
+    fn note_fallback(&self, job_id: &str, fallback: &AiProfile) {
+        if let Ok(mut r) = self.repo() {
+            let running = r
+                .jobs()
+                .ok()
+                .and_then(|jobs| jobs.into_iter().find(|j| j.id == job_id))
+                .filter(|j| j.state == "running");
+            if let Some(mut job) = running {
+                job.payload["profile"] = fallback.id.clone().into();
+                job.payload["model"] = Value::Null;
+                if let Some(p) = job.payload.as_object_mut() {
+                    p.remove("runModel");
+                }
                 if r.save_job(&job).is_err() {
                     return;
                 }
@@ -542,64 +592,100 @@ impl Core {
             .collect())
     }
 
-    /// One Claude run for a started job, recorded in the ledger under `ref_id` however it
-    /// ends, and its answer read with `parse` (an answer `parse` rejects is `invalid_output`).
+    /// One Claude run for a started job (with its fallback, see [`Core::run_resolved`]),
+    /// recorded in the ledger under `ref_id` however it ends, and its answer read with `parse`
+    /// (an answer `parse` rejects is `invalid_output`). Also answers the spec of the attempt
+    /// that answered.
     pub(super) async fn run_claude<T>(
         &self,
         run: &StartedRun<'_>,
         spec: RunSpec,
-        profile: &AiProfile,
+        resolved: &Resolved,
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
-    ) -> Result<(RunOutcome, T)> {
+    ) -> Result<(RunOutcome, T, RunSpec)> {
         match self
-            .run_claude_reported(run, spec, profile, ref_id, parse)
+            .run_claude_reported(run, spec, resolved, ref_id, parse)
             .await
         {
-            (Some(outcome), Ok(answer)) => Ok((outcome, answer)),
-            (_, Err(e)) => Err(e.into()),
-            (None, Ok(_)) => Err(AiError::new(ErrorClass::Failed).into()),
+            (Some(outcome), Ok(answer), used, _) => Ok((outcome, answer, used)),
+            (_, Err(e), _, _) => Err(e.into()),
+            (None, Ok(_), _, _) => Err(AiError::new(ErrorClass::Failed).into()),
         }
     }
 
     /// [`Self::run_claude`] that also gives back what Claude reported (model, duration, cost)
-    /// when its answer could not be used, so a failed run can still show what it cost.
+    /// when its answer could not be used, so a failed run can still show what it cost, and the
+    /// class of why the chosen profile didn't run this time, when it fell back to a second one
+    /// (either because it wasn't ready, or because this attempt on it failed) — a fixed code,
+    /// never a message, for a caller that wants to say why (the automations Run log).
     pub(super) async fn run_claude_reported<T>(
         &self,
         run: &StartedRun<'_>,
         spec: RunSpec,
-        profile: &AiProfile,
+        resolved: &Resolved,
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
-    ) -> (Option<RunOutcome>, std::result::Result<T, AiError>) {
+    ) -> (
+        Option<RunOutcome>,
+        std::result::Result<T, AiError>,
+        RunSpec,
+        Option<ErrorClass>,
+    ) {
         if run.cancel.is_cancelled() {
-            return (None, Err(AiError::new(ErrorClass::Cancelled)));
+            return (None, Err(AiError::new(ErrorClass::Cancelled)), spec, None);
         }
-        let ledger = LedgerEntry::open(self, spec.clone(), ref_id);
-        let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let on_event: Box<dyn Fn(RunEvent) + Send> = Box::new(move |event| {
-            if let RunEvent::Started {
-                model: Some(model), ..
-            } = event
-            {
-                let _ = models.send(model);
-            }
-        });
-        let running = self.runner.run(spec, profile, run.cancel.clone(), on_event);
+        let ledger = LedgerEntry::open(self, spec.clone(), ref_id, resolved.fell_back_from.clone());
+        // Each reported model carries its attempt, so a model the first attempt reported
+        // never lands on the job after the retry has named the fallback.
+        let attempt = std::sync::Arc::new(AtomicUsize::new(0));
+        let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<(usize, String)>();
+        let of_attempt = attempt.clone();
+        let on_event: std::sync::Arc<dyn Fn(RunEvent) + Send + Sync> =
+            std::sync::Arc::new(move |event| {
+                if let RunEvent::Started {
+                    model: Some(model), ..
+                } = event
+                {
+                    let _ = models.send((of_attempt.load(Ordering::SeqCst), model));
+                }
+            });
+        let on_retry = |fallback: &AiProfile| {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            self.note_fallback(&run.job_id, fallback);
+        };
+        let running = self.run_resolved(
+            resolved,
+            spec,
+            run.cancel.clone(),
+            on_event,
+            Some(ref_id),
+            &on_retry,
+        );
         tokio::pin!(running);
-        let result = loop {
+        let (result, used, post_run_reason) = loop {
             tokio::select! {
                 biased;
-                Some(model) = reported.recv() => self.note_run_model(&run.job_id, &model),
-                result = &mut running => break result,
+                Some((n, model)) = reported.recv() => {
+                    if n == attempt.load(Ordering::SeqCst) {
+                        self.note_run_model(&run.job_id, &model);
+                    }
+                }
+                done = &mut running => break done,
             }
         };
+        // An answer that missed the structured output may still be in the text (a local model).
+        let read = |o: &RunOutcome| {
+            salvage::candidates(o)
+                .iter()
+                .find_map(&parse)
+                .ok_or_else(|| AiError::new(ErrorClass::InvalidOutput))
+        };
         let answer = match &result {
-            Ok(o) => o
-                .structured
-                .as_ref()
-                .and_then(&parse)
-                .ok_or_else(|| AiError::new(ErrorClass::InvalidOutput)),
+            Ok(o) => read(o),
+            Err(e) if e.class == ErrorClass::InvalidOutput => {
+                e.spent.as_deref().map_or_else(|| Err(e.clone()), read)
+            }
             Err(e) => Err(e.clone()),
         };
         // A run that ended in an error may still have reported what it cost.
@@ -607,8 +693,14 @@ impl Core {
             Ok(outcome) => Some(outcome),
             Err(e) => e.spent.map(|spent| *spent),
         };
-        ledger.close(reported.as_ref(), answer.as_ref().err());
-        (reported, answer)
+        ledger.close(
+            &used,
+            resolved.fallback_from(&used),
+            reported.as_ref(),
+            answer.as_ref().err(),
+        );
+        let reason = resolved.pre_run_reason.or(post_run_reason);
+        (reported, answer, used, reason)
     }
 
     /// Stop for a running AI job (`job_cancel`); nothing happens for other jobs.
@@ -664,25 +756,41 @@ struct LedgerEntry<'a> {
     core: &'a Core,
     spec: RunSpec,
     ref_id: String,
+    fallback_from: Option<String>,
     started: Instant,
     open: bool,
 }
 
 impl<'a> LedgerEntry<'a> {
-    fn open(core: &'a Core, spec: RunSpec, ref_id: &str) -> Self {
+    fn open(core: &'a Core, spec: RunSpec, ref_id: &str, fallback_from: Option<String>) -> Self {
         Self {
             core,
             spec,
             ref_id: ref_id.to_string(),
+            fallback_from,
             started: Instant::now(),
             open: true,
         }
     }
-    fn close(mut self, outcome: Option<&RunOutcome>, error: Option<&AiError>) {
+    /// Records the attempt that answered (`spec`; a failed first attempt before a fallback
+    /// was recorded by [`Core::run_resolved`]).
+    fn close(
+        mut self,
+        spec: &RunSpec,
+        fallback_from: Option<String>,
+        outcome: Option<&RunOutcome>,
+        error: Option<&AiError>,
+    ) {
         self.open = false;
         let elapsed = self.started.elapsed();
-        self.core
-            .record_run(&self.spec, outcome, error, elapsed, Some(&self.ref_id));
+        self.core.record_run(
+            spec,
+            outcome,
+            error,
+            elapsed,
+            Some(&self.ref_id),
+            fallback_from.as_deref(),
+        );
     }
 }
 
@@ -697,6 +805,7 @@ impl Drop for LedgerEntry<'_> {
                 Some(&cancelled),
                 elapsed,
                 Some(&self.ref_id),
+                self.fallback_from.as_deref(),
             );
         }
     }
@@ -804,15 +913,17 @@ pub(super) fn stored_job(r: &repository::Repository, job: &Job) -> Result<Job> {
 }
 
 /// Where a draft or summary came from: "Drafted with Claude Code · Sonnet · 4 s · from 5
-/// messages", the Context disclosure (the message ids), and whether some Outlook text was
-/// only its preview (`partialText`).
+/// messages", the Context disclosure (the message ids), whether some Outlook text was only its
+/// preview (`partialText`), and for a reply draft what of the user's voice and facts shaped it
+/// (`voice`, reply voice design §4 "Provenance"; left out when none was added).
 pub(super) fn provenance(
     profile: &AiProfile,
     outcome: &RunOutcome,
     requested_model: Option<String>,
     ctx: &prompts::PromptInput,
+    voice: Option<&Value>,
 ) -> Value {
-    json!({
+    let mut made = json!({
         "profile": profile.id,
         "model": outcome.model.clone().or(requested_model).or_else(|| profile.default_model.clone()),
         "durationMs": outcome.duration_ms,
@@ -820,7 +931,11 @@ pub(super) fn provenance(
         "messageIds": ctx.message_ids,
         "partialText": ctx.partial_text,
         "at": now(),
-    })
+    });
+    if let Some(voice) = voice {
+        made["voice"] = voice.clone();
+    }
+    made
 }
 
 /// Sets `stale` on every summary in a snapshot: true when its conversation's newest message
@@ -1226,6 +1341,7 @@ mod tests {
                 Route {
                     profile: None,
                     model: Some("haiku".into()),
+                    fallback: None,
                 },
             );
             r.settings_update(&s).unwrap();
@@ -1248,6 +1364,55 @@ mod tests {
         assert_eq!(chat.data["draftKey"], "chat:chat:19:ops");
         assert_eq!(chat.data["provenance"]["model"], "claude-haiku-4-5");
         assert_eq!(chat.data["provenance"]["partialText"], false);
+    }
+
+    /// "Tell AI what to change": the user's current reply travels with the job (so Try again
+    /// repeats the change) but never ends up on the stored draft's own options.
+    #[tokio::test]
+    async fn a_change_keeps_revise_in_the_job_but_not_in_the_draft_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(answer(
+            json!({"draft": "Sure, 15:00 works.", "questions": []}),
+            "claude-sonnet-4-5",
+            2100,
+            0.003,
+        ))]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        budget_thread(&core, Some(&graph));
+        let queued = core
+            .request(draft_request(
+                &core,
+                json!({"sourceId": "m3", "instructions": "Say 15:00 instead",
+                    "revise": "Sure, 14:30, see you then."}),
+            ))
+            .await
+            .unwrap();
+        let before = job(&core, &queued["jobId"]);
+        assert_eq!(
+            before.payload["request"]["revise"],
+            "Sure, 14:30, see you then."
+        );
+        let mut fixture = serde_json::to_value(&before).unwrap();
+        fixture["id"] = "job-1".into();
+        fixture["key"] = format!("{}:op-1", fixture["kind"].as_str().unwrap()).into();
+        fixture["dueAt"] = 1_795_000_400.into();
+        crate::plugins::testkit::contract_fixture("job-ai-draft-change.json", &fixture);
+
+        run_jobs(&core).await;
+        let spec = &fake.calls()[0];
+        assert_eq!(
+            spec.input["draft"],
+            "<draft>\nSure, 14:30, see you then.\n</draft>"
+        );
+
+        let draft_record = draft(&core, "ai:m3").expect("the m3 draft");
+        assert!(draft_record.data["options"].get("revise").is_none());
+        assert_eq!(
+            draft_record.data["options"]["instructions"],
+            "Say 15:00 instead"
+        );
     }
 
     #[tokio::test]
@@ -1306,6 +1471,40 @@ mod tests {
         assert!(!serde_json::to_string(&record)
             .unwrap()
             .contains("board meets"));
+    }
+
+    #[tokio::test]
+    async fn a_draft_in_the_text_of_a_local_model_is_used_but_plain_text_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_text = |text: &str| {
+            let mut spent = answer(Value::Null, "gemma4-26b-64k", 900, 0.0);
+            spent.structured = None;
+            spent.text = text.into();
+            Err(AiError::new(ErrorClass::InvalidOutput).with_spent(spent))
+        };
+        let fake = Arc::new(FakeRunner::new(vec![
+            in_text("<think>Short and polite.</think>\n```json\n{\"draft\": \"Monday works.\", \"questions\": [],}\n```"),
+            in_text("Monday works."),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        assert_eq!(job(&core, &queued["jobId"]).state, "succeeded");
+        assert_eq!(draft(&core, "ai:m3").unwrap().data["text"], "Monday works.");
+        assert_eq!(ai_runs(&core)[0].data["status"], "ok");
+        // Plain text is a notes body only: a draft needs its JSON.
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let failed = job(&core, &queued["jobId"]);
+        assert_eq!(failed.error_class.as_deref(), Some("invalid_output"));
     }
 
     #[tokio::test]
@@ -1397,6 +1596,239 @@ mod tests {
         assert_eq!(failed.error_class.as_deref(), Some("needs_choice"));
         assert!(fake.calls().is_empty(), "nothing is sent without a choice");
         assert!(ai_runs(&core).is_empty(), "no run, no ledger entry");
+    }
+
+    /// Sets the default's fallback on top of [`seed`]'s default (Claude Code).
+    fn with_fallback(core: &Core, fallback: &str) {
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.ai.default_fallback = Some(fallback.into());
+        r.settings_update(&s).unwrap();
+    }
+
+    fn failure(class: ErrorClass, message: &str) -> std::result::Result<RunOutcome, AiError> {
+        let mut e = AiError::new(class);
+        e.message = message.into();
+        Err(e)
+    }
+
+    #[tokio::test]
+    async fn fallback_runs_once_and_both_attempts_are_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::NeedsLogin, "Claude is not signed in."),
+            failure(ErrorClass::NeedsLogin, "CodeMie is not signed in."),
+            failure(ErrorClass::NeedsLogin, "never asked"),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(mutation(
+                &core,
+                Operation::AiSummarize,
+                json!({"sourceId": "m3"}),
+            ))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "one extra attempt, never a loop");
+        assert_eq!(calls[0].profile_id, "claude");
+        assert_eq!(calls[1].profile_id, "codemie:prod");
+        assert_eq!(calls[1].model, None, "the fallback's own default model");
+        assert_eq!(
+            calls[1].input, calls[0].input,
+            "the same run, on the fallback"
+        );
+        let failed = job(&core, &queued["jobId"]);
+        assert_eq!(failed.error_class.as_deref(), Some("needs_login"));
+        assert_eq!(
+            failed.result.as_deref(),
+            Some("CodeMie is not signed in."),
+            "the fallback's error"
+        );
+        let mut runs = ai_runs(&core);
+        // The first attempt is the one not made on a fallback.
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        assert_eq!(runs.len(), 2);
+        let field = |i: usize, f: &str| runs[i].data[f].clone();
+        assert_eq!(field(0, "profile"), "claude");
+        assert_eq!(field(0, "fallbackFrom"), Value::Null);
+        assert_eq!(field(1, "profile"), "codemie:prod");
+        assert_eq!(field(1, "fallbackFrom"), "claude");
+        for i in 0..2 {
+            assert_eq!(field(i, "status"), "needs_login");
+            assert_eq!(field(i, "purpose"), "summary");
+            assert_eq!(field(i, "refId"), runs[0].data["refId"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_falls_back_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::RateLimited, "Claude is busy."),
+            Ok(draft_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        assert_eq!(
+            job(&core, &queued["jobId"]).result.as_deref(),
+            Some("AI draft ready for review")
+        );
+        let made = draft(&core, "ai:m3").unwrap();
+        assert_eq!(
+            made.data["provenance"]["profile"], "codemie:prod",
+            "the draft names the profile that wrote it"
+        );
+        let mut runs = ai_runs(&core);
+        // The first attempt is the one not made on a fallback.
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        let statuses: Vec<&str> = runs
+            .iter()
+            .map(|r| r.data["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(statuses, ["rate_limited", "ok"]);
+        assert_eq!(runs[1].data["fallbackFrom"], "claude");
+        assert_eq!(runs[1].data["costUsd"], 0.0123);
+    }
+
+    #[tokio::test]
+    async fn no_fallback_after_timeout_invalid_output_failed_or_cancelled() {
+        let bad = || {
+            Ok(answer(
+                json!({"draft": "  ", "questions": []}),
+                "claude-sonnet-4-5",
+                900,
+                0.004,
+            ))
+        };
+        let cases = [
+            failure(ErrorClass::Timeout, "Claude took too long."),
+            failure(
+                ErrorClass::InvalidOutput,
+                "Claude answered in a way Connect can't read.",
+            ),
+            bad(),
+            failure(ErrorClass::Failed, "Claude could not run."),
+            failure(ErrorClass::Cancelled, "Stopped."),
+        ];
+        for first in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(FakeRunner::new(vec![first, Ok(draft_answer())]));
+            let core = test_core(dir.path(), fake.clone(), ready());
+            seed(&core);
+            with_fallback(&core, "codemie:prod");
+            budget_thread(&core, None);
+            core.request(draft_request(&core, json!({"sourceId": "m3"})))
+                .await
+                .unwrap();
+            run_jobs(&core).await;
+            assert_eq!(fake.calls().len(), 1, "no second, paid run");
+            assert!(draft(&core, "ai:m3").is_none());
+            let runs = ai_runs(&core);
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].data["profile"], "claude");
+            assert_eq!(runs[0].data["fallbackFrom"], Value::Null);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unready_profile_runs_on_the_fallback_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(draft_answer())]));
+        let mut profiles = ready();
+        profiles[0].state = crate::ai::profiles::ProfileState::NeedsLogin;
+        let core = test_core(dir.path(), fake.clone(), profiles);
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        core.request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "the unready profile is never run");
+        assert_eq!(calls[0].profile_id, "codemie:prod");
+        let runs = ai_runs(&core);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].data["fallbackFrom"], "claude");
+    }
+
+    /// After a fallback that runs once the first attempt failed, the job names the profile
+    /// that is running, and that profile's error ends it: the "Drafting with …" row and the
+    /// error card blame the fallback, not the first profile. Writes
+    /// `job-ai-draft-fallback-{running,failed}.json`, which the window's tests read.
+    #[tokio::test]
+    async fn contract_fixtures_a_fallback_job_names_the_profile_that_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![
+            failure(ErrorClass::RateLimited, "Claude is busy."),
+            failure(ErrorClass::NeedsLogin, "CodeMie is not signed in."),
+        ]);
+        let fake = Arc::new(fake);
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        let id = queued["jobId"].as_str().unwrap().to_string();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let running = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        assert_eq!(job(&core, &json!(id)).payload["profile"], "claude");
+        gate.release.notify_one();
+        gate.started.notified().await;
+        let retrying = job_when(&core, &id, |j| j.payload["profile"] == "codemie:prod").await;
+        assert_eq!(retrying.state, "running");
+        assert_eq!(
+            retrying.payload["model"],
+            Value::Null,
+            "the fallback's own default"
+        );
+        assert!(retrying.payload.get("runModel").is_none_or(Value::is_null));
+        gate.release.notify_one();
+        running.await.unwrap();
+        let failed = job(&core, &json!(id));
+        assert_eq!(failed.error_class.as_deref(), Some("needs_login"));
+        assert_eq!(failed.payload["profile"], "codemie:prod");
+        assert_eq!(fake.calls().len(), 2);
+        // The ledger still records which profile it fell back from.
+        let mut runs = ai_runs(&core);
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        assert_eq!(runs[1].data["fallbackFrom"], "claude");
+
+        let pin_job = |j: Job, n: usize| {
+            let mut v = serde_json::to_value(j).unwrap();
+            v["id"] = format!("job-{n}").into();
+            v["key"] = format!("{}:op-{n}", v["kind"].as_str().unwrap()).into();
+            v["dueAt"] = 1_795_000_400.into();
+            v["payload"]["startedAt"] = 1_795_000_401.into();
+            if v["leaseUntil"].is_i64() {
+                v["leaseUntil"] = 1_795_000_700.into();
+            }
+            v
+        };
+        crate::plugins::testkit::contract_fixture(
+            "job-ai-draft-fallback-running.json",
+            &pin_job(retrying, 1),
+        );
+        crate::plugins::testkit::contract_fixture(
+            "job-ai-draft-fallback-failed.json",
+            &pin_job(failed, 2),
+        );
     }
 
     #[tokio::test]
@@ -2228,6 +2660,316 @@ mod tests {
                     "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
                 );
             }
+        }
+    }
+
+    // Reply voice (design §4, §10): every reply draft carries the user's voice and facts.
+    mod voice {
+        use super::*;
+        use crate::workspace::voice::draft::tests::{
+            atlas_facts, calls_of, priya_context, priya_mail, ready_voice, SENTINEL,
+        };
+        use crate::workspace::voice::fake::FakeVoice;
+        use std::time::Instant;
+
+        struct Env {
+            _dir: tempfile::TempDir,
+            core: Arc<Core>,
+            runner: Arc<FakeRunner>,
+            voice: Arc<FakeVoice>,
+        }
+
+        /// A signed-in core with Knowledge chosen and its copy ready (`extra` in the style card,
+        /// Priya's profile and about), and Priya's mail `p1` saying `text` (also its full text).
+        fn env(text: &str, extra: &str) -> Env {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Arc::new(FakeRunner::new(
+                (0..3).map(|_| Ok(draft_answer())).collect(),
+            ));
+            let graph = Arc::new(FakeGraph::default());
+            let core = test_core_with_graph(dir.path(), runner.clone(), ready(), graph.clone());
+            seed(&core);
+            let voice = ready_voice(&core, extra);
+            put(
+                &core,
+                priya_mail("p1", "conv-p", now() - 60, false, "re: next steps", text),
+            );
+            graph.answer(
+                &body_url("p1"),
+                json!({"uniqueBody": {"contentType": "text", "content": text}}),
+            );
+            Env {
+                _dir: dir,
+                core,
+                runner,
+                voice,
+            }
+        }
+
+        impl Env {
+            /// Asks for a draft of `p1` (with `extra` request fields) and runs it.
+            async fn draft(&self, extra: Value) -> Record {
+                let mut data = json!({"sourceId": "p1"});
+                for (k, v) in extra.as_object().unwrap() {
+                    data[k] = v.clone();
+                }
+                self.core
+                    .request(draft_request(&self.core, data))
+                    .await
+                    .unwrap();
+                run_jobs(&self.core).await;
+                draft(&self.core, "ai:p1").expect("the p1 draft")
+            }
+            fn last_spec(&self) -> RunSpec {
+                self.runner.calls().last().unwrap().clone()
+            }
+        }
+
+        #[tokio::test]
+        async fn a_draft_carries_the_voice_from_the_provider() {
+            let e = env("Could you share the rollout plan today?", "");
+            e.voice.answer("context", priya_context(""));
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input;
+            let voice = input["voice"].as_str().expect("a voice field");
+            assert!(
+                voice.contains("<person name=\"Priya N.\"><writing>"),
+                "{voice}"
+            );
+            assert!(
+                voice.contains("From the provider: two lines at most."),
+                "the context answer was merged: {voice}"
+            );
+            assert!(voice.contains(
+                "<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>"
+            ));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "provider");
+            assert_eq!(p["provider"], "Knowledge");
+            assert_eq!(p["person"], "Priya N.");
+            let asks = calls_of(&e.voice, "context");
+            assert_eq!(
+                asks,
+                vec![
+                    json!({"person": {"name": "Priya N.", "address": "priya.n@example.test", "id": null},
+                    "channel": "mail", "subject": "re: next steps"})
+                ]
+            );
+            assert!(!serde_json::to_string(&e.voice.calls())
+                .unwrap()
+                .contains("rollout plan"));
+        }
+
+        #[tokio::test]
+        async fn a_draft_carries_facts_from_the_provider() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            let d = e.draft(json!({})).await;
+            let asks = calls_of(&e.voice, "facts");
+            assert_eq!(
+                asks,
+                vec![json!({"terms": ["EPM-1234", "Atlas Rollout"], "personId": "priya-n"})]
+            );
+            assert!(!serde_json::to_string(&e.voice.calls())
+                .unwrap()
+                .contains("Can we move"));
+            let input = e.last_spec().input;
+            let facts = input["facts"].as_str().expect("a facts field");
+            assert!(
+                facts.starts_with("<facts provider=\"Knowledge\">"),
+                "{facts}"
+            );
+            assert!(facts
+                .contains("<fact source=\"projects/atlas-rollout.md\" title=\"Atlas rollout\">"));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(
+                p["facts"],
+                json!([{"id": "projects/atlas-rollout.md", "title": "Atlas rollout"},
+                       {"id": "tickets/epm-1234.md", "title": "EPM-1234"}])
+            );
+            assert_eq!(p["factsMissed"], false);
+            assert!(
+                !d.data["provenance"].to_string().contains("Go-live"),
+                "never a fact's text"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_provider_that_misses_facts_marks_facts_missed() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            e.voice.delay("facts", Duration::from_secs(10));
+            let started = Instant::now();
+            let d = e.draft(json!({})).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "{:?}",
+                started.elapsed()
+            );
+            let input = e.last_spec().input;
+            assert!(input.get("facts").is_none());
+            assert!(input["voice"]
+                .as_str()
+                .unwrap()
+                .contains("From the provider"));
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "provider");
+            assert_eq!(p["factsMissed"], true);
+            assert_eq!(p["facts"], json!([]));
+        }
+
+        #[tokio::test]
+        async fn a_provider_that_does_not_answer_in_3s_drafts_from_the_copy() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            e.voice.answer("context", priya_context(""));
+            e.voice.answer("facts", atlas_facts(""));
+            e.voice.delay("context", Duration::from_secs(10));
+            e.voice.delay("facts", Duration::from_secs(10));
+            let started = Instant::now();
+            let d = e.draft(json!({})).await;
+            let took = started.elapsed();
+            assert!(took < Duration::from_secs(4), "{took:?}");
+            assert!(
+                took >= Duration::from_millis(2_900),
+                "it waited the window: {took:?}"
+            );
+            let input = e.last_spec().input;
+            let voice = input["voice"].as_str().unwrap();
+            assert!(
+                voice.contains("Short sentences; no small talk."),
+                "the copy: {voice}"
+            );
+            assert!(!voice.contains("From the provider"));
+            assert!(input.get("facts").is_none());
+            let p = &d.data["provenance"]["voice"];
+            assert_eq!(p["from"], "copy");
+            assert_eq!(p["factsMissed"], true);
+            // The composer's "Connect's copy from <time> — … didn't answer." line (design §
+            // Copy) needs a time: the copy's own refresh time, from `ready_voice`'s seeding.
+            assert!(p["at"].as_i64().unwrap() > 0, "{p:?}");
+        }
+
+        #[tokio::test]
+        async fn off_adds_no_voice() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            {
+                let mut r = e.core.repo().unwrap();
+                let mut s = r.settings().unwrap();
+                s.voice.provider = "off".into();
+                r.settings_update(&s).unwrap();
+            }
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input;
+            assert!(input.get("voice").is_none());
+            assert!(input.get("facts").is_none());
+            assert!(d.data["provenance"].get("voice").is_none());
+            assert!(e.voice.calls().is_empty(), "no provider call");
+        }
+
+        /// Tell AI (a revise) and Regenerate (the same draft asked again) both ask again and carry
+        /// the voice and the facts.
+        #[tokio::test]
+        async fn revise_and_regenerate_carry_the_voice() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", "");
+            for _ in 0..2 {
+                e.voice.answer("context", priya_context(""));
+                e.voice.answer("facts", atlas_facts(""));
+            }
+            e.draft(json!({})).await;
+            let first = e.last_spec().input;
+            assert!(first["voice"].is_string() && first["facts"].is_string());
+            let d = e
+                .draft(json!({"revise": "Sure, next week.", "instructions": "Shorter."}))
+                .await;
+            let input = e.last_spec().input;
+            assert!(input["draft"].is_string());
+            assert!(input["voice"].is_string());
+            assert!(input["facts"].is_string());
+            assert_eq!(
+                calls_of(&e.voice, "facts").len(),
+                2,
+                "facts are asked again"
+            );
+            assert_eq!(d.data["provenance"]["voice"]["factsMissed"], false);
+        }
+
+        #[tokio::test]
+        async fn the_ledger_holds_no_voice_or_fact_text() {
+            let e = env("Can we move EPM-1234 for Atlas Rollout?", SENTINEL);
+            e.voice.answer("context", priya_context(SENTINEL));
+            e.voice.answer("facts", atlas_facts(SENTINEL));
+            let d = e.draft(json!({})).await;
+            let input = e.last_spec().input.to_string();
+            assert!(input.contains(SENTINEL), "the run itself reads them");
+            let runs = ai_runs(&e.core);
+            assert!(!runs.is_empty());
+            for run in runs {
+                let text = serde_json::to_string(&run).unwrap();
+                assert!(!text.contains(SENTINEL), "the ledger: {text}");
+            }
+            let jobs = serde_json::to_string(&e.core.repo().unwrap().jobs().unwrap()).unwrap();
+            assert!(!jobs.contains(SENTINEL), "the job");
+            assert!(
+                !d.data["provenance"].to_string().contains(SENTINEL),
+                "the provenance"
+            );
+        }
+
+        /// `draft-ai.json`'s record plus `provenance.voice` with two examples and two facts.
+        /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+        #[tokio::test]
+        async fn contract_fixtures_match_the_voice_draft() {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Arc::new(FakeRunner::new(vec![Ok(draft_answer())]));
+            let graph = Arc::new(FakeGraph::default());
+            let core = test_core_with_graph(dir.path(), runner, ready(), graph.clone());
+            seed(&core);
+            budget_thread(&core, Some(&graph));
+            let voice = ready_voice(&core, "");
+            // Two of the user's earlier mails to Ann, in another thread.
+            for (id, days) in [("e1", 2), ("e2", 4)] {
+                let mut m = mail(
+                    id,
+                    now() - days * 86_400,
+                    "Taylor Reed",
+                    true,
+                    "Done, sent.",
+                );
+                m.data["conversationId"] = "conv-e".into();
+                m.data["to"] =
+                    json!([{"emailAddress": {"name": "Ann Lee", "address": "ann@example.test"}}]);
+                put(&core, m);
+            }
+            let mut m3 = core
+                .repo()
+                .unwrap()
+                .record("message", "m3", Some(ACCT), None)
+                .unwrap();
+            m3.data["title"] = "Q3 budget for Atlas Rollout".into();
+            put(&core, m3);
+            voice.answer(
+                "context",
+                json!({"style": null, "person": null, "rules": []}),
+            );
+            voice.answer("facts", atlas_facts(""));
+            core.request(draft_request(
+                &core,
+                json!({"sourceId": "m3", "intent": "reply", "tone": "friendly", "length": "short"}),
+            ))
+            .await
+            .unwrap();
+            run_jobs(&core).await;
+            let record = draft(&core, "ai:m3").unwrap();
+            let p = &record.data["provenance"]["voice"];
+            assert_eq!(p["examples"], 2);
+            assert_eq!(p["facts"].as_array().unwrap().len(), 2);
+            let mut v = serde_json::to_value(&record).unwrap();
+            v["revision"] = "rev-1".into();
+            v["updatedAt"] = 1_795_000_500.into();
+            v["data"]["provenance"]["at"] = 1_795_000_500.into();
+            crate::plugins::testkit::contract_fixture("draft-ai-voice.json", &v);
         }
     }
 }

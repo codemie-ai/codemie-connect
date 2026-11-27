@@ -273,6 +273,12 @@ pub struct MeetingSettings {
     pub done_days: i64,
     pub remind: bool,
     pub due_only_said: bool,
+    /// Which tab the meeting view opens on: `summary`, `transcript` or `notes`.
+    pub open_on: String,
+    /// Whether the meeting view shows action items.
+    pub action_items: bool,
+    /// Template or plugin ids pinned as summary tabs (up to 4).
+    pub summary_tabs: Vec<String>,
 }
 impl Default for MeetingSettings {
     fn default() -> Self {
@@ -297,6 +303,9 @@ impl Default for MeetingSettings {
             done_days: 14,
             remind: true,
             due_only_said: true,
+            open_on: "summary".into(),
+            action_items: true,
+            summary_tabs: Vec::new(),
         }
     }
 }
@@ -330,6 +339,15 @@ fn number(
         .filter(|n| range.contains(n))
         .ok_or_else(|| invalid(field, message))
 }
+/// A template or plugin id a summary tab may name: letters, digits and `-_.:`, up to 100 (the
+/// same shape `library_ops::valid_id` checks a template's own id against).
+fn template_ref(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
 /// An absolute path, or `None` for empty and null.
 fn path(v: &Value, field: &str, message: &str) -> Result<Option<String>> {
     if v.is_null() {
@@ -461,6 +479,33 @@ impl MeetingSettings {
                     next.done_days =
                         number(v, key, 1..=365, "Hide done tasks after 1 to 365 days.")?
                 }
+                "openOn" => {
+                    next.open_on = one_of(
+                        v,
+                        key,
+                        &["summary", "transcript", "notes"],
+                        "Choose Summary, Transcript or Notes.",
+                    )?
+                }
+                "actionItems" => next.action_items = flag(v, key)?,
+                "summaryTabs" => {
+                    let message = "Choose a template or a plugin to pin.";
+                    let list = v.as_array().ok_or_else(|| invalid(key, message))?;
+                    let mut tabs: Vec<String> = Vec::new();
+                    for item in list {
+                        let s = item
+                            .as_str()
+                            .filter(|s| template_ref(s))
+                            .ok_or_else(|| invalid(key, message))?;
+                        if !tabs.iter().any(|x| x == s) {
+                            tabs.push(s.into());
+                        }
+                    }
+                    if tabs.len() > 4 {
+                        return Err(invalid(key, "Pin up to 4 summaries."));
+                    }
+                    next.summary_tabs = tabs;
+                }
                 _ => return Err(invalid(key, "Unknown meeting setting.")),
             }
         }
@@ -484,7 +529,8 @@ mod tests {
                 "waitMin": 15, "skipShort": true, "keepVtt": true, "keepVersions": true, "review": true,
                 "onlyAttendees": true, "weMe": true, "askSpeakers": true, "glossarySource": "connect",
                 "glossaryFile": null, "tagsFile": null, "defaultTemplate": "meeting-notes", "columns": {},
-                "doneDays": 14, "remind": true, "dueOnlySaid": true})
+                "doneDays": 14, "remind": true, "dueOnlySaid": true, "openOn": "summary",
+                "actionItems": true, "summaryTabs": []})
         );
         // Older settings without the group, or with only part of it, read as the defaults.
         let settings: Settings = serde_json::from_value(json!({"theme": "dark"})).unwrap();
@@ -575,6 +621,42 @@ mod tests {
         gone.apply(&json!({"root": "/Volumes/Gone/Meetings", "waitMin": 20}))
             .unwrap();
         assert_eq!(gone.wait_min, 20);
+    }
+
+    #[test]
+    fn meeting_view_settings_validate() {
+        let mut s = MeetingSettings::default();
+        s.apply(&json!({"openOn": "notes"})).unwrap();
+        assert_eq!(s.open_on, "notes");
+        let e = s.apply(&json!({"openOn": "board"})).unwrap_err();
+        assert_eq!(e.code, "validation");
+        assert_eq!(e.field.as_deref(), Some("openOn"));
+        assert_eq!(e.message, "Choose Summary, Transcript or Notes.");
+        assert_eq!(s.open_on, "notes", "a refused update changes nothing");
+        // Duplicates are dropped in order.
+        s.apply(&json!({"summaryTabs": ["a", "a", "b"]})).unwrap();
+        assert_eq!(s.summary_tabs, vec!["a", "b"]);
+        // Five distinct entries after the dedupe are refused.
+        let e = s
+            .apply(&json!({"summaryTabs": ["a", "b", "c", "d", "e"]}))
+            .unwrap_err();
+        assert_eq!(e.field.as_deref(), Some("summaryTabs"));
+        assert_eq!(e.message, "Pin up to 4 summaries.");
+        for bad in [json!(["../x"]), json!([3]), json!(["x".repeat(101)])] {
+            let e = s.apply(&json!({"summaryTabs": bad})).unwrap_err();
+            assert_eq!(e.field.as_deref(), Some("summaryTabs"), "{bad}");
+            assert_eq!(e.message, "Choose a template or a plugin to pin.", "{bad}");
+        }
+        assert_eq!(
+            s.summary_tabs,
+            vec!["a", "b"],
+            "every refusal above changed nothing"
+        );
+        let e = s.apply(&json!({"actionItems": "yes"})).unwrap_err();
+        assert_eq!(e.field.as_deref(), Some("actionItems"));
+        assert!(s.action_items, "a refused update changes nothing");
+        s.apply(&json!({"actionItems": false})).unwrap();
+        assert!(!s.action_items);
     }
 
     #[test]

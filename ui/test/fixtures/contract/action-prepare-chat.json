@@ -1,0 +1,25 @@
+{
+  "oneOnOne": {
+    "account": "taylor@example.test",
+    "actionId": "action-1",
+    "expiresAt": 0,
+    "nonce": "nonce-1",
+    "review": {
+      "body": "Sounds good.",
+      "chatId": "chat-1",
+      "recipients": [
+        {
+          "displayName": "Priya Nair",
+          "id": "m-1"
+        },
+        {
+          "displayName": "Taylor Morgan",
+          "id": "m-2"
+        }
+      ],
+      "sourceId": "msg-3",
+      "title": "Design sync"
+    },
+    "workspaceId": "personal"
+  }
+}

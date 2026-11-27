@@ -6,7 +6,7 @@ import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
-import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
+import { active, attentionMessages, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, drawnGrid, tileDefs } from './view-today.js';
@@ -15,9 +15,11 @@ import { GRID, todayOf } from './today-grid.js';
 import { activateTab, loadDock, saveDock, setCollapsed, visibleTabs } from './dock-model.js';
 import { attachDock } from './dock-controller.js';
 import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from './view-inbox.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks, changeLine, replyStatusHtml, INBOX_DOCK } from './view-inbox.js';
+import { sendTarget, primaryAction, confirmLines, sendKeyAllowed } from './reply-model.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
+  startChange, changeRequest,
 } from './draft-state.js';
 import { settings, settingsTabFor, SETTINGS_GROUPS, SETTINGS_MENU } from './view-settings.js';
 import { trackPress } from './press.js';
@@ -33,12 +35,16 @@ import { createAnalyticsController, attachAnalyticsTips } from './analytics-cont
 import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
-import { newTasksView, previewTaskDelete, previewTaskSave } from './tasks-model.js';
-import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
+import { activeProvider, newTasksView, previewTaskDelete, previewTaskSave, tasksOf } from './tasks-model.js';
+import { datesTasks, foldOf, shownView } from './tasks-dates-model.js';
+import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
+import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
+import { createVoiceController, newVoiceView } from './voice-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash, previewJobCancel, previewMeetingDoc, previewMeetingSet, previewRun } from './meetings-model.js';
-import { renderShell, terminalButton, groupFolded, NAV_GROUPS } from './shell.js';
+import { seenToSend, openTarget, sendSeen } from './menu-bar.js';
+import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
 import { FitAddon } from '../vendor/addon-fit.mjs';
@@ -52,13 +58,33 @@ import { withAppOrigin } from './app-invoke.js';
 import { pluginUrl } from '../plugins/frame-url.js';
 import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
+import { createRemovalSwitch } from './task-provider-watch.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
+import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
+import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from './inbox-open.js';
+import { captureBar, isCaptureKey, newCaptureView } from './capture-model.js';
+import { createCaptureController } from './capture-controller.js';
+import { isAskKey, isStopKey, newAskView } from './ask-model.js';
+import { askPage, answeringLine, nextAskStatus } from './view-ask.js';
+import { createAskController } from './ask-controller.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
+// First paint, before the native snapshot loads: the mirrored view, so Compact's size tokens
+// apply at once instead of flashing Default.
+let firstView = 'default';
+try { firstView = readViewMirror(localStorage); } catch { /* default */ }
+root.dataset.view = firstView;
+document.documentElement.dataset.view = firstView;
 const rawInvoke = window.__TAURI__?.core?.invoke;
-const invoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
+const appInvoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
+// A tour build (CODEMIE_TOUR) puts the tour's gate in front of every call the window makes to
+// native: each workspace op is recorded, and one the tour's deny-list names (a send, a fetch, an
+// install, anything that opens Finder, Terminal, a browser or a picker) is refused before it is
+// sent (tour/runner.js).
+let tourGated = null;
+const invoke = appInvoke && ((cmd, args, options) => (tourGated || appInvoke)(cmd, args, options));
 // Any workspace call that finds the data folder unusable switches to the recovery page.
 const watched = invoke && (async (cmd, args) => {
   try {
@@ -87,13 +113,22 @@ const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',
   calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(),
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
+  // Compact Inbox: the row shown open (apart from the selected one) and its conversation, the row
+  // to select after a decision takes the open one away, threads shown whole ("Earlier"), and
+  // reply text typed in a box that left the screen, per draft key (both views).
+  openMessage: null, openKey: null, selectAfter: null, threadAll: new Set(), replyCarry: {},
+  // Today's "Needs your reply": the row shown open in place (both views) and its conversation.
+  todayOpen: null, todayOpenKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
-  ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
+  ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, chosen: {}, usage: null, error: '', tests: {}, testModels: {} },
   // Settings → General → Data location: the `data_location_get` answer (null until read).
   storage: { info: null, error: '', restarting: false },
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
   // options popover, and failed drafts the user dismissed.
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
+  // The reply box the user clicked or typed in (its draft key; the ⌘↩ gate), and each
+  // conversation's status line ("Saved on this device").
+  replyTouched: null, replyStatus: {},
   // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
   // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
@@ -106,11 +141,19 @@ const state = {
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
   meetingsSettings: newMeetingsSettingsView(),
+  // Settings › Your voice: the open style card or instruction editor (with what was typed), the
+  // skill import preview, busy flags (view state only; the voice is native's).
+  voice: newVoiceView(),
   // Today: Customize mode, undo and redo, the open options panel, the gallery search, renaming.
   today: newTodayView(),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
+  // Quick capture (⌘N): the bar's view state, its Task / Note choice kept for the session.
+  capture: newCaptureView(),
+  // Ask (⌘K): the menu field's words, list and About chip, the page it was opened from, the
+  // thread `#/ask/<id>` shows. The calendar event whose card is open (the About chip's event).
+  ask: newAskView(), openEvent: null,
 };
 let pluginHost = null;
 // Connect's terminal dock (terminal-dock.js), made with the plugin host.
@@ -149,7 +192,7 @@ const codemie = createCodemieController({
   claudeReady: () => claudeProfileReady(),
 });
 codemie.busy = () => codemieSetup.running() || codemieService.busy();
-// Settings → Claude detects CodeMie profiles natively (cached for 30 s): a profile added, renamed,
+// Settings › AI detects CodeMie profiles natively (cached for 30 s): a profile added, renamed,
 // removed or made active in Settings → CodeMie is detected again at once, so both tabs agree.
 let codemieProfilesSeen = null;
 codemieService.subscribe(() => {
@@ -172,6 +215,9 @@ let ready = false;
 let deferredNotification;
 let calendarScrollKey = '';
 let noteTimer;
+// The reply box's autosave: the pending timer and the saves in order (one at a time).
+let replySaveTimer;
+let replySaving = Promise.resolve();
 let searchTimer;
 let taskSearchTimer;
 let meetingSearchTimer;
@@ -187,9 +233,17 @@ let layoutHolds = 0;
 // The mouse button is down: an update redrawn between a click's mousedown and mouseup would
 // replace the control under the pointer and lose the click, so it waits for the mouseup.
 let pressing = false;
+// The Ask field opened or closed while the button was down (a click into it, or elsewhere): drawn
+// once the button is up, so the press isn't redrawn away (the field keeps its focus and caret).
+let askHeld = false;
+// What the Ask page's one live status says now (`nextAskStatus`), outside the page.
+let askStatus = null;
+// A focus the Ask field asked for while the button was down (a click into it selects its words):
+// applied after that render, once the click has placed its caret.
+let askFocusHeld = null;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
+const KEEP_FOCUS = new Set(['capture-mode', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -234,12 +288,20 @@ async function mutate(op, data = {}, workspaceId) {
     if (err?.code === 'stale_view') err.message = 'Your inbox or calendar updated while this was open. Review the latest details and try again.';
     throw err;
   } finally {
-    if (ready && !modalOpen()) await render();
+    // A save that ran while the mouse button is down (the reply box's blur on a press) renders
+    // after the click, like the updates held then: a redraw mid-press would swallow the click.
+    if (ready && !modalOpen() && pressing) heldRender = true;
+    else if (ready && !modalOpen()) await render();
     flushNotification();
     // A write shown by its preview settles when native answers, before the snapshot after it
     // lands. Draw that one too: a focused field (the drawer's owner, say) holds back the
     // store's own redraw, and what native added (the task's history) would wait for the next.
-    store.idle().then(() => { if (ready && !modalOpen()) render(); }).catch(() => {});
+    // Held like the render above while the mouse button is down.
+    store.idle().then(() => {
+      if (!ready || modalOpen()) return;
+      if (pressing) heldRender = true;
+      else render();
+    }).catch(() => {});
   }
 }
 
@@ -256,6 +318,20 @@ function applyTheme(theme) {
   if (legacyToggle) legacyToggle.checked = resolved === 'dark';
 }
 
+function applyView(view) {
+  root.dataset.view = view;
+  document.documentElement.dataset.view = view;
+  writeViewMirror(localStorage, view);
+}
+
+function setView(view) {
+  flushReplySave();
+  state.replyTouched = null;
+  applyView(view);
+  closeRow();
+  return mutate('settings_update', { view });
+}
+
 // ---------------------------------------------------------------- shell
 
 const shellMarkup = () => renderShell({
@@ -263,7 +339,7 @@ const shellMarkup = () => renderShell({
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(), sidebarFolded: sidebarFolded(),
-  meetingsHidden: state.meetings.hidden,
+  meetingsHidden: state.meetings.hidden, hiddenPages: snap().settings.hiddenPages || [], askState: state,
 });
 
 function shell() {
@@ -300,6 +376,9 @@ function captureScroll() {
     grid: q('.ws-tg-scroll')?.scrollTop,
     schedule: q('.ws-schedule-scroll')?.scrollTop,
     list: q('.ws-inbox-items')?.scrollTop || 0,
+    // The open Compact row's thread box keeps its place while the same row stays open.
+    thread: q('.ws-thread-compact')?.scrollTop || 0,
+    threadId: q('.ws-thread-compact')?.dataset.id,
     reader: q('.ws-read')?.closest('.ws-reader')?.scrollTop || 0,
     readerId: q('.ws-read')?.dataset.messageId,
     nav: q('.ws-settings-sidebar')?.scrollTop || 0,
@@ -352,6 +431,9 @@ function restoreScroll(saved) {
     if (top) body.scrollTop = top;
   }
   if (q('.ws-inbox-items')) q('.ws-inbox-items').scrollTop = saved.list;
+  const thread = q('.ws-thread-compact');
+  if (thread && thread.dataset.id === saved.threadId) thread.scrollTop = saved.thread;
+  else if (thread) showLatest(thread);
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;
   if (q('.ws-settings-sidebar')) q('.ws-settings-sidebar').scrollTop = saved.nav;
@@ -370,6 +452,16 @@ function restoreScroll(saved) {
     if (top) body.scrollTop = top;
   }
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
+}
+
+/** A Compact row's thread box, just opened: scrolled to its newest messages, but never past the
+ *  message the row stands for (`.ws-current`), which stays in view. */
+function showLatest(box) {
+  box.scrollTop = box.scrollHeight;
+  const current = box.querySelector('.ws-current');
+  if (!current) return;
+  const top = current.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+  if (top < box.scrollTop) box.scrollTop = Math.max(0, top - 4);
 }
 
 // Layout preferences of this Mac: locked layouts hide the grips and handles; the handles show on
@@ -404,6 +496,10 @@ function announce(text) {
   setTimeout(() => { live.textContent = text; }, 30);
 }
 
+/** The day (workspace zone) the Tasks page was last drawn on; the minute timer draws it again
+ *  once that day has passed. */
+let tasksDrawnDay = null;
+
 async function render() {
   if (layoutDrag) {
     heldRender = true;
@@ -415,6 +511,8 @@ async function render() {
   const reply = document.getElementById('reply-body');
   const replyKey = reply?.closest('form')?.dataset.key;
   const unsavedReply = reply && reply.value !== reply.defaultValue ? { key: replyKey, text: reply.value } : null;
+  // Words typed in the change line stay through the render (the line itself is redrawn).
+  const changeWords = document.getElementById('reply-change')?.value || '';
   // A reply box the user is in (or has typed in) is kept as it is, not recreated: its focus,
   // selection, undo history and IME composition survive the re-render around it.
   const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
@@ -429,30 +527,34 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
+  applyView(viewOf(s.settings));
   const locked = !!todayUi?.locked();
   applyLayoutPrefs(locked);
   // Find a setting starts empty each time Settings opens.
   if (state.route !== 'settings') state.settingsQuery = '';
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
-    meetingsHidden: state.meetings.hidden,
+    meetingsHidden: state.meetings.hidden, view: viewOf(s.settings),
     today: { ...state.today, locked },
     dock: { layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])), locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     menu: { ...settingsMenu(), folded: foldedGroups(), query: state.settingsQuery },
     layout: layoutContext(),
     codemieCard: codemie.todayCard(),
+    // Settings › Meetings › Note templates: the summary plugins "Pin a summary" may offer.
+    minutesPlugins: pluginHost?.minutesPlugins?.() || [],
   };
   if (state.route === 'inbox') ensureSelection(s);
-  // The hash names the meeting shown, also when the list picked it, and the tab chosen last, one
-  // in view (`#/meetings/<id>/<tab>`, `#/automations/<tab>`).
-  if (state.route === 'meetings') {
-    meetingsUi.ensureSelection();
-    meetingsUi.follow();
-  }
+  if (state.route === 'today') followTodayRow(s);
+  // The hash names the meeting shown, also when the list picked it, and its pane
+  // (`#/meetings/<id>/<pane>`), or the tab chosen last, one in view (`#/automations/<tab>`).
+  if (state.route === 'meetings') meetingsUi.ensureSelection();
   if (state.route === 'automations') automationsUi.follow();
   if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
-  if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
+  if (['inbox', 'today', 'automations', 'ask'].includes(state.route)) readClaude();
+  // The open Ask thread is read again when the snapshot moved for it (drawn when it lands).
+  if (state.route === 'ask') askUi?.refresh().catch(fail);
+  if (state.route === 'tasks') tasksDrawnDay = dayKey(Date.now(), s.settings.timeZone);
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
@@ -460,10 +562,11 @@ async function render() {
         : state.route === 'automations' ? automations(s, ctx)
           : state.route === 'analytics' ? analyticsView(state.analytics, { ...analyticsUi.viewData(), banners: ctx.banners, profileNames: state.ai.profiles })
           : state.route === 'tasks' ? tasksPage(s, ctx)
-          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [] })
+          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [], taskLabel: meetingsUi.taskLabel() })
           : state.route === 'plugin' ? pluginPageHtml()
+          : state.route === 'ask' ? askPage(state, s, askUi?.thread(), { wide: (state.ask.wide = askWide(s)), now: Date.now(), profiles: state.ai.profiles, ai: state.ai })
             : settings(s, ctx);
-  const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
+  const next = keepReply && ['inbox', 'today'].includes(state.route) ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
     Object.assign(next.querySelector('#workspace-page'), { className: pageClass, innerHTML: html });
@@ -476,15 +579,31 @@ async function render() {
     page.className = pageClass;
     page.innerHTML = html;
   }
+  // The quick-capture bar lives outside #workspace-app (not redrawn): laid over the new main area.
+  drawCapture();
+  syncAskStatus();
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
   }
   const freshReply = document.getElementById('reply-body');
-  if (freshReply !== keepReply && unsavedReply && freshReply?.closest('form')?.dataset.key === unsavedReply.key) freshReply.value = unsavedReply.text;
+  const freshKey = freshReply?.closest('form')?.dataset.key;
+  if (freshReply !== keepReply && unsavedReply && freshKey === unsavedReply.key) freshReply.value = unsavedReply.text;
+  // Text typed in a box that left the screen (another row, another page, a view switch) is kept
+  // for that conversation and put back the next time its box is drawn with nothing newer in it.
+  if (unsavedReply && freshKey !== unsavedReply.key) state.replyCarry[unsavedReply.key] = unsavedReply.text;
+  if (freshReply && freshReply !== keepReply && freshReply.value === freshReply.defaultValue && Object.hasOwn(state.replyCarry, freshKey)) {
+    freshReply.value = state.replyCarry[freshKey];
+    delete state.replyCarry[freshKey];
+  }
+  // A box drawn for another conversation (or none) is not the one the user touched.
+  if (state.replyTouched !== freshKey) state.replyTouched = null;
   syncReplyBox(freshReply);
+  const freshChange = document.getElementById('reply-change');
+  if (changeWords && freshChange && freshKey === replyKey) freshChange.value = changeWords;
   for (const menu of openMenus) root.querySelector(`details[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
-  if (state.route === 'inbox') rememberDraftBaseline(s);
+  root.querySelectorAll('.ws-mtg-strip > .ws-menu[open]').forEach(fitSectionMenu);
+  if (['inbox', 'today'].includes(state.route)) rememberDraftBaseline(s);
   restoreScroll(saved);
   measureToday();
   // A background update keeps keyboard focus on the same control, and only on that one: when
@@ -509,19 +628,65 @@ async function render() {
   if (state.route === 'analytics') drawAnalyticsCharts();
   if (state.route === 'meetings') {
     showFocusLine();
+    if (state.meetings.focusColumn) {
+      state.meetings.focusColumn = false;
+      focusFirst(['.ws-mtg-items [data-action="meeting-item-add-open"]']);
+    }
     meetingsUi.load().catch(fail);
   }
   if (state.route === 'settings' && state.settingsTab.startsWith('meetings-')) meetingsSettingsUi.load().catch(fail);
   lastDraftSignature = draftSignature(s);
   renderSheet();
   hideTip();
+  sendSeenMarks(s);
+}
+
+// ---------------------------------------------------------------- menu-bar seen marks
+
+// Marks already sent (or refused) this run, keyed `"<revision>|<key>"` (design §6): a mark goes
+// out at most once per snapshot revision, even across renders and focus changes. A refusal keeps
+// its key (review I1): the mark is due again only once the revision moves, not on the next render
+// at the same one — see `sendSeen`'s doc in menu-bar.js for why.
+const menuBarSeenSent = new Set();
+
+/** Whether the Automation results widget is in Today's own grid now (`drawn.placed`, not
+ *  `drawn.below`'s auto-appended cards — "automations" is never one of those: `drawnGrid`'s
+ *  `wanted` list is `['meetings', PLUGINS_CARD]` only). Checked apart from the general `onToday`
+ *  on purpose (review M4): design §6 ties the seen mark to "Today with its card", and ruling 7's
+ *  "If wrong" warns against clearing results a below-the-grid card left the user scrolling past;
+ *  `drawn.placed` is unambiguously "the grid" by `drawnGrid`'s own naming. */
+function automationsCardOnToday() {
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  const drawn = drawnGrid(snap(), todayOf(current(), defs), defs, { pluginsKnown: !!state.pluginsKnown, meetingsHidden: state.meetings.hidden });
+  return drawn.placed.some(it => it.id === 'automations');
+}
+
+/** After a render, while the window is in front, focused and nothing is being typed in or in a
+ *  dialog, sends the `menu_bar_seen` marks `seenToSend` decides on through `sendSeen`; a failure
+ *  is ignored (the next render, at a later revision, tries again). */
+function sendSeenMarks(s) {
+  // Keys from an earlier revision are dead weight (review M1): a mark only ever retries at a new
+  // one, so nothing later ever looks an old key up again.
+  for (const key of menuBarSeenSent) if (!key.startsWith(`${s.revision}|`)) menuBarSeenSent.delete(key);
+  const marks = seenToSend({
+    snapshot: s,
+    route: state.route,
+    openMeeting: state.meetings.selected,
+    todayCards: state.route === 'today' && automationsCardOnToday() ? ['automations'] : [],
+    hidden: state.meetings.hidden,
+    focused: document.visibilityState === 'visible' && document.hasFocus(),
+    editing: editing(),
+    modal: modalOpen(),
+    sent: menuBarSeenSent,
+  });
+  sendSeen(marks, s.revision, menuBarSeenSent, payload => mutate('menu_bar_seen', payload));
 }
 
 /** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
 let focusLineTimer = null;
 function showFocusLine() {
   const line = state.meetings.focusLine;
-  if (line === null || line === undefined || state.meetings.tab !== 'transcript') return;
+  if (line === null || line === undefined || state.meetings.pane !== 'transcript') return;
   const el = document.getElementById(`meeting-line-${line}`);
   if (!el) return;
   el.scrollIntoView({ block: 'center' });
@@ -543,9 +708,12 @@ function renderSheet() {
   if (!html) {
     host?.querySelector('.cm-sheet')?.remove();
     root.inert = false;
-    if (pluginLayer) pluginLayer.inert = false;
+    // The quick-capture bar keeps the frames out of reach while it is open (drawCapture).
+    if (pluginLayer) pluginLayer.inert = state.capture.open;
     return;
   }
+  // The sheet is a dialog over everything: the capture bar closes under it.
+  if (state.capture.open) captureUi?.close({ refocus: false });
   if (!host) {
     host = document.createElement('div');
     host.id = 'cm-sheet-host';
@@ -599,15 +767,93 @@ document.addEventListener('keydown', ev => {
 function ensureSelection(s) {
   if (state.lane === 'decisions') return;
   const items = collapseChats(filteredMessages(s, state).filter(m => m.data.lane === state.lane)).items;
-  // Follow the conversation when a chat's newest message changes under the selection.
-  const pick = items.find(m => m.id === state.selectedMessage) || items.find(m => messageKey(m) === state.selectedKey) || items[0];
+  // After Done, Snooze or a lane move in Compact: the row that followed the one that left.
+  const after = state.selectAfter && items.find(m => m.id === state.selectAfter);
+  state.selectAfter = null;
+  // Follow the conversation when a chat's newest message changes under the selection (and the
+  // open row the same way).
+  const pick = after || items.find(m => m.id === state.selectedMessage) || items.find(m => messageKey(m) === state.selectedKey) || items[0];
   state.selectedMessage = pick?.id || null;
   state.selectedKey = pick ? messageKey(pick) : null;
+  const { open, openKey } = followOpen(items, { open: state.openMessage, openKey: state.openKey }, messageKey);
+  state.openMessage = open;
+  state.openKey = openKey;
+}
+
+const compactView = () => viewOf(snap().settings) === 'compact';
+
+/** The message a Retry in the reply box or summary of `el`'s row is for (inbox-open.js). */
+const retrySourceOf = (sourceId, el) => retrySource({
+  sourceId: sourceId && getRecord('message', sourceId) ? sourceId : null,
+  rowId: el?.closest?.('form[data-form="reply"]')?.dataset.id || el?.closest?.('[data-message-id]')?.dataset.messageId || null,
+  compact: compactView(), selected: state.selectedMessage, open: state.openMessage,
+});
+
+/** Today's open row on the "Needs your reply" list, followed like the Compact one (`followOpen`). */
+function followTodayRow(s) {
+  const { open, openKey } = followOpen(attentionMessages(s), { open: state.todayOpen, openKey: state.todayOpenKey }, messageKey);
+  Object.assign(state, { todayOpen: open, todayOpenKey: openKey });
+}
+
+/** Opens Today's row `id` in place (null closes it); one row is open at a time. */
+function openTodayRow(id) {
+  flushReplySave();
+  const m = id && getRecord('message', id);
+  Object.assign(state, { todayOpen: m ? id : null, todayOpenKey: m ? messageKey(m) : null });
+  return render().then(fitTodayRow);
+}
+
+/**
+ * Today's open row (reply design ruling 20): keeps the widget's own scroll area (`.ws-tile-body`)
+ * showing the composer in full, with the header too when there is room for both — the minimal
+ * scroll that brings the composer's bottom into view also satisfies that, since the header sits
+ * above it. When the header, the (already capped) thread and the composer together do not fit
+ * even so, `.ws-msg-tight` collapses the thread to its last message, with Earlier to show more
+ * (CSS, workspace.css). A no-op off Today or with no row open.
+ */
+function fitTodayRow() {
+  if (state.route !== 'today') return;
+  const body = root.querySelector('.ws-attention .ws-tile-body');
+  const row = root.querySelector('.ws-attention .ws-msg-open');
+  const header = row?.querySelector('.ws-msg-row');
+  const crowBody = row?.querySelector('.ws-crow-body');
+  const composer = crowBody?.lastElementChild;
+  if (!body || !row || !header || !crowBody || !composer) return;
+  row.classList.remove('ws-msg-tight');
+  const thread = crowBody.querySelector('.ws-thread-compact');
+  const fits = header.offsetHeight + (thread?.offsetHeight || 0) + composer.offsetHeight <= body.clientHeight;
+  row.classList.toggle('ws-msg-tight', !fits);
+  const top = body.getBoundingClientRect().top;
+  const composerBottom = composer.getBoundingClientRect().bottom - top + body.scrollTop;
+  const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
+  body.scrollTop = Math.min(maxScroll, Math.max(0, composerBottom - body.clientHeight));
+}
+
+/** Closes the open Compact row. */
+function closeRow() {
+  state.openMessage = null;
+  state.openKey = null;
+}
+
+/** Applies a Compact `{selected, open}` move (inbox-open.js) and draws it. */
+function moveRows({ selected, open }) {
+  flushReplySave();
+  const keyOf = id => { const m = id && getRecord('message', id); return m ? messageKey(m) : null; };
+  Object.assign(state, { selectedMessage: selected, selectedKey: keyOf(selected), openMessage: open, openKey: keyOf(open) });
+  return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
+}
+
+/** Before Done, Snooze or a lane move takes row `id` away in Compact: nothing stays open and the
+ *  row after it (else before it) is selected next. */
+function leaveRow(id) {
+  if (!compactView()) return;
+  state.selectAfter = nextAfter([...root.querySelectorAll('.ws-inbox-row[data-id]')].map(r => r.dataset.id), id);
+  closeRow();
 }
 
 // ---------------------------------------------------------------- navigation
 
-async function savePendingNote() {
+export async function savePendingNote() {
   clearTimeout(noteTimer);
   const el = document.getElementById('today-note');
   if (!el || el.value === el.defaultValue) return;
@@ -638,9 +884,19 @@ async function saveNote(el) {
 
 async function route(name, tab, pluginPath = null) {
   await savePendingNote();
+  flushReplySave();
   state.meetings.rowMenu = null;
+  // Arriving at the Inbox without a target finds every row closed; Today's row closes the same way.
+  if (state.route === 'inbox' && name !== 'inbox') closeRow();
+  if (state.route === 'today' && name !== 'today') Object.assign(state, { todayOpen: null, todayOpenKey: null });
+  // A box touched on one page is not the one another page draws (⌘↩ waits for a new touch there).
+  if (state.route !== name) state.replyTouched = null;
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
+  if (state.route === 'ask') state.ask.threadId = askThreadOf(tab);
+  // Leaving for another page forgets where ⌘K came from (the Ask page keeps it for its Back,
+  // which reads it before it leaves).
+  else Object.assign(state.ask, { focusBack: null, backFocus: null });
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
   state.pluginPath = onPluginsTab ? pluginPath : null;
   state.pluginPage = null;
@@ -665,11 +921,33 @@ async function route(name, tab, pluginPath = null) {
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
   if (onPluginsTab) pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
+  if (state.route === 'tasks') syncTasks();
+  // An Ask thread: read, then focus its newest turn's heading.
+  if (state.route === 'ask') askUi?.openThread()?.catch(fail);
 }
 
-/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<tab>` for a meeting. */
+/** Asks the active task provider for a pull (Tasks open, the window back in front); native
+ *  runs it at most once in 30 s. Local has nothing to pull. */
+function syncTasks() {
+  const s = store?.get().snapshot;
+  if (s && activeProvider(s) !== 'local') store.query('task_sync_now', {}).catch(() => {});
+}
+
+/** A thread id from an `#/ask/<id>` hash, or null. */
+function askThreadOf(part) {
+  try {
+    const id = part ? decodeURIComponent(part) : '';
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<pane>` for a meeting,
+ *  `#/ask/<id>` for an Ask thread. */
 function routeHash() {
-  if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.tab);
+  if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.pane);
+  if (state.route === 'ask') return `#/ask${state.ask.threadId ? `/${encodeURIComponent(state.ask.threadId)}` : ''}`;
   return `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`;
 }
 
@@ -682,6 +960,7 @@ const PLUGIN_ITEM = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 async function routePlugin(id, activity, rest = '') {
   if (!PLUGIN_ID.test(id) || !PLUGIN_ITEM.test(activity)) return route('today');
   await savePendingNote();
+  if (state.route === 'inbox') closeRow();
   state.route = 'plugin';
   state.pluginPage = { id, activity, route: rest };
   state.pluginPath = null;
@@ -702,10 +981,18 @@ function goHash(hash) {
   if (head === 'settings') return route('settings', a);
   if (head === 'meetings') {
     const target = parseHash(`#/${[head, a, b].filter(x => x !== undefined).join('/')}`);
-    if (target.meetingId) return meetingsUi.open(target.meetingId, target.tab);
+    // An old link's tab is the same pane (/notes, /transcript, /files, /tasks); none is the setting's.
+    if (target.meetingId) return meetingsUi.open(target.meetingId, target.pane);
   }
   return route(ROUTES.includes(head) ? head : 'today', a);
 }
+
+// Removing the active task provider's plugin switches Connect to Local, once (design §11, ruling
+// 16): nothing is deleted, the cache and the outbox stay, and come back if it is installed again.
+// `installedChanged` below is told of the same removal more than once (its own direct read, the
+// Plugins tab reopening, the native `plugins:reloaded` event), so the actual switch runs through
+// this guard, which drops a telling that is already in flight for the same provider.
+const switchRemovedProviderToLocal = createRemovalSwitch(() => mutate('task_provider_set', { provider: 'local' }));
 
 const pluginsUi = createPluginsController({
   request: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
@@ -713,9 +1000,20 @@ const pluginsUi = createPluginsController({
   openModal,
   toast,
   installedChanged: list => {
+    // Checked on every list this gives, not only a change while the window is open, so a plugin
+    // removed while Connect was closed is caught at boot too (the first `loadInstalled` also calls
+    // this). The name comes from the list this replaces (Settings → Plugins' own, "Todoist"),
+    // never `taskProvider.name`, which already reads "Connect" once the plugin is gone from
+    // `available` too.
+    const active = snap().taskProvider?.active;
+    const removedName = state.installedPlugins.find(p => `plugin:${p.id}` === active)?.name;
+    const stillIs = list.some(p => `plugin:${p.id}` === active);
     state.installedPlugins = list;
     state.pluginsKnown = true;
     pluginHost?.sync(list);
+    switchRemovedProviderToLocal(active, stillIs)
+      ?.then(() => toast(`${removedName || 'That plugin'} was removed, so tasks are back in Connect.`, 'info'))
+      .catch(fail);
   },
   navigate: path => route('settings', 'plugins', path),
 });
@@ -918,9 +1216,12 @@ async function loadAi() {
   if (state.ai.status !== 'ready') state.ai.status = 'loading';
   if (aiTabOpen() && !modalOpen()) await render();
   try {
+    // Settings › AI draws a row per enabled plugin that asks for AI: the installed list is read
+    // again beside it (drawn when it lands), never holding up the profiles.
+    pluginsUi.loadInstalled().catch(() => {});
     const [status, usage] = await Promise.all([store.query('ai_status', { refresh: true }), store.query('ai_usage', {}).catch(() => null)]);
     if (load !== aiLoads) return;
-    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, usage, error: '' });
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {}, usage, error: '' });
   } catch (err) {
     if (load !== aiLoads) return;
     Object.assign(state.ai, { status: 'error', error: err?.message || String(err) });
@@ -932,6 +1233,7 @@ async function saveAiSettings(next) {
   try {
     const result = await store.mutate('ai_settings_save', next);
     state.ai.settings = result.settings;
+    state.ai.chosen = result.chosen || {};
   } catch (err) {
     loadAi().catch(() => {});
     throw err;
@@ -971,14 +1273,14 @@ async function askClaudeChoice() {
     fail(err);
     return null;
   }
-  Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
+  Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
   // A CodeMie profile Settings → CodeMie found signed out is not offered as ready.
   const offered = withCodemieSignIn(status.profiles, codemie.signIn());
   const anyReady = offered.some(p => p.state === 'ready');
   return new Promise(resolve => {
     let chosen = null;
     openModal({
-      title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → Claude.' : '',
+      title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → AI.' : '',
       body: chooserBody(offered), submit: anyReady ? 'Choose' : null, cancel: anyReady ? 'Cancel' : 'Close', size: 'md',
       onSubmit: async (_form, dialog) => {
         const id = dialog.dataset.choice;
@@ -1022,9 +1324,9 @@ function readClaude({ now = false, detect = false } = {}) {
   claudeRead = store.query('ai_status', { refresh: plan.detect }).then(status => {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
-    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
-    if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
-  }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
+    if (changed && ['inbox', 'today', 'automations', 'ask'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
+  }).catch(() => { /* drafts stay offered; Settings › AI explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
 }
 
@@ -1066,7 +1368,12 @@ function renderAround(container, next, keep) {
 
 const draftUi = key => (state.drafts[key] ||= {});
 const rememberedOptions = channel => readOptions(localPref(optionsKey(channel), null), channel);
-const inboxMessage = s => (state.route === 'inbox' && state.selectedMessage ? s.records.find(r => r.kind === 'message' && r.id === state.selectedMessage) : null);
+/** The message whose reply box is on screen: Today's open row; in the Inbox the open row in
+ *  Compact, the selected one in Default. */
+const inboxMessage = s => {
+  const id = state.route === 'today' ? state.todayOpen : state.route !== 'inbox' ? null : viewOf(s.settings) === 'compact' ? state.openMessage : state.selectedMessage;
+  return id ? s.records.find(r => r.kind === 'message' && r.id === id) : null;
+};
 
 /** What re-renders the open reply box even while the user types in it: its draft job and draft. */
 function draftSignature(s) {
@@ -1095,10 +1402,17 @@ function applyArrivedDraft(s) {
   state.drafts[key] = next.ui;
   if (next.action === 'fill' && field.value !== next.text) {
     field.value = next.text;
+    // Text the app put in the box is not the user's: ⌘↩ waits for their next click or keystroke.
+    disarmSendKey(key);
     syncReplyBox(field);
   }
-  if (next.save != null) saveReply(m, next.save).catch(fail);
+  if (next.save != null) queueReplySave(m, next.save).catch(fail);
   return true;
+}
+
+/** ⌘↩ no longer sends this conversation's reply until the user clicks or types in its box again. */
+function disarmSendKey(key) {
+  if (state.replyTouched === key) state.replyTouched = null;
 }
 
 /** Remembers which text in the box came from Claude, so editing it later counts as the user's. */
@@ -1107,16 +1421,31 @@ function rememberDraftBaseline(s) {
   if (!m) return;
   const key = draftKeyOf(m);
   const ui = draftUi(key);
+  // A change request in flight compares its result with the text it started from (`startChange`).
+  if (ui.changeFrom != null) return;
   const box = replyBox({ manual: savedReply(s, m), ai: latestDraft(s, key), ui });
   ui.baseline = box.fromAi ? box.text : null;
 }
 
-/** Queues a draft; the first draft without a chosen Claude opens the chooser, then retries once. */
-async function startDraft(m, options, instructions = '') {
+/** A change request ended without filling the box (stopped, failed and dismissed, the chooser
+ *  closed, another draft asked for): its result can no longer offer a Restore. */
+function endChange(key) {
+  if (key && state.drafts[key]) state.drafts[key].changeFrom = null;
+}
+
+/**
+ * Queues a draft (or, with `request`, a change of the current text); the first draft without a
+ * chosen Claude opens the chooser, then retries once.
+ */
+async function startDraft(m, options, instructions = '', request = null) {
   if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+  const key = draftKeyOf(m);
+  // A fresh draft is not a change: its fill offers no Restore of an earlier change's text.
+  if (request?.revise == null) endChange(key);
   try {
-    await withClaudeChoice(() => mutate('ai_draft', draftRequest(m, options, instructions)));
+    await withClaudeChoice(() => mutate('ai_draft', request || draftRequest(m, options, instructions)));
   } catch (err) {
+    endChange(key);
     // Closing the chooser is an answer, not an error.
     if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
     throw err;
@@ -1148,24 +1477,88 @@ async function saveReply(m, text) {
 }
 
 /**
- * Keeps the reply box in step with its text: it grows to fit a draft, and Claude's bracketed
- * choices still in it are re-read as the user types.
+ * Saves the reply box on this device now when its text changed since the last save: the autosave
+ * 1.5 s after typing stops, and at once before the box leaves the screen (another row, a route
+ * or view change, the window hidden). The text is read now, so a render right after loses nothing.
+ */
+function flushReplySave(field = document.getElementById('reply-body')) {
+  const form = field?.closest?.('form[data-form="reply"]');
+  const m = form && store?.get() && getRecord('message', form.dataset.id);
+  if (!m || field.value === field.defaultValue) {
+    clearTimeout(replySaveTimer);
+    replySaveTimer = null;
+    return replySaving;
+  }
+  const { key } = form.dataset;
+  const text = field.value;
+  return queueReplySave(m, text).then(() => {
+    field.defaultValue = text;
+    delete state.replyCarry[key];
+    showReplyStatus(key, 'Saved on this device');
+  }).catch(fail);
+}
+
+/**
+ * Every save of a reply goes through here, one at a time and in order: the autosave, Send's save
+ * before the review, a draft filling the box, Keep/Replace/Restore. A pending autosave is
+ * dropped (the caller's save is newer), and text already saved is not saved again. The returned
+ * promise fails with the save; the queue goes on.
+ */
+function queueReplySave(m, text) {
+  clearTimeout(replySaveTimer);
+  replySaveTimer = null;
+  const run = replySaving.then(() => ((savedReply(snap(), m)?.data.text || '') === text ? undefined : saveReply(m, text)));
+  replySaving = run.catch(() => {});
+  return run;
+}
+
+/** Writes a conversation's status line (text, or `{ text, tone, url }`), on screen at once and in
+ *  the next render. */
+function showReplyStatus(key, status) {
+  state.replyStatus[key] = status;
+  const line = root.querySelector(`form[data-form="reply"][data-key="${CSS.escape(key)}"] .ws-reply-status`);
+  const m = line && getRecord('message', line.closest('form').dataset.id);
+  if (m) line.outerHTML = replyStatusHtml(status, m);
+}
+
+/**
+ * Keeps the reply box in step with its text: it grows to fit a draft, the ✦ hint shows only while
+ * it is empty, the change line only while it has text, the send or copy button waits for text,
+ * and Claude's bracketed choices still in it are re-read as the user types.
  */
 function syncReplyBox(field) {
   if (!field) return;
   field.style.height = 'auto';
   field.style.height = `${Math.min(Math.max(field.scrollHeight + 2, 88), 360)}px`;
   const form = field.closest('form');
+  const hasText = !!field.value;
+  const hint = form?.querySelector('#reply-hint');
+  if (hint) {
+    // A running draft or a gone item keeps the hint hidden (the render decided).
+    const show = !hasText && !field.disabled && !form.querySelector('.ws-draft-running');
+    hint.hidden = !show;
+    if (show) field.setAttribute('aria-describedby', 'reply-hint');
+    else field.removeAttribute('aria-describedby');
+  }
+  const change = form?.querySelector('.ws-reply-change');
+  if (hasText && !change) form?.querySelector('.ws-reply-bar')?.insertAdjacentHTML('beforebegin', changeLine({ disabled: field.disabled || !!form.querySelector('.ws-draft-running') }));
+  else if (!hasText && change && !change.contains(document.activeElement)) change.remove();
+  const primary = form?.querySelector('[data-needs-text]');
+  // A send in flight keeps Send disabled through any re-render: one click, one message.
+  if (primary && !primary.hasAttribute('data-locked')) primary.disabled = !field.value.trim() || replyInFlight.has(form.dataset.key);
   const checks = form?.querySelector('[data-draft-checks]');
   if (!checks || !store?.get()) return;
   checks.innerHTML = draftChecks(field.value, latestDraft(snap(), form.dataset.key)?.data.text);
   checks.closest('.ws-draft-todo').hidden = !checks.innerHTML.trim() && !form.querySelector('.ws-draft-questions');
 }
 
-/** Anchors the options popover to Draft with AI, below it when it fits, else above. */
+/** The ⋯ of the reply's action line: the options popover's anchor, and where focus returns. */
+const draftAnchor = () => root.querySelector('form[data-form="reply"] [data-menu="reply-more"] > summary');
+
+/** Anchors the options popover to the action line's ⋯, below it when it fits, else above. */
 function placeDraftPopover() {
   const pop = document.getElementById('draft-options');
-  const trigger = root.querySelector('[data-action="ai-draft-options"]');
+  const trigger = draftAnchor();
   if (!pop || !trigger) return;
   const t = trigger.getBoundingClientRect();
   const margin = 12;
@@ -1188,19 +1581,18 @@ async function openDraftPopover(m) {
 /**
  * Closes the popover in place, so a click elsewhere still lands on what was under the
  * pointer; updates held while it was open render after that click (or at once from the
- * keyboard), then focus returns to Draft with AI.
+ * keyboard), then focus returns to the action line's ⋯.
  */
 async function closeDraftPopover(focusTrigger = true) {
   if (!state.draftPopover) return;
   state.draftPopover = null;
   document.getElementById('draft-options')?.remove();
-  root.querySelector('[data-action="ai-draft-options"]')?.setAttribute('aria-expanded', 'false');
   if (!focusTrigger) {
     if (heldRender) document.addEventListener('mouseup', () => setTimeout(flushHeldRender, 0), { once: true, capture: true });
     return;
   }
   if (heldRender) await render();
-  root.querySelector('[data-action="ai-draft-options"]')?.focus();
+  draftAnchor()?.focus();
 }
 
 function flushHeldRender() {
@@ -1224,6 +1616,7 @@ function confirmUnfinished(parts, { submit, then }) {
     submit,
     cancel: 'Edit reply',
     size: 'sm',
+    returnCancels: true,
     onSubmit: async (_form, dialog) => {
       dialog.close();
       await then();
@@ -1345,10 +1738,31 @@ function focusFirst(selectors, { scroll = false } = {}) {
 
 const tasksUi = store && createTasksController({
   state, snap, mutate, render, openModal, toast,
-  openMeeting: (id, tab, line) => openMeeting(id, tab, line),
+  openMeeting: (id, pane, line) => openMeeting(id, pane, line),
   openMessage: id => handle('open-message', { dataset: { id } }),
   focus: focusFirst,
   setPref: setLocalPref,
+  // Nudge (By date): the conversation opens with its reply box holding the line, not saved and
+  // not sent (⌘↩ waits for a touch, Send for its review). A box with words already keeps them.
+  openReply: async (id, text) => {
+    const m = getRecord('message', id);
+    if (!m) throw new Error('This conversation is no longer in your Inbox.');
+    const key = draftKeyOf(m);
+    const s = snap();
+    const box = replyBox({ manual: savedReply(s, m), ai: latestDraft(s, key), ui: draftUi(key) });
+    if (!box.text.trim() && !Object.hasOwn(state.replyCarry, key)) state.replyCarry[key] = text;
+    await handle('open-message', { dataset: { id } });
+    document.getElementById('reply-body')?.focus({ preventScroll: true });
+  },
+  // Settings › Tasks's "Get your token in Todoist ↗" opens through Connect's own link
+  // confirmation (Open in Todoist ↗ is the task's own link: `open_source`).
+  openLink: (url, name, id) => confirmPluginLink(url, name, id),
+  query: (op, data) => store.query(op, data),
+  // Settings › Tasks: the token and the project/label settings are a plugin's own (`set_setting`,
+  // `set_enabled` for Turn on), read back through the same installed list Settings → Plugins uses.
+  pluginRequest: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
+  refreshInstalled: () => pluginsUi.loadInstalled(),
+  installed: () => pluginsUi.ui.installed,
 });
 if (tasksUi) {
   attachBoardDrag(document, tasksUi, {
@@ -1359,6 +1773,16 @@ if (tasksUi) {
     fail,
   });
 }
+
+// ---------------------------------------------------------------- Settings › Your voice
+
+const voiceUi = store && createVoiceController({
+  state, snap, mutate, render, openModal, toast,
+  query: (op, data) => store.query(op, data),
+  pluginsRequest: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
+  go: hash => goHash(hash),
+  focus: focusFirst,
+});
 
 // ---------------------------------------------------------------- Today layout (spec "Interactions")
 
@@ -1374,14 +1798,15 @@ if (todayUi) {
 
 // ---------------------------------------------------------------- page sections (spec "Page sections")
 
-// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v1`), read once and
-// kept here. With nothing stored yet, Calendar takes the old calendar list choice
-// (`codemie.calendar.sidebar`) and Meetings the old hidden list (`codemie.meetings.wide`), which
-// are no longer written.
+// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v<version>`), read
+// once and kept here. With nothing stored yet, Calendar takes the old calendar list choice
+// (`codemie.calendar.sidebar`), and Meetings the list's width and fold from its version 1 layout
+// (`codemie.layout.meetings.v1`) or the old hidden list (`codemie.meetings.wide`), none of which
+// are written again.
 const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK, meetings: MEETINGS_DOCK, automations: AUTOMATIONS_DOCK };
 const DOCK_LEGACY = {
   calendar: () => (localPref('codemie.calendar.sidebar', 'true') === 'false' ? { collapse: ['cal-side'] } : null),
-  meetings: () => (localPref('codemie.meetings.wide', 'false') === 'true' ? { collapse: ['mtg-list'] } : null),
+  meetings: () => legacyMeetingsLayout(localPref('codemie.layout.meetings.v1', null), localPref('codemie.meetings.wide', 'false') === 'true'),
 };
 const dockStorage = { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
 const dockLayouts = {};
@@ -1389,7 +1814,7 @@ const docks = {
   get: page => (dockLayouts[page] ||= loadDock(dockStorage, page, DOCKS[page], DOCK_LEGACY[page]?.() || null)),
   set: (page, layout) => {
     dockLayouts[page] = layout;
-    saveDock(dockStorage, page, layout);
+    saveDock(dockStorage, page, layout, DOCKS[page]);
   },
 };
 
@@ -1428,7 +1853,6 @@ const dockUi = store && attachDock(document, {
       const was = visibleTabs(docks.get(page));
       docks.set(page, layout);
       const fresh = visibleTabs(layout).filter(tab => !was.includes(tab));
-      if (page === 'meetings') meetingsUi.follow(fresh);
       if (page === 'automations') automationsUi.follow(fresh)?.catch(fail);
     },
   },
@@ -1605,10 +2029,285 @@ document.addEventListener('dblclick', ev => {
   setSettingsMenu({ collapsed: false, width: SETTINGS_MENU.def }, 'Settings menu width reset').then(focusEdge).catch(fail);
 });
 
-// ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the Settings menu's edge,
-// Enter toggles it and ← → resize it.
+// ---------------------------------------------------------------- quick capture (ask-capture § 9)
+
+// The bar sits under the top bar, over the page, so the page never moves. Like the setup sheet it
+// lives outside #workspace-app (`#ws-capture-host` in <body>, which a redraw never touches) and
+// above the plugin layer, whose frames it makes inert while open: a click where a frame is lands
+// on the page and closes the bar. `drawCapture` draws it from `state.capture`, laid over the main
+// area, swapping its parts in place around the box and the line (a live region), which stay.
+let captureReturn = null;
+const captureUi = store && createCaptureController({
+  state, snap, mutate, query: (op, data) => store.query(op, data),
+  render: () => drawCapture(), toast, go: hash => goHash(hash), savePendingNote, fail,
+  focusBack: () => {
+    const back = captureReturn;
+    captureReturn = null;
+    const el = back?.el?.isConnected ? back.el : soleMatch(root, back?.sel);
+    el?.focus({ preventScroll: true });
+  },
+});
+
+/** Opens quick capture (⌘N, or Ask's Add as task), remembering where focus was for Esc. With the
+ *  bar open already, only its box takes focus. */
+function openCapture(options) {
+  if (state.capture.open) return document.getElementById('capture-input')?.focus();
+  const el = document.activeElement;
+  captureReturn = el && root.contains(el) ? { el, sel: controlSelector(el) } : null;
+  return captureUi?.open(options);
+}
+
+// ---------------------------------------------------------------- Ask (ask-capture § 2, § 11)
+
+// The menu's field and the Ask page's box. The field is part of the menu (shell.js draws it from
+// `state.ask` on every render; its words are kept there, so a redraw keeps them, and the render's
+// own refocus keeps its focus and caret). The About chip is read from the page's selection.
+const askUi = store && createAskController({
+  state, snap, mutate, query: (op, data) => store.query(op, data),
+  render: () => {
+    if (!ready || modalOpen()) return;
+    if (pressing) askHeld = true;
+    else return render().catch(fail);
+    return undefined;
+  },
+  go: hash => goHash(hash), toast, withClaudeChoice, fail, announce,
+  confirm: options => confirmModal(options),
+  hash: () => location.hash,
+  hiddenCalendars: () => [...hiddenCalendars()],
+  openCapture: options => openCapture(options),
+  openRecord: (target, options) => openAskTarget(target, options),
+  draftOptions: channel => rememberedOptions(channel),
+  // The composer's own ✦ draft path (the chooser on first use, a change's Restore ended).
+  startDraft: async (m, request) => {
+    await startDraft(m, request, request.instructions || '', request);
+    document.getElementById('reply-body')?.focus({ preventScroll: true });
+  },
+  fieldShown: () => !!document.getElementById('ask-input')?.getClientRects().length,
+  focus: (selector, { select = false } = {}) => {
+    if (pressing) {
+      askFocusHeld = { selector, select };
+      return;
+    }
+    const el = document.querySelector(selector);
+    el?.focus({ preventScroll: true });
+    if (select) el?.select?.();
+  },
+  focusBack: selector => {
+    const el = soleMatch(root, selector) || root.querySelector('#workspace-page h1') || document.getElementById('workspace-main');
+    if (!el) return;
+    if (!el.matches('a,button,input,select,textarea,[tabindex]')) el.setAttribute('tabindex', '-1');
+    el.focus({ preventScroll: true });
+  },
+});
+
+/** Opens an Ask cite's record in the window (`citeTarget`, § 8): a message on its lane, selected
+ *  (Default) or open (Compact); a task's drawer (By date: its row unfolded, in its fold opened); a
+ *  calendar day with its event open (`closed` runs when that card closes); a meeting by its hash.
+ *  Sends nothing. False, with nothing opened, when the record left Connect. */
+async function openAskTarget({ hash, select } = {}, { closed = () => {} } = {}) {
+  if (select?.kind === 'message') {
+    const m = getRecord('message', select.id);
+    if (!m) return false;
+    Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: m.id, selectedKey: messageKey(m) });
+    if (compactView()) Object.assign(state, { openMessage: m.id, openKey: messageKey(m) });
+    await route('inbox');
+    return true;
+  }
+  if (select?.kind === 'task') {
+    const tasks = tasksOf(snap());
+    if (!tasks.some(r => r.id === select.id)) return false;
+    await route('tasks');
+    if (shownView(state.tasks, snap()) !== 'dates') {
+      await tasksUi.openDrawer(select.id);
+      return true;
+    }
+    // Every fold of Later starts closed and draws no rows: the task's own opens.
+    const fold = foldOf(datesTasks(tasks, state.tasks.filters), select.id, { now: Date.now(), zone: snap().settings.timeZone });
+    if (fold) state.tasks.folds = { ...state.tasks.folds, [fold]: true };
+    state.tasks.rowOpen = select.id;
+    await render();
+    return true;
+  }
+  if (select?.kind === 'event') {
+    if (!getRecord('event', select.id)) return false;
+    if (select.day) state.calendarDate = dateFromKey(select.day);
+    await route('calendar');
+    const ev = getRecord('event', select.id);
+    if (!ev) return false;
+    eventDialog(ev, { onClosed: closed });
+    return true;
+  }
+  if (!hash) return false;
+  await goHash(hash);
+  return true;
+}
+
+// The field's and the page box's own keys, first (capture phase): Enter asks, Esc clears then
+// leaves, ↑ ↓ move through Recent; a key handled there goes no further (the Inbox's Enter and ⌘↩).
+document.addEventListener('keydown', ev => {
+  if (askUi && ev.target.closest?.('.ws-ask-field,.ws-ask-page-box') && !modalOpen()) askUi.key(ev);
+}, true);
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'ask-input') askUi?.input(ev.target.value);
+  else if (ev.target.id === 'ask-follow-up') askUi?.pageInput(ev.target.value);
+}, true);
+
+/** Whether the Ask page draws its history as a column: Default, a main area 1,100 px or wider. */
+function askWide(s) {
+  const main = document.getElementById('workspace-main');
+  return viewOf(s.settings) === 'default' && (main?.clientWidth || 0) >= 1100;
+}
+window.addEventListener('resize', () => {
+  if (ready && state.route === 'ask' && askWide(snap()) !== state.ask.wide && !modalOpen()) render().catch(fail);
+});
+// The answering line's seconds tick on screen every second. What a screen reader hears is one
+// status node outside the page (a redraw never recreates it), changed only when an answer starts,
+// ends or moves on, and its seconds at most every 5 s (ask-capture § Accessibility).
+function syncAskStatus() {
+  const el = ready && state.route === 'ask' ? root.querySelector('[data-ask-run]') : null;
+  const run = el ? { turnId: el.dataset.askRun, profile: el.dataset.askProfile, since: Number(el.dataset.askSince) } : null;
+  const next = nextAskStatus(askStatus, run, Date.now() / 1000);
+  if (next === askStatus) return;
+  askStatus = next;
+  let live = document.getElementById('ask-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'ask-live';
+    live.className = 'ws-sr';
+    live.setAttribute('role', 'status');
+    live.setAttribute('aria-live', 'polite');
+    document.body.append(live);
+  }
+  live.textContent = next?.text || '';
+}
+setInterval(() => {
+  if (!ready) return;
+  if (state.route === 'ask') {
+    const now = Date.now() / 1000;
+    for (const el of root.querySelectorAll('[data-ask-since]')) {
+      const line = answeringLine(el.dataset.askProfile, Math.max(0, Math.floor(now - Number(el.dataset.askSince))));
+      const tick = el.querySelector('[data-ask-tick]');
+      if (tick && tick.textContent !== line) tick.textContent = line;
+    }
+  }
+  syncAskStatus();
+}, 1000);
+// Focus into the field opens its list; focus or a press anywhere else closes it.
+document.addEventListener('focusin', ev => {
+  if (!askUi || !ready) return;
+  if (ev.target.closest?.('.ws-ask-field')) askUi.opened();
+  else if (state.ask.open) askUi.closed();
+});
+// A press elsewhere is drawn after the button is up (a redraw now would swallow its click).
+document.addEventListener('pointerdown', ev => {
+  if (!askUi || !state.ask.open || ev.target.closest?.('.ws-ask-field')) return;
+  // A press elsewhere: focus goes where it lands, so Back has nowhere older to return to.
+  Object.assign(state.ask, { open: false, active: -1, focusBack: null, backFocus: null });
+  askHeld = true;
+}, true);
+
+/** Lays the bar over the main area, under the top bar (the menu may be a rail, collapsed or
+ *  dragged; the terminal dock may be open). */
+function placeCapture(host) {
+  const main = document.getElementById('workspace-main');
+  if (!main) return;
+  const r = main.getBoundingClientRect();
+  Object.assign(host.style, { left: `${Math.round(r.left)}px`, top: `${Math.round(r.top)}px`, width: `${Math.round(r.width)}px` });
+}
+
+function drawCapture() {
+  let host = document.getElementById('ws-capture-host');
+  const pluginLayer = document.querySelector('.ws-plugin-layer');
+  if (!state.capture.open || recovering || !store?.get()) {
+    host?.remove();
+    if (pluginLayer) pluginLayer.inert = sheetOpen();
+    return;
+  }
+  if (pluginLayer) pluginLayer.inert = true;
+  const html = captureBar(state, snap());
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'ws-capture-host';
+    host.className = 'ws-capture-host';
+    host.innerHTML = html;
+    document.body.append(host);
+    placeCapture(host);
+    host.querySelector('#capture-input')?.focus({ preventScroll: true });
+    return;
+  }
+  placeCapture(host);
+  const live = host.firstElementChild;
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  const fresh = t.content.firstElementChild;
+  const focused = host.contains(document.activeElement) ? controlSelector(document.activeElement) : null;
+  const sync = (to, from) => {
+    for (const a of [...to.attributes]) if (!from.hasAttribute(a.name)) to.removeAttribute(a.name);
+    for (const a of [...from.attributes]) if (to.getAttribute(a.name) !== a.value) to.setAttribute(a.name, a.value);
+  };
+  sync(live, fresh);
+  for (const part of [...fresh.querySelectorAll('[data-capture-part]')]) {
+    const old = live.querySelector(`[data-capture-part="${part.dataset.capturePart}"]`);
+    if (!old) continue;
+    if (part.dataset.capturePart !== 'line') {
+      old.replaceWith(part);
+      continue;
+    }
+    // The line is a polite live region: the same node, its content changed only when it differs,
+    // so the read date is said once, when its answer settles.
+    sync(old, part);
+    if (old.innerHTML !== part.innerHTML) old.innerHTML = part.innerHTML;
+  }
+  const input = live.querySelector('#capture-input');
+  const twin = fresh.querySelector('#capture-input');
+  for (const name of ['aria-label', 'aria-invalid']) {
+    if (twin.hasAttribute(name)) input.setAttribute(name, twin.getAttribute(name));
+    else input.removeAttribute(name);
+  }
+  if (input.value !== state.capture.text) input.value = state.capture.text;
+  // A control swapped out under focus (Task / Note, a × that went) leaves focus in the bar.
+  if (focused && !host.contains(document.activeElement)) (soleMatch(host, focused) || input).focus({ preventScroll: true });
+}
+
+// The bar's own keys, first (capture phase): Enter and ⌘↩ add, Esc clears then closes. A key it
+// handles goes no further, so the Inbox's ⌘↩ never sends a reply from under the bar.
+document.addEventListener('keydown', ev => {
+  if (captureUi && ev.target.closest?.('.ws-capture')) captureUi.key(ev);
+}, true);
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'capture-input') captureUi?.input(ev.target.value);
+}, true);
+// A click on the page closes the bar (focus stays where the click put it).
+document.addEventListener('pointerdown', ev => {
+  if (state.capture.open && !ev.target.closest?.('.ws-capture-host,.ws-toasts,.ws-modal')) captureUi?.close({ refocus: false });
+}, true);
+window.addEventListener('resize', () => { if (state.capture.open) drawCapture(); });
+
+// ⌘N opens quick capture, ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the
+// Settings menu's edge, Enter toggles it and ← → resize it.
 document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || ev.isComposing) return;
+  if (isCaptureKey(ev, { modal: modalOpen(), sheet: sheetOpen() })) {
+    ev.preventDefault();
+    openCapture();
+    return;
+  }
+  // ⌘K: the Ask field (or the Ask page's box). The terminal dock keeps its own ⌘K (its keys
+  // never reach here; `isAskKey` checks too), as does a plugin frame (another document).
+  if (isAskKey(ev, { modal: modalOpen(), sheet: sheetOpen() })) {
+    ev.preventDefault();
+    if (state.capture.open) captureUi?.close({ refocus: false });
+    const el = document.activeElement;
+    const from = el && root.contains(el) && !el.closest('.ws-ask-field') ? controlSelector(el) : null;
+    askUi?.focusField({ from }).catch(fail);
+    return;
+  }
+  // ⌘.: Stop the running answer, on the Ask page or in the field.
+  if (isStopKey(ev, { modal: modalOpen(), sheet: sheetOpen() }) && (state.route === 'ask' || ev.target.closest?.('.ws-ask-field')) && snap().ask?.running) {
+    ev.preventDefault();
+    askUi?.stop().catch(fail);
+    return;
+  }
   if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
     if (!ev.shiftKey) {
       ev.preventDefault();
@@ -1689,6 +2388,8 @@ const meetingsUi = store && createMeetingsController({
   syncHash: () => { if (state.route === 'meetings') history.replaceState(null, '', routeHash()); },
   ensureClaudeChoice,
   moveTask: (id, status, options) => tasksUi.move(id, status, options),
+  // "Add N to …" goes to the active provider; Undo is one `task_withdraw` (design §10).
+  taskTarget: activeTaskTarget({ snap, moveTask: (id, status, o) => tasksUi.move(id, status, o), withdraw: ids => mutate('task_withdraw', { ids }) }),
   connect: capabilities => connectMicrosoft(capabilities),
   showEvent: async id => {
     const ev = getRecord('event', id);
@@ -1698,6 +2399,7 @@ const meetingsUi = store && createMeetingsController({
     return eventDialog(getRecord('event', id));
   },
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
+  summaryInputs: () => ({ slots: pluginHost?.callSlots() || [], plugins: pluginHost?.minutesPlugins?.() || [] }),
   dock: dockFor('meetings'),
 });
 
@@ -1725,6 +2427,7 @@ const meetingsSettingsUi = store && createMeetingsSettingsController({
   makeNotes: (id, options) => meetingsUi.makeNotes(id, options),
   guarded: (id, run) => meetingsUi.guarded(id, run),
   glossaryChanged: () => meetingsUi.forgetGlossary(),
+  plugins: () => pluginHost?.minutesPlugins?.() || [],
   openMeeting: async (id, tab, ref) => {
     await meetingsUi.open(id, tab);
     if (ref) await meetingsUi.handle('meeting-goto-line', { dataset: { id, t: ref } });
@@ -1740,9 +2443,10 @@ function openMeetingFolder(folder) {
   return openMeeting(m.id).catch(fail);
 }
 
-/** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
-function openMeeting(id, tab = 'notes', line = null) {
-  return meetingsUi.open(id, tab, line);
+/** Opens a meeting on the Meetings page (`#/meetings/<id>/<pane>`; with no pane, the "Open a
+ *  meeting on" setting's; `line`: a transcript line). */
+function openMeeting(id, pane = null, line = null) {
+  return meetingsUi.open(id, pane, line);
 }
 
 // ---------------------------------------------------------------- dialogs
@@ -1758,12 +2462,12 @@ function commitmentDialog(source) {
     submit: 'Add task',
     onSubmit: async f => {
       await mutate('task_save', { text: f.get('text'), owner: f.get('owner'), due: f.get('due') || null, status: 'todo', sourceId: source?.id || null, sourceRevision: source?.revision || null, quote: source?.data.text ? String(source.data.text).slice(0, 2000) : null });
-      toast('Task added to To do.', 'success', { label: 'Open', run: () => route('tasks') });
+      toast(addedLine(snap(), 'Task added to To do.'), 'success', { label: 'Open', run: () => route('tasks') });
     },
   });
 }
 
-function eventDialog(ev) {
+function eventDialog(ev, { onClosed = () => {} } = {}) {
   if (!ev) return toast('This event is no longer available. Refresh the calendar.', 'error');
   const d = ev.data;
   const dialog = openModal({
@@ -1773,7 +2477,12 @@ function eventDialog(ev) {
     cancel: 'Close',
     size: 'md',
     footerExtra: eventActions(snap(), ev),
+    onClose: () => {
+      if (state.openEvent === ev.id) state.openEvent = null;
+      onClosed();
+    },
   });
+  state.openEvent = ev.id;
   dialog.classList.add('ws-event-modal');
   dialog.dataset.eventId = ev.id;
   dialog.style.setProperty('--event-color', calendarColors(snap()).get(d.calendarId) || 'var(--ws-accent)');
@@ -1827,7 +2536,7 @@ function newEventDialog() {
   });
 }
 
-function reviewAction(result, { onSent } = {}) {
+function reviewAction(result) {
   const review = result.review || {};
   const people = review.recipients || review.attendees || [];
   openModal({
@@ -1843,9 +2552,9 @@ function reviewAction(result, { onSent } = {}) {
     </div>`,
     submit: review.start ? 'Create event' : 'Send reply',
     workspaceId: result.workspaceId,
+    returnCancels: true,
     onSubmit: async () => {
       const r = await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
-      onSent?.();
       toast(r.message || 'Sent for delivery.', 'success');
     },
   });
@@ -1927,6 +2636,8 @@ function rowMessages(id) {
 
 /** Applies one Inbox decision to every message a row stands for, then renders once. */
 async function decideRow(id, data, perMessage = () => ({})) {
+  // Done, Snooze, Acknowledge or a lane move can take the box away: its text is saved first.
+  await flushReplySave();
   const targets = rowMessages(id);
   try {
     for (const m of targets) await store.mutate('inbox_decision', { ...data, ...perMessage(m), id: m.id });
@@ -1937,6 +2648,7 @@ async function decideRow(id, data, perMessage = () => ({})) {
 }
 
 function selectMessage(id) {
+  flushReplySave();
   const m = getRecord('message', id);
   state.selectedKey = m ? messageKey(m) : null;
   state.selectedMessage = id;
@@ -1945,18 +2657,22 @@ function selectMessage(id) {
 
 async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
+  if (action.startsWith('capture-')) return captureUi.handle(action, el);
+  if (action.startsWith('ask-')) return askUi.handle(action, el);
   if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
   if (action.startsWith('dock-')) return dockUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
   if (action.startsWith('analytics-')) return analyticsUi.handle(action, el);
-  // Today's task rows open the task on the Tasks page.
+  // Today's task rows, and the tasks a run made, open the task on the Tasks page; one no longer
+  // there (deleted, or not pulled from the provider yet) opens the page alone.
   if (action === 'task-open-today') {
     await route('tasks');
-    return tasksUi.openDrawer(el.dataset.id);
+    return tasksOf(snap()).some(r => r.id === el.dataset.id) ? tasksUi.openDrawer(el.dataset.id) : undefined;
   }
   if (action.startsWith('meetings-settings-')) return meetingsSettingsUi.handle(action, el);
+  if (action.startsWith('voice-')) return voiceUi.handle(action, el);
   if (action.startsWith('meeting-') || action.startsWith('doc-')) {
     // From the calendar's event card, a step that opens a dialog or the page closes the card first.
     const card = el.closest?.('.ws-event-modal');
@@ -1976,6 +2692,7 @@ async function handle(action, el, ev) {
       if (el.dataset.lane) {
         state.lane = el.dataset.lane;
         state.selectedMessage = null;
+        closeRow();
       }
       return route(el.dataset.route || 'today');
     case 'sidebar-toggle': return toggleSidebar();
@@ -1998,7 +2715,9 @@ async function handle(action, el, ev) {
     case 'ai-refresh': return loadAi();
     case 'ai-test': return testAiProfile(el.dataset.profile);
     case 'ai-test-model': state.ai.testModels[el.dataset.profile] = el.value; return;
-    case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: 'default', value: el.value }));
+    // The Default row: its profile (`field` unset), model (`defaultModel`) or fallback (`defaultFallback`).
+    case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field || 'default', value: el.value }));
+    // A job's row (a purpose or `plugin:<id>`): its profile, model or fallback.
     case 'ai-route': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field, purpose: el.dataset.route, value: el.value }));
     case 'ai-copy-login':
       claudeRecheck = true;
@@ -2058,6 +2777,8 @@ async function handle(action, el, ev) {
     // Appearance & settings
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });
     case 'theme-toggle': return mutate('settings_update', { theme: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
+    case 'view-set': return setView(el.dataset.view);
+    case 'menu-page': return mutate('settings_update', { hiddenPages: toggleHiddenPage(snap().settings.hiddenPages, el.dataset.page, el.checked) });
     case 'terminal-toggle': return terminalDock?.toggle();
     case 'setting-toggle': return mutate('settings_update', { [el.dataset.key]: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
     case 'zone-detect': await mutate('settings_update', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }); return toast('Time zone updated.', 'success');
@@ -2107,9 +2828,11 @@ async function handle(action, el, ev) {
     case 'new-event': return newEventDialog();
 
     // Inbox
-    case 'lane': state.lane = el.dataset.lane; state.selectedMessage = null; return render();
-    case 'channel': state.channel = el.dataset.channel; state.selectedMessage = null; return render();
-    case 'select-message': return selectMessage(id);
+    case 'lane': state.lane = el.dataset.lane; state.selectedMessage = null; closeRow(); return render();
+    case 'channel': state.channel = el.dataset.channel; state.selectedMessage = null; closeRow(); return render();
+    case 'select-message':
+      if (compactView()) return moveRows(clickRow({ selected: state.selectedMessage, open: state.openMessage }, id));
+      return selectMessage(id);
     case 'open-message': {
       const m = getRecord('message', id);
       if (m) {
@@ -2118,15 +2841,21 @@ async function handle(action, el, ev) {
         state.search = '';
         state.selectedMessage = id;
         state.selectedKey = messageKey(m);
+        // A message opened from elsewhere opens in place in Compact too.
+        if (compactView()) Object.assign(state, { openMessage: id, openKey: messageKey(m) });
       }
       return route('inbox');
     }
+    // Today's "Needs your reply": a click opens the row in place, a click again closes it.
+    case 'attention-open': return openTodayRow(state.todayOpen === id ? null : id);
     case 'inbox-more': state.inboxLimit += 200; return render();
+    case 'inbox-earlier': state.threadAll.add(id); return render();
     case 'show-archived': state.showArchived = el.checked; return render();
     case 'show-snoozed': state.showSnoozed = el.checked; return render();
     case 'message-archive': {
       const m = getRecord('message', id);
       const restore = m?.data.lifecycle === 'archived';
+      if (!restore) leaveRow(id);
       await decideRow(id, { action: restore ? 'restore' : 'archive' });
       return toast(restore ? 'Moved back to the Inbox.' : 'Marked done.', 'success');
     }
@@ -2134,7 +2863,10 @@ async function handle(action, el, ev) {
       const until = snoozeUntil(el.dataset.preset);
       el.closest('details')?.removeAttribute('open');
       const critical = rowMessages(id).some(m => m.data.lane === 'critical');
-      const run = () => decideRow(id, { action: 'snooze', until }, m => (m.data.lane === 'critical' ? { confirmGlobal: true } : {}));
+      const run = () => {
+        leaveRow(id);
+        return decideRow(id, { action: 'snooze', until }, m => (m.data.lane === 'critical' ? { confirmGlobal: true } : {}));
+      };
       if (critical) {
         return confirmModal({ title: 'Pause critical reminders?', text: 'This pauses reminders for this incident until the chosen time. It does not acknowledge it.', confirm: 'Pause reminders', onConfirm: run });
       }
@@ -2144,7 +2876,10 @@ async function handle(action, el, ev) {
     case 'message-lane': {
       const m = getRecord('message', id);
       const lane = el.value;
-      const run = () => decideRow(id, { action: 'lane', lane }, x => (x.data.lane === 'critical' && lane !== 'critical' ? { acknowledge: true } : {}));
+      const run = () => {
+        leaveRow(id);
+        return decideRow(id, { action: 'lane', lane }, x => (x.data.lane === 'critical' && lane !== 'critical' ? { acknowledge: true } : {}));
+      };
       if (m?.data.lane === 'critical' && lane !== 'critical') {
         el.value = m.data.lane;
         return confirmModal({ title: 'Acknowledge and move?', text: 'Acknowledging stops this incident’s pending reminders. The move applies to Connect.', confirm: 'Acknowledge and move', onConfirm: run });
@@ -2154,27 +2889,53 @@ async function handle(action, el, ev) {
     }
     case 'message-ack': await decideRow(id, { action: 'acknowledge' }); return;
     case 'commitment': return commitmentDialog(id ? getRecord('message', id) : null);
-    case 'draft-save': {
-      const field = document.getElementById('reply-body');
-      // One draft per conversation: replaces any draft kept against an older message of this chat.
-      await saveReply(getRecord('message', id), field.value);
-      field.defaultValue = field.value;
-      return toast('Draft saved on this device.', 'success');
-    }
-
     // Reply drafts with Claude
+    // Today's Draft reply: the row opens in place and the draft starts there.
     case 'draft-reply': {
       const m = getRecord('message', id);
       if (!m) return toast('This message is no longer available. Refresh and try again.', 'error');
-      Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: id, selectedKey: messageKey(m) });
-      await route('inbox');
+      await openTodayRow(id);
       await startDraft(m, rememberedOptions(m.data.channel));
+      fitTodayRow();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }
     case 'ai-draft-options': {
+      el.closest('details')?.removeAttribute('open');
       if (state.draftPopover) return closeDraftPopover();
       return openDraftPopover(getRecord('message', id));
+    }
+    // ✦ draft with AI: at once, with the options last used for this channel.
+    case 'ai-draft-quick': {
+      const m = getRecord('message', el.closest('form')?.dataset.id);
+      await startDraft(m, rememberedOptions(m?.data.channel));
+      fitTodayRow();
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    // ✦ Tell AI what to change: the words with the current text; the result replaces the text the
+    // change started from, which Restore my text brings back.
+    case 'ai-draft-change': {
+      const input = document.getElementById('reply-change');
+      const box = document.getElementById('reply-body');
+      const form = box?.closest('form');
+      const words = input?.value.trim() || '';
+      if (!words || !form) return;
+      const m = getRecord('message', form.dataset.id);
+      if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+      const key = form.dataset.key;
+      const options = rememberedOptions(m.data.channel);
+      state.drafts[key] = startChange(draftUi(key), box.value);
+      await startDraft(m, options, words, changeRequest(m, options, words, box.value));
+      fitTodayRow();
+      const field = document.getElementById('reply-change');
+      if (field) field.value = '';
+      return;
+    }
+    // The primary Send: today's review (`submitForm('reply')`).
+    case 'reply-send': {
+      const form = el.closest('form[data-form="reply"]');
+      return form ? submitForm(form) : undefined;
     }
     case 'ai-draft-pick': {
       const pop = state.draftPopover;
@@ -2195,10 +2956,12 @@ async function handle(action, el, ev) {
       setLocalPref(optionsKey(m?.data.channel), JSON.stringify(pop.options));
       closeDraftPopover(false);
       await startDraft(m, pop.options, pop.instructions);
+      fitTodayRow();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }
     case 'ai-draft-stop':
+      endChange(s.jobs.find(j => j.id === id)?.payload?.draftKey);
       try {
         await mutate('job_cancel', { id });
       } catch (err) {
@@ -2215,15 +2978,24 @@ async function handle(action, el, ev) {
       const request = s.jobs.find(j => j.id === id)?.payload?.request || {};
       if (action === 'ai-draft-choose' && !(await ensureClaudeChoice())) return;
       dismissDraftError(id);
-      return startDraft(getRecord('message', request.sourceId) || getRecord('message', state.selectedMessage), request, request.instructions);
+      const m = getRecord('message', retrySourceOf(request.sourceId, el));
+      // Try again repeats a change with the text it was asked about.
+      if (m && request.revise != null) {
+        state.drafts[draftKeyOf(m)] = startChange(draftUi(draftKeyOf(m)), request.revise);
+        return startDraft(m, request, request.instructions, changeRequest(m, request, request.instructions, request.revise));
+      }
+      return startDraft(m, request, request.instructions);
     }
-    case 'ai-draft-dismiss': dismissDraftError(id); return render();
+    case 'ai-draft-dismiss':
+      endChange(s.jobs.find(j => j.id === id && j.kind === 'ai_draft')?.payload?.draftKey);
+      dismissDraftError(id);
+      return render();
     case 'ai-summarize': return startSummary(getRecord('message', id));
     case 'ai-summarize-retry': case 'ai-summarize-choose': {
       const job = s.jobs.find(j => j.id === id);
       if (action === 'ai-summarize-choose' && !(await ensureClaudeChoice())) return;
       dismissDraftError(id);
-      return startSummary(getRecord('message', job?.payload?.request?.sourceId) || getRecord('message', state.selectedMessage));
+      return startSummary(getRecord('message', retrySourceOf(job?.payload?.request?.sourceId, el)));
     }
     case 'summary-toggle': {
       const ui = (state.summaryUi[el.dataset.key] ||= {});
@@ -2245,7 +3017,7 @@ async function handle(action, el, ev) {
       } finally {
         asksSaving.delete(id);
       }
-      toast('Added to your tasks, in To do.', 'success');
+      toast(addedLine(snap(), 'Added to your tasks, in To do.'), 'success');
       return;
     }
     case 'ai-draft-keep': case 'ai-draft-replace': case 'ai-draft-restore': case 'ai-draft-forget': {
@@ -2256,7 +3028,9 @@ async function handle(action, el, ev) {
       const next = answer(draftUi(key), latestDraft(s, key), choice, field?.value ?? '');
       state.drafts[key] = next.ui;
       if (field && field.value !== next.text) field.value = next.text;
-      if (next.save != null) await saveReply(m, next.save);
+      // The box now holds what the app chose: ⌘↩ waits for the user's next touch.
+      if (choice !== 'forget') disarmSendKey(key);
+      if (next.save != null) await queueReplySave(m, next.save);
       else await render();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
@@ -2314,6 +3088,12 @@ async function handle(action, el, ev) {
     case 'job-retry': return mutate('job_retry', { id });
     case 'notification-permission': return mutate('notification_permission');
     case 'notification-test': await mutate('notification_test'); return toast('Test reminder queued. Check Notification Center.');
+    case 'menu-bar-toggle': return mutate('settings_update', { menuBar: { [el.dataset.source]: el.checked } }).catch(err => { el.checked = !el.checked; throw err; });
+    case 'menu-bar-fix': {
+      // A fix opens its place through the same router as a clicked menu row or notification.
+      const fix = (s.menuBar?.fixes || []).find(f => f.id === el.dataset.fix);
+      return fix ? openNotification(fix.open) : undefined;
+    }
     case 'export': {
       const result = await store.query('export');
       const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }));
@@ -2355,26 +3135,126 @@ async function submitForm(form) {
       // A re-render can replace the form mid-request; never prepare two sends for one reply.
       if (replyInFlight.has(key)) return undefined;
       const body = String(f.get('body') || '');
+      const chat = getRecord('message', id)?.data.channel === 'chat';
       const open = unfinishedParts(body, latestDraft(snap(), key)?.data.text);
-      if (open.length) return confirmUnfinished(open, { submit: 'Review anyway', then: () => prepareReply(id, body) });
-      replyInFlight.add(key);
-      try {
-        return await prepareReply(id, body);
-      } finally {
-        replyInFlight.delete(key);
-      }
+      if (open.length) return confirmUnfinished(open, { submit: chat ? 'Send anyway' : 'Review anyway', then: () => guardedSend(key, id, body) });
+      return guardedSend(key, id, body);
     }
     default: return undefined;
   }
 }
 
-async function prepareReply(id, body) {
+/** One send per reply at a time: a second click, ⌘↩ or a re-rendered form mid-send sends nothing. */
+async function guardedSend(key, id, body) {
+  if (replyInFlight.has(key)) return undefined;
+  replyInFlight.add(key);
+  syncReplyBox(document.getElementById('reply-body'));
+  try {
+    return await sendReply(id, body);
+  } finally {
+    replyInFlight.delete(key);
+    syncReplyBox(document.getElementById('reply-body'));
+  }
+}
+
+/**
+ * Sends the reply in the box (DESIGN 6.4 Sending), on the user's click or armed ⌘↩: saves it, has
+ * native prepare it, then a Teams reply is confirmed in the same click and an Outlook reply asks
+ * "Send this reply?" first. A failure keeps the text and puts native's sentence in the status line.
+ */
+async function sendReply(id, body) {
   const m = getRecord('message', id);
+  if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
   if (!body.trim()) throw new Error('Write a reply first.');
-  await mutate('draft_save', { text: body, sourceId: id, sourceRevision: m.revision });
-  const result = await mutate('action_prepare', { kind: m.data.channel === 'mail' ? 'mail_reply' : 'chat_reply', sourceId: id, body });
-  // Once the reply is sent there is nothing left to restore.
-  return reviewAction(result, { onSent: () => { if (state.drafts[draftKeyOf(m)]) state.drafts[draftKeyOf(m)].restore = null; } });
+  const key = draftKeyOf(m);
+  const chat = m.data.channel === 'chat';
+  let result;
+  try {
+    await queueReplySave(m, body);
+    if (chat) showReplyStatus(key, 'Sending…');
+    result = await mutate('action_prepare', { kind: chat ? 'chat_reply' : 'mail_reply', sourceId: id, body });
+    if (!chat) return mailConfirm(result, m, body);
+    await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
+  } catch (err) {
+    showReplyStatus(key, { text: err?.message || String(err), tone: 'error' });
+    return undefined;
+  }
+  return afterSent(m, body);
+}
+
+/**
+ * The short Outlook confirm (DESIGN 6.4): where the mail goes — To (a Reply-To the thread never
+ * showed tagged "(new)"), Cc, the subject and the signature — not the body, which is on screen.
+ * Cancel is focused and Return cancels; Send takes a click or Space.
+ */
+function mailConfirm(result, m, body) {
+  return openModal({
+    title: 'Send this reply?',
+    subtitle: `${result.account || 'Microsoft 365'} · expires in 5 minutes`,
+    body: `<div class="ws-review">${confirmLines(result.review || {}).map(line => `<p>${e(line)}</p>`).join('')}</div>`,
+    submit: 'Send',
+    cancel: 'Cancel',
+    size: 'sm',
+    returnCancels: true,
+    workspaceId: result.workspaceId,
+    onSubmit: async () => {
+      try {
+        await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
+      } catch (err) {
+        if (err?.code === 'review_expired') throw new Error('This confirm expired. Click Send again.');
+        throw err;
+      }
+      await afterSent(m, body);
+    },
+  });
+}
+
+/**
+ * A sent reply (`body`, the text that went): the box empties, its saved reply and Claude's draft
+ * are deleted through the save queue (so no pending autosave, and no reload, brings the text
+ * back), the carried text, Restore and the ⌘↩ arming go, and the status line says where it went.
+ * Text typed while the send was in flight is not the sent text: it stays in the box and is saved
+ * instead. The row stays where it is; no toast.
+ */
+async function afterSent(m, body) {
+  const key = draftKeyOf(m);
+  const field = document.getElementById('reply-body');
+  const here = field?.closest('form')?.dataset.key === key;
+  const live = here ? field.value : Object.hasOwn(state.replyCarry, key) ? state.replyCarry[key] : savedReply(snap(), m)?.data.text || '';
+  // Compared without line-break style (the form sends CRLF, the box holds LF) or edge whitespace
+  // (a re-drawn <textarea> drops a leading line break): only new words keep the box.
+  const same = (a, b) => a.replace(/\r\n?/g, '\n').trim() === b.replace(/\r\n?/g, '\n').trim();
+  const kept = same(live, body) ? '' : live;
+  if (here && !kept) {
+    field.value = '';
+    field.defaultValue = '';
+    syncReplyBox(field);
+  }
+  if (!kept) delete state.replyCarry[key];
+  // Claude's draft that was sent is done with: the emptied box does not offer it again.
+  const ai = latestDraft(snap(), key);
+  state.drafts[key] = { ...draftUi(key), restore: null, confirm: null, baseline: null, changeFrom: null, ...(ai ? { kept: ai.revision } : {}) };
+  state.replyTouched = null;
+  showReplyStatus(key, { text: `Sent to ${sendTarget(snap(), m) || 'the chat'}.`, url: m.data.url });
+  try {
+    await queueReplySave(m, kept);
+    if (kept && here && field.value === kept) field.defaultValue = kept;
+    await queueDraftDelete(key);
+  } catch (err) {
+    fail(err);
+  }
+  if (!modalOpen()) await render();
+}
+
+/** Deletes Claude's stored draft for a conversation, in turn with the reply saves (`queueReplySave`). */
+function queueDraftDelete(key) {
+  const run = replySaving.then(async () => {
+    for (const r of records(snap(), 'draft').filter(d => d.data.aiSuggested && (d.data.draftKey === key || d.id === `ai:${key}`))) {
+      await store.mutate('local_delete', { kind: 'draft', id: r.id });
+    }
+  });
+  replySaving = run.catch(() => {});
+  return run;
 }
 
 // ---------------------------------------------------------------- events
@@ -2398,7 +3278,7 @@ document.addEventListener('click', ev => {
 
 document.addEventListener('click', async ev => {
   const el = ev.target.closest('[data-action]');
-  if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host')) return;
+  if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host,#ws-capture-host')) return;
   if (el.matches('input[type=checkbox],input[type=radio],select')) return;
   ev.preventDefault();
   if (el.disabled) return;
@@ -2410,6 +3290,8 @@ document.addEventListener('click', async ev => {
     fail(err);
   } finally {
     el.disabled = false;
+    // The reply's Send and Copy follow their box (text, a send in flight), not the click.
+    if (el.hasAttribute('data-needs-text')) syncReplyBox(document.getElementById('reply-body'));
   }
 });
 
@@ -2433,9 +3315,16 @@ document.addEventListener('change', async ev => {
 });
 
 document.addEventListener('submit', async ev => {
+  // The capture bar adds on its keys and its Add button, never by a form submission.
+  if (ev.target.closest?.('.ws-capture')) return ev.preventDefault();
+  // The Ask boxes ask on their own Enter and button, never by a form submission.
+  if (ev.target.closest?.('.ws-ask-field,.ws-ask-page-box')) return ev.preventDefault();
   const form = ev.target.closest('form[data-form]');
   if (!form || !form.closest('#workspace-app')) return;
   ev.preventDefault();
+  // The reply form never sends on submit (implicit submission from Enter in a field); its Send
+  // is a plain button handled by the click handler and ⌘↩.
+  if (form.dataset.form === 'reply') return;
   const buttons = [...form.querySelectorAll('button[type=submit]')];
   buttons.forEach(b => { b.disabled = true; });
   try {
@@ -2444,11 +3333,17 @@ document.addEventListener('submit', async ev => {
     fail(err);
   } finally {
     buttons.forEach(b => { b.disabled = false; });
+    if (form.dataset.form === 'reply') syncReplyBox(document.getElementById('reply-body'));
   }
 });
 
 document.addEventListener('input', ev => {
   if (codemie.input(ev.target)) return;
+  // Settings › Your voice: what is typed in its editors is kept in its view state (no render).
+  if (ev.target.matches?.('[data-voice-input]')) {
+    voiceUi?.input(ev.target);
+    return;
+  }
   if (ev.target.matches?.('[data-settings-find]') && !ev.isComposing) {
     state.settingsQuery = ev.target.value;
     render().catch(fail);
@@ -2460,6 +3355,7 @@ document.addEventListener('input', ev => {
     const pos = ev.target.selectionStart;
     searchTimer = setTimeout(async () => {
       state.selectedMessage = null;
+      closeRow();
       await render();
       const input = document.getElementById('inbox-search');
       input?.focus();
@@ -2509,7 +3405,15 @@ document.addEventListener('input', ev => {
   }
   if (meetingsUi?.input(ev.target)) return;
   if (meetingsSettingsUi?.input(ev.target)) return;
-  if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
+  if (ev.target.id === 'reply-body') {
+    syncReplyBox(ev.target);
+    // "Saved on this device" holds only until the text changes again.
+    const key = ev.target.closest('form')?.dataset.key;
+    if (key && state.replyStatus[key]) showReplyStatus(key, '');
+    // Autosave on this device 1.5 s after the last keystroke.
+    clearTimeout(replySaveTimer);
+    replySaveTimer = setTimeout(flushReplySave, 1500);
+  }
   if (ev.target.id === 'auto-prompt') {
     const count = ev.target.closest('form')?.querySelector('[data-auto-count]');
     if (count) count.textContent = `${ev.target.value.length.toLocaleString('en-US')} / 4,000`;
@@ -2526,6 +3430,70 @@ document.addEventListener('input', ev => {
     const el = ev.target;
     noteTimer = setTimeout(() => saveNote(el), 900);
   }
+});
+
+// The reply box counts as the user's once they click or type in it (the ⌘↩ gate); a box the app
+// focused (Today's Draft reply, a draft arriving) does not.
+const touchReply = target => {
+  const key = target?.id === 'reply-body' ? target.closest('form')?.dataset.key : null;
+  if (key) state.replyTouched = key;
+};
+document.addEventListener('pointerdown', ev => touchReply(ev.target), true);
+document.addEventListener('keydown', ev => {
+  if (ev.metaKey || ev.ctrlKey || !(ev.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(ev.key))) return;
+  touchReply(ev.target);
+}, true);
+
+// ⌘↩ in the Inbox (and in Today's open row) runs the visible Send as a click would (DESIGN 6.4),
+// only once the user has clicked or typed in this reply box, never on a held key, and never with a
+// confirm, popover, sheet or menu open. Otherwise it does nothing. The change line and the draft popover keep
+// their own ⌘↩ (they handle it first, in capture).
+document.addEventListener('keydown', ev => {
+  if (!ready || !['inbox', 'today'].includes(state.route) || ev.key !== 'Enter' || !(ev.metaKey || ev.ctrlKey) || ev.isComposing) return;
+  if (ev.defaultPrevented) return;
+  const form = root.querySelector('form[data-form="reply"]');
+  // Today leaves ⌘↩ alone while no row is open (its other fields keep their own Return).
+  if (state.route === 'today' && !form) return;
+  ev.preventDefault();
+  const m = form && getRecord('message', form.dataset.id);
+  const send = form?.querySelector('[data-action="reply-send"]');
+  if (!m || !send || send.disabled) return;
+  const blocked = modalOpen() || sheetOpen() || !!state.draftPopover || !!document.querySelector('details.ws-menu[open]');
+  if (!sendKeyAllowed({ touchedKey: state.replyTouched, key: form.dataset.key, repeat: ev.repeat, blocked, primaryKind: primaryAction(snap(), m).kind })) return;
+  handle('reply-send', send).catch(fail).finally(() => syncReplyBox(document.getElementById('reply-body')));
+});
+
+// The change line: Return sends the words (never the reply form), Esc empties a field with words
+// in it and goes no further; an empty field lets Esc through to the row.
+document.addEventListener('keydown', ev => {
+  if (ev.target?.id !== 'reply-change' || ev.isComposing || ev.keyCode === 229) return;
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    if (!ev.target.disabled) handle('ai-draft-change', ev.target).catch(fail);
+  } else if (ev.key === 'Escape' && ev.target.value) {
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    ev.target.value = '';
+  }
+}, true);
+
+// Settings › Your voice: Esc in its style card or instruction editor cancels it and puts focus
+// back on Edit or Add (design § Accessibility).
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape' || ev.isComposing || modalOpen() || !ev.target?.closest?.('.ws-voice-editor,.ws-voice-rule-editor')) return;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  voiceUi?.cancel().catch(fail);
+}, true);
+
+// A box the user leaves saves its text at once.
+document.addEventListener('focusout', ev => {
+  if (ev.target?.id === 'reply-body') flushReplySave(ev.target);
+});
+
+// A hidden window saves the reply typed in it at once.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushReplySave();
 });
 
 // The draft options popover: Esc closes it, ⌘↵ drafts, Tab stays inside it.
@@ -2564,7 +3532,23 @@ document.addEventListener('mousedown', ev => {
 const released = () => {
   if (!pressing) return;
   pressing = false;
-  setTimeout(() => { if (heldRender && !taskDrag) flushHeldRender(); }, 0);
+  setTimeout(() => {
+    if (askHeld) {
+      askHeld = false;
+      if (ready && !modalOpen()) {
+        const held = askFocusHeld;
+        askFocusHeld = null;
+        return render().then(() => {
+          const el = held && document.querySelector(held.selector);
+          el?.focus({ preventScroll: true });
+          if (held?.select) el?.select?.();
+        }).catch(fail);
+      }
+    }
+    askFocusHeld = null;
+    if (heldRender && !taskDrag) flushHeldRender();
+    return undefined;
+  }, 0);
 };
 document.addEventListener('mouseup', released, true);
 window.addEventListener('blur', released);
@@ -2573,13 +3557,52 @@ window.addEventListener('resize', placeDraftPopover);
 window.addEventListener('resize', measureToday);
 document.addEventListener('scroll', placeDraftPopover, true);
 
+// A `<summary>` marked `aria-disabled` (e.g. "Pin a summary" at four pins) has no native
+// `disabled`: Enter/Space would otherwise still toggle it open. Block the key before it can.
+document.addEventListener('keydown', ev => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target?.matches?.('summary[aria-disabled="true"]')) ev.preventDefault();
+});
+
 // ⋯ and the other ws-menu menus: one open at a time; a click anywhere else closes it, and so
 // does Escape, which puts focus back on its button.
 document.addEventListener('toggle', ev => {
   const menu = ev.target;
   if (!menu.matches?.('details.ws-menu') || !menu.open) return;
-  for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
+  // A disabled opener (same reason as above: assistive tech can still activate it) closes again
+  // at once rather than showing a menu nothing should have been able to open.
+  if (menu.querySelector(':scope > summary[aria-disabled="true"]')) {
+    menu.removeAttribute('open');
+    return;
+  }
+  // A menu inside another (a thread's ⋯ in the Ask page's History ▾) leaves the one around it open.
+  for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu && !other.contains(menu)) other.removeAttribute('open');
+  if (menu.closest('.ws-reply-bar')) placeReplyMenu(menu);
+  if (menu.matches('.ws-mtg-strip > .ws-menu')) fitSectionMenu(menu);
 }, true);
+
+/** The meeting's ⋯ is long: it scrolls inside its section rather than run past the section's
+ *  bottom, which clips it. */
+function fitSectionMenu(menu) {
+  const panel = menu.querySelector('.ws-menu-panel');
+  const pane = menu.closest('.ws-pane')?.getBoundingClientRect();
+  const summary = menu.querySelector('summary')?.getBoundingClientRect();
+  if (!panel || !pane || !summary) return;
+  panel.style.maxHeight = `${Math.max(160, Math.floor(Math.min(pane.bottom, innerHeight) - summary.bottom - 14))}px`;
+}
+
+/** The reply's action line sits at the bottom of a scrolling pane: its menus open downwards, or
+ *  upwards when only that way they fit in the pane. */
+function placeReplyMenu(menu) {
+  menu.classList.remove('ws-menu-up');
+  const panel = menu.querySelector('.ws-menu-panel');
+  const summary = menu.querySelector('summary')?.getBoundingClientRect();
+  if (!panel || !summary) return;
+  const pane = menu.closest('.ws-reader, .ws-inbox-items')?.getBoundingClientRect() || { top: 0, bottom: innerHeight };
+  const below = Math.min(pane.bottom, innerHeight) - summary.bottom;
+  const above = summary.top - Math.max(pane.top, 0);
+  const need = panel.offsetHeight + 6;
+  if (below < need && above > below) menu.classList.add('ws-menu-up');
+}
 document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);
@@ -2591,7 +3614,8 @@ document.addEventListener('click', ev => {
 });
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
-  const menu = document.querySelector('details.ws-menu[open]');
+  // The innermost open menu first (the last in document order), then the one around it.
+  const menu = [...document.querySelectorAll('details.ws-menu[open]')].at(-1);
   if (!menu || (modalOpen() && !menu.closest('.ws-modal'))) return;
   ev.preventDefault();
   ev.stopImmediatePropagation();
@@ -2659,6 +3683,13 @@ document.addEventListener('focusout', ev => {
 
 document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  // Esc on the Ask page (not in a box with words, an open ⋯ having taken it already): Back.
+  if (state.route === 'ask' && ev.key === 'Escape' && !ev.isComposing && !state.capture.open
+    && !ev.target.closest?.('.ws-ask-field,.ws-ask-page-box,.ws-term') && !(ev.target.matches?.('input,textarea') && ev.target.value)) {
+    ev.preventDefault();
+    askUi?.back().catch(fail);
+    return;
+  }
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
     // ←/→ on a divider, a section tab or a widget grip move that, not the week.
@@ -2675,7 +3706,32 @@ document.addEventListener('keydown', ev => {
     const index = rows.findIndex(r => r.dataset.id === state.selectedMessage);
     const next = rows[Math.min(rows.length - 1, Math.max(0, index + (['ArrowDown', 'j'].includes(ev.key) ? 1 : -1)))];
     ev.preventDefault();
-    selectMessage(next.dataset.id).catch(fail);
+    // In Compact the focus follows the selection to its row's line, so ↵ next acts on that row
+    // and not on the control that had the focus (Default keeps its focus where it was).
+    const moved = selectMessage(next.dataset.id);
+    (compactView() ? moved.then(() => root.querySelector(`.ws-inbox-row[data-id="${CSS.escape(next.dataset.id)}"]`)?.focus({ preventScroll: true })) : moved).catch(fail);
+  } else if (state.route === 'inbox' && compactView() && ev.key === 'Enter' && state.selectedMessage
+    && !ev.target.closest?.('button, a, summary, input, select, textarea, [contenteditable]')) {
+    // ↵ opens the selected row (a focused control keeps its own Enter: a row button toggles once).
+    ev.preventDefault();
+    moveRows(enterRow({ selected: state.selectedMessage, open: state.openMessage })).catch(fail);
+  } else if (state.route === 'today' && ev.key === 'Escape' && state.todayOpen) {
+    // Esc closes Today's open row; focus inside it goes back to its line.
+    ev.preventDefault();
+    const openId = state.todayOpen;
+    const inside = root.querySelector('.ws-attention .ws-crow-body')?.contains(document.activeElement);
+    openTodayRow(null)
+      .then(() => { if (inside) root.querySelector(`.ws-attention .ws-msg-row[data-id="${CSS.escape(openId)}"]`)?.focus({ preventScroll: true }); })
+      .catch(fail);
+  } else if (state.route === 'inbox' && compactView() && ev.key === 'Escape' && state.openMessage) {
+    // Esc closes the open row (an open ⋯ menu has already taken Escape for itself).
+    ev.preventDefault();
+    // Focus inside the closing row goes back to its line, not to the page.
+    const openId = state.openMessage;
+    const inside = root.querySelector('.ws-crow-body')?.contains(document.activeElement);
+    moveRows(escRow({ selected: state.selectedMessage, open: openId }))
+      .then(() => { if (inside) root.querySelector(`.ws-inbox-row[data-id="${CSS.escape(openId)}"]`)?.focus({ preventScroll: true }); })
+      .catch(fail);
   }
 });
 
@@ -2693,10 +3749,13 @@ function tick() {
 }
 
 let minuteTimer;
+// Tasks is drawn again once the day it was drawn on has passed (By date's Late, Today and the
+// dates its menus offer), when nothing is open or being typed in.
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar', 'automations', 'meetings', 'analytics'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
+    const tasksDue = state.route === 'tasks' && tasksDrawnDay && store?.get() && dayKey(Date.now(), snap().settings.timeZone) !== tasksDrawnDay;
+    if (ready && (['today', 'calendar', 'automations', 'meetings', 'analytics'].includes(state.route) || tasksDue) && !modalOpen() && !editing()) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }
@@ -2727,6 +3786,7 @@ async function openNotification(payload) {
       Object.assign(state, { lane: m.data.lane || 'critical', channel: 'all', search: '', showArchived: m.data.lifecycle === 'archived', showSnoozed: m.data.snoozedUntil > Date.now() / 1000 });
       state.selectedMessage = m.id;
       state.selectedKey = messageKey(m);
+      if (compactView()) Object.assign(state, { openMessage: m.id, openKey: messageKey(m) });
     }
     return route('inbox');
   }
@@ -2735,10 +3795,24 @@ async function openNotification(payload) {
     return eventDialog(getRecord('event', payload.eventId));
   }
   // Notes made by themselves (and anything else about a meeting): the meeting.
-  if (payload.meetingId) return meetingsUi.open(payload.meetingId, 'notes');
-  // Tasks due today.
-  if (payload.route === 'tasks') return route('tasks');
-  // An automation's result or failure: its run, open in the Run log.
+  if (payload.meetingId) return meetingsUi.open(payload.meetingId);
+  // A menu row, a fix, or a notification naming the page it opens (design §6 "Opening from the
+  // menu"): tasks due today, the chat lane in Inbox, more than one new meeting, a settings tab,
+  // or Automations (that run, when named, else the Run log).
+  const target = openTarget(payload);
+  if (target) {
+    switch (target.route) {
+      case 'inbox':
+        if (target.lane) state.lane = target.lane;
+        return route('inbox');
+      case 'tasks': return route('tasks');
+      case 'meetings': return route('meetings');
+      case 'settings': return route('settings', target.tab);
+      case 'automations':
+        return target.runId ? automationsUi.openRun(target.runId, target.automationId || '') : route('automations', 'runs');
+    }
+  }
+  // An automation's result or failure named by `runId` alone (an older notification shape).
   const run = notificationTarget(payload);
   if (run) return automationsUi.openRun(run.expanded[0], run.filter);
   return route('settings', 'activity');
@@ -2781,6 +3855,9 @@ function renderRecovery() {
   // Nor may the CodeMie setup sheet: it closes (stopping a setup that waits on the person).
   codemie.closeSheet().catch(() => {});
   document.querySelector('#cm-sheet-host .cm-sheet')?.remove();
+  // Nor the quick-capture bar: it closes (its Add would send to a store with no snapshot).
+  captureUi?.close({ refocus: false });
+  document.getElementById('ws-capture-host')?.remove();
   document.querySelector('.ws-plugin-layer')?.removeAttribute('inert');
   root.inert = false;
   root.dataset.route = 'recovery';
@@ -2912,6 +3989,13 @@ async function boot() {
   }
   root.innerHTML = `<div class="ws-loading" role="status"><span class="ws-spinner"></span>Opening your workspace…</div>`;
   const flags = await invoke('smoke_mode');
+  // CODEMIE_TOUR (a tour build only): the app boots on the tour's seeded folder, without the
+  // CodeMie CLI, the setup sheet or the update check, then walks the tour's stops and reports.
+  const tour = flags.tour ? await import('./tour/runner.js') : null;
+  const tourOps = [];
+  const tourRefused = [];
+  const tourAllow = new Set();
+  if (tour) tourGated = tour.gate(appInvoke, { ops: tourOps, refused: tourRefused, allow: tourAllow });
   if (flags.plugin === 'isolation') {
     const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
     return runIsolationSmoke(invoke, { runId: flags.plugin_run_id });
@@ -2929,20 +4013,24 @@ async function boot() {
     return;
   }
   const hash = location.hash.split('/');
+  let useFirstVisible = false;
   if (hash[1] === 'p' && PLUGIN_ID.test(hash[2] || '') && PLUGIN_ITEM.test(hash[3] || '')) {
     state.route = 'plugin';
     state.pluginPage = { id: hash[2], activity: hash[3], route: hash.slice(4).join('/') };
   } else {
     const target = parseHash(location.hash);
     if (target.route) state.route = target.route;
-    // The hash's tab is shown in whichever section holds it.
+    else useFirstVisible = true;
+    // The hash's pane is the meeting's; with none, the setting decides once the snapshot is in.
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
-      if (target.tab) {
-        state.meetings.tab = target.tab;
-        showDockTab('meetings', `mtg-${target.tab}`);
-      }
-    } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
+      state.meetings.pane = target.pane;
+      // A boot hash is always a link arrival; `ensureSelection`'s first render reads this to
+      // decide whether an old `/tasks` link may move focus to the column (it can't check the
+      // column setting yet here, before the snapshot is in).
+      state.meetings.tasksLink = target.pane === 'tasks';
+    } else if (state.route === 'ask') state.ask.threadId = askThreadOf(hash[2]);
+    else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');
@@ -2954,6 +4042,9 @@ async function boot() {
   } catch (err) {
     return showRecovery(err);
   }
+  // No route in the hash (an empty one, or home): land on the first page the menu shows, not
+  // necessarily Today, now that a page can be hidden.
+  if (useFirstVisible) state.route = firstVisiblePage(snap().settings.hiddenPages);
   await bootWorkspace(store, snap());
   state.appVersion = await invoke('get_app_version').catch(() => '');
   // Plugin UIs: one sandboxed frame per enabled plugin with a client half, in a layer outside the
@@ -3005,6 +4096,7 @@ async function boot() {
   });
   store.subscribe(result => {
     applyTheme(result.snapshot.settings.theme);
+    applyView(viewOf(result.snapshot.settings));
     if (!ready) return;
     // A run started, ended or was stored: the Run log reads its newest page again.
     automationsUi.snapshotChanged(result.snapshot)?.catch(() => {});
@@ -3027,7 +4119,7 @@ async function boot() {
   // smoke runs on its own data root and tests plugins only: it runs no CodeMie CLI command.
   // The status smoke says whether the first-launch sheet would open: the prefs before boot decide.
   const setupBefore = statusSmoke ? codemie.prefs() : null;
-  const codemieBooted = marketSmoke ? null : codemie.boot().catch(fail);
+  const codemieBooted = marketSmoke || tour ? null : codemie.boot().catch(fail);
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
@@ -3083,8 +4175,9 @@ async function boot() {
       return;
     }
     store.refresh().catch(() => {});
+    syncTasks();
     // Back from Terminal or another app: an agent or app may have changed.
-    if (!marketSmoke) codemie.onFocus();
+    if (!marketSmoke && !tour) codemie.onFocus();
     // Back from Terminal or Settings: Claude may be signed in or set up now.
     if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;
   });
@@ -3102,6 +4195,14 @@ async function boot() {
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie, meetingsUi };
+  if (tour) {
+    const report = await tour.runTour({
+      invoke, goHash, store, mutate, voice: voiceUi, doc: document, raf: fn => requestAnimationFrame(fn),
+      only: flags.tour, runId: flags.tour_run_id, ops: tourOps, refused: tourRefused, allow: tourAllow,
+    });
+    // Rust adds its view, writes the verdict and quits.
+    return invoke('tour_report', { report });
+  }
   if (smoke) {
     const report = await smoke.runMarketSmoke({
       invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,
@@ -3128,7 +4229,7 @@ async function boot() {
     // Rust adds its view, writes the verdict and quits.
     return invoke('smoke_status_report', { report });
   }
-  if (shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
+  if (!tour && shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
 }
 
 boot().catch(err => {

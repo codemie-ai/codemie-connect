@@ -179,6 +179,8 @@
 
   const commands = new Map()
   const providers = new Map()
+  const TASK_OPS = ['status', 'list', 'changedSince', 'create', 'update', 'complete', 'remove']
+  const VOICE_OPS = ['status', 'export', 'context', 'facts', 'save', 'remove']
   const listeners = new Map()
   const timers = new Map()
 
@@ -295,6 +297,48 @@
       },
       ready: direct('deliver.ready'),
       status: direct('deliver.status'),
+    },
+    // `ctx.tasks.provide({status, list, changedSince, create, update, complete, remove})`: a task
+    // provider's ops, each the provider `tasks:<op>`. Connect refuses a plugin whose manifest
+    // doesn't provide tasks, and then none is registered.
+    tasks: {
+      provide: (ops) => {
+        if (ops === null || typeof ops !== 'object') throw new TypeErrorType('ctx.tasks.provide needs an object of functions')
+        const given = []
+        for (let i = 0; i < TASK_OPS.length; i += 1) {
+          if (typeof ops[TASK_OPS[i]] === 'function') given[given.length] = [TASK_OPS[i], ops[TASK_OPS[i]]]
+        }
+        const names = []
+        for (let i = 0; i < given.length; i += 1) names[i] = given[i][0]
+        direct('tasks.provide')(names)
+        for (let i = 0; i < given.length; i += 1) {
+          const f = given[i][1]
+          providers.set(`tasks:${given[i][0]}`, (args) => apply(f, ops, [args]))
+        }
+      },
+    },
+
+    // `ctx.replyContext.provide({status, export, context, facts, save, remove})`: a reply-context
+    // provider's ops, each the provider `replyContext:<op>` (`facts` is optional), and
+    // `ctx.replyContext.sent({channel, days, limit, person, chatId})`, the user's own sent
+    // messages as Connect synced them. Connect refuses both to a plugin whose manifest doesn't
+    // provide reply-context, and then no op is registered.
+    replyContext: {
+      provide: (ops) => {
+        if (ops === null || typeof ops !== 'object') throw new TypeErrorType('ctx.replyContext.provide needs an object of functions')
+        const given = []
+        for (let i = 0; i < VOICE_OPS.length; i += 1) {
+          if (typeof ops[VOICE_OPS[i]] === 'function') given[given.length] = [VOICE_OPS[i], ops[VOICE_OPS[i]]]
+        }
+        const names = []
+        for (let i = 0; i < given.length; i += 1) names[i] = given[i][0]
+        direct('replyContext.provide')(names)
+        for (let i = 0; i < given.length; i += 1) {
+          const f = given[i][1]
+          providers.set(`replyContext:${given[i][0]}`, (args) => apply(f, ops, [args]))
+        }
+      },
+      sent: deferred('replyContext.sent'),
     },
 
     echo: { read: direct('echo.read'), dictionary: { add: direct('echo.dictionary.add') } },

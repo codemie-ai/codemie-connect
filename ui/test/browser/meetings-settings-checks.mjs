@@ -15,7 +15,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
   const lastCall = async (page, op) => (await calls(page, op)).at(-1);
   const waitCall = (page, op, test = '() => true') => page.waitForFunction(([o, t]) => window.__bridgeCalls.some(([x, d]) => x === o && new Function('d', `return (${t})(d)`)(d)), [op, test]);
   const noOverflow = async (page, what) => {
-    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels, .ws-settings-content, .ws-ms-editor, .ws-ms-tpl-card, .ws-ms-rule, .ws-ms-md-card, .ws-ms-file-row, .ws-ms-pattern-preview, .ws-ms-location, .ws-modal[open] .ws-modal-body')].filter(el => el.clientWidth > 0).map(el => el.scrollWidth - el.clientWidth)));
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels, .ws-settings-content, .ws-ms-editor, .ws-ms-tpl-card, .ws-ms-rule, .ws-ms-md-card, .ws-ms-file-row, .ws-ms-pattern-preview, .ws-ms-location, .ws-ms-pins, .ws-modal[open] .ws-modal-body')].filter(el => el.clientWidth > 0).map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
   const tab = async (page, id) => {
@@ -41,8 +41,12 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
       await check(`${tag}: settings meetings transcripts and folders`, async () => {
         await page.waitForSelector('.ws-ms-location');
         assert(await page.locator('.ws-settings-nav .ws-nav-group', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
+        // Tasks moved to the Workspace group (task-provider ruling 1), so it leads this list: its
+        // id (and so its own data-tab selector) is unchanged, just its nav group.
         const order = await page.locator('.ws-settings-nav button[data-tab^="meetings-"]').evaluateAll(els => els.map(b => b.dataset.tab));
-        assert(order.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary,meetings-tasks', order.join());
+        assert(order.join() === 'meetings-tasks,meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary', order.join());
+        const meetingsGroupOrder = await page.locator('.ws-settings-nav .ws-nav-section:has(.ws-nav-group:has-text("Meetings")) button[data-action="settings-tab"]').evaluateAll(els => els.map(b => b.dataset.tab));
+        assert(meetingsGroupOrder.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary', meetingsGroupOrder.join());
         const toggle = '[data-action="meetings-settings-transcripts"]';
         assert(!await page.locator(toggle).isChecked(), 'off to begin with');
         // Declined in Microsoft: stays off and says why.
@@ -103,7 +107,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
       await check(`${tag}: note templates: edit Meeting notes and save, reset with Undo, add a skill`, async () => {
         await tab(page, 'meetings-templates');
         await page.waitForSelector('.ws-ms-tpl-card[data-template="meeting-notes"]');
-        assert(await page.locator('.ws-ms-tpl-card').count() === 2, 'the two built-ins');
+        assert(await page.locator('.ws-ms-tpl-card').count() === 3, 'the three built-ins');
         assert(/default/i.test(await page.locator('.ws-ms-tpl-card[data-template="meeting-notes"] .ws-ms-tpl-badges').innerText()), 'Meeting notes is the default');
         await noOverflow(page, 'templates');
         await shot(page, `${tag}-settings-meetings-templates`);
@@ -177,7 +181,44 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
         await page.waitForSelector('.ws-ms-tpl-card:has-text("Client recap") .ws-badge-info');
         await noOverflow(page, 'templates of every kind');
         await shot(page, `${tag}-settings-meetings-templates-all`);
-        const mine = await page.locator('.ws-ms-tpl-card:has-text("Client recap")').getAttribute('data-template');
+        const skillId = await page.locator('.ws-ms-tpl-card:has-text("Interview review")').getAttribute('data-template');
+        const recapId = await page.locator('.ws-ms-tpl-card:has-text("Client recap")').getAttribute('data-template');
+        // "When you open a meeting": pin Short summary, then Meeting notes, from a template's ⋯;
+        // Move up puts Meeting notes first; Open a meeting on → Transcript.
+        await page.click('.ws-ms-tpl-card[data-template="short-summary"] .ws-menu > summary');
+        await page.click('.ws-ms-tpl-card[data-template="short-summary"] [data-action="meetings-settings-pin"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['short-summary'])");
+        await page.waitForSelector('.ws-ms-pins li[data-pin="short-summary"]');
+        await page.click('.ws-ms-tpl-card[data-template="meeting-notes"] .ws-menu > summary');
+        await page.click('.ws-ms-tpl-card[data-template="meeting-notes"] [data-action="meetings-settings-pin"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['short-summary','meeting-notes'])");
+        await page.waitForSelector('.ws-ms-pins li[data-pin="meeting-notes"]');
+        await page.click('.ws-ms-pins li[data-pin="meeting-notes"] [data-action="meetings-settings-pin-move"][data-d="-1"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['meeting-notes','short-summary'])");
+        await page.waitForFunction(() => [...document.querySelectorAll('.ws-ms-pins li')].map(li => li.dataset.pin).join() === 'meeting-notes,short-summary');
+        await page.click('[data-action="meetings-settings-open-on"][data-v="transcript"]');
+        await waitCall(page, 'settings_update', "d => d.meetings?.openOn === 'transcript'");
+        await page.waitForSelector('[data-action="meetings-settings-open-on"][data-v="transcript"][aria-pressed="true"]');
+        await noOverflow(page, 'the open-a-meeting card');
+        await shot(page, `${tag}-settings-meetings-open`);
+        // Pin the other two templates to reach four: "Pin a summary" disables, for a mouse
+        // (aria-disabled + pointer-events:none) and for the keyboard (tabindex="-1", and Enter/
+        // Space on it blocked outright even while focused).
+        await page.click(`.ws-ms-tpl-card[data-template="${skillId}"] .ws-menu > summary`);
+        await page.click(`.ws-ms-tpl-card[data-template="${skillId}"] [data-action="meetings-settings-pin"]`);
+        await waitCall(page, 'settings_update', 'd => (d.meetings?.summaryTabs || []).length === 3');
+        await page.click(`.ws-ms-tpl-card[data-template="${recapId}"] .ws-menu > summary`);
+        await page.click(`.ws-ms-tpl-card[data-template="${recapId}"] [data-action="meetings-settings-pin"]`);
+        await waitCall(page, 'settings_update', 'd => (d.meetings?.summaryTabs || []).length === 4');
+        await page.waitForSelector('[data-menu="ms-pin-add"] > summary[aria-disabled="true"][tabindex="-1"]');
+        await page.focus('[data-menu="ms-pin-add"] > summary');
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(150);
+        assert(await page.locator('[data-menu="ms-pin-add"][open]').count() === 0, 'Enter must not open the disabled menu');
+        await page.keyboard.press(' ');
+        await page.waitForTimeout(150);
+        assert(await page.locator('[data-menu="ms-pin-add"][open]').count() === 0, 'Space must not open the disabled menu');
+        const mine = recapId;
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] .ws-menu > summary`);
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] [data-action="meetings-settings-tpl-delete"]`);
         await page.waitForSelector(`${dialog}:has-text("Delete “Client recap”?")`);
@@ -193,9 +234,13 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
           await page.click('[data-menu="meetings-filter"] > summary');
           await page.click('[data-menu="meetings-filter"] [data-action="meeting-filter"][data-filter="all"]');
           await page.click('.ws-mtg-row[data-id="mtg-philips"]');
-          const notesTab = '[data-action="dock-tab"][data-page="meetings"][data-tab="mtg-notes"]';
-          await page.waitForSelector(notesTab);
-          if (await page.locator(`${notesTab}[aria-selected="true"]`).count() === 0) await page.click(notesTab);
+          // The Notes pane, behind the meeting's ⋯.
+          await page.waitForSelector('.ws-mtg-strip > .ws-menu > summary');
+          await settled(page);
+          if (!/\/notes$/.test(await page.evaluate(() => location.hash))) {
+            await page.click('.ws-mtg-strip > .ws-menu > summary');
+            await page.click('.ws-mtg-strip > .ws-menu [data-action="meeting-pane"][data-pane="notes"]');
+          }
           // The document's ⋯ is the last menu of the toolbar over the notes.
           const docMenu = '.ws-mtg-doctools [data-menu="doc-mtg-philips-meeting-notes-left"]';
           await page.waitForSelector(`${docMenu} > summary`);

@@ -1,0 +1,3232 @@
+[
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Priya N.\"><writing>Prefers short notes.</writing></person>\n<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Priya N.",
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "mail by address, case-insensitive",
+    "target": {
+      "address": "PRIYA.N@EXAMPLE.TEST",
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Marek Novak\"><writing>Finance contact.</writing></person>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "provider",
+        "person": "Marek Novak",
+        "provider": "Knowledge",
+        "rules": 1,
+        "style": false
+      }
+    },
+    "from": "provider",
+    "name": "teams by fromId, no address",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": "teams-marek",
+      "inContext": [],
+      "language": null,
+      "name": "Marek Novak",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Marek Novak",
+    "wantRules": [
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Priya N.\"><writing>Prefers short notes.</writing></person>\n<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Priya N.",
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "teams by folded name via names",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "  priya  NAIR ",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Priya N.\"><writing>Prefers short notes.</writing></person>\n<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Priya N.",
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "teams name, word order",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Nair Priya",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Priya N.\"><writing>Prefers short notes.</writing></person>\n<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Priya N.",
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "teams name, diacritic and suffix",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Prìya Nair (Contoso)",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "ambiguous name matches nobody",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Alex",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "unknown teams name matches nobody",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Someone Else",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Priya N.\"><writing>Prefers short notes.</writing></person>\n<rule applies=\"to priya.n@example.test\">Short, bullet points.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Priya N.",
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "to rule reaches teams through the person's address",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": "teams-priya",
+      "inContext": [],
+      "language": null,
+      "name": "Priya N.",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Priya N.",
+    "wantRules": [
+      "Short, bullet points.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"chat platform  review\">Terse, lower case.</rule>\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 3,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "chat rule folded",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": "Platform Review",
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Terse, lower case.",
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"domain bank.example.test · mail\">Formal, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "domain rule matches a sub-domain",
+    "target": {
+      "address": "ops@ops.bank.example.test",
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Formal, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 1,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "domain rule does not match a look-alike suffix",
+    "target": {
+      "address": "ops@bank.example.test.evil",
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<person name=\"Marek Novak\"><writing>Finance contact.</writing></person>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": "Marek Novak",
+        "provider": "Knowledge",
+        "rules": 1,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "mail-scoped domain rule skipped on teams",
+    "target": {
+      "address": "ops@bank.example.test",
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": "teams-marek",
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": "Marek Novak",
+    "wantRules": [
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"topic budget request\">Ask for the project code.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "topic rule needs every whole word",
+    "target": {
+      "address": null,
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "Budget request for Q1",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Ask for the project code.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 1,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "topic word never matches a substring",
+    "target": {
+      "address": null,
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "A budgetary note",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "no-profile applies with no person matched",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Someone Else",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "no-profile applies with an empty profile text",
+    "target": {
+      "address": "jordan@example.test",
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Jordan Lee",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 1,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "follow-up to own mail uses the first recipient",
+    "target": {
+      "address": "jordan@example.test",
+      "channel": "mail",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": "Jordan Lee",
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [
+        {
+          "about": "",
+          "addresses": [
+            "priya.n@example.test"
+          ],
+          "id": "priya-n",
+          "ids": [
+            "teams-priya"
+          ],
+          "name": "Priya N.",
+          "names": [
+            "Priya",
+            "Priya Nair"
+          ],
+          "source": "People",
+          "text": "Prefers short notes.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [
+            "jordan@example.test"
+          ],
+          "id": "jordan-lee",
+          "ids": [],
+          "name": "Jordan Lee",
+          "names": [],
+          "source": "People",
+          "text": "",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "marek-novak",
+          "ids": [
+            "teams-marek"
+          ],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "People",
+          "text": "Finance contact.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-1",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex One's profile.",
+          "updatedAt": "t"
+        },
+        {
+          "about": "",
+          "addresses": [],
+          "id": "alex-2",
+          "ids": [],
+          "name": "Alex",
+          "names": [],
+          "source": "People",
+          "text": "Alex Two's profile.",
+          "updatedAt": "t"
+        }
+      ],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "to",
+            "value": "priya.n@example.test"
+          },
+          "editable": true,
+          "id": "to-priya",
+          "source": "Voice/rules.md",
+          "text": "Short, bullet points."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "chat",
+            "value": "platform  review"
+          },
+          "editable": true,
+          "id": "chat-platform-review",
+          "source": "Voice/rules.md",
+          "text": "Terse, lower case."
+        },
+        {
+          "applies": {
+            "channel": "mail",
+            "kind": "domain",
+            "value": "bank.example.test"
+          },
+          "editable": true,
+          "id": "domain-bank",
+          "source": "Voice/rules.md",
+          "text": "Formal, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "topic",
+            "value": "budget request"
+          },
+          "editable": true,
+          "id": "topic-budget-request",
+          "source": "Voice/rules.md",
+          "text": "Ask for the project code."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "no-profile",
+            "value": null
+          },
+          "editable": true,
+          "id": "no-profile-teams",
+          "source": "Voice/rules.md",
+          "text": "Polite, full sentences."
+        },
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Never promise a date."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"chat platform  review\">Terse, lower case.</rule>\n<rule applies=\"no-profile · teams\">Polite, full sentences.</rule>\n<rule applies=\"everyone\">Never promise a date.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 3,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "group-chat follow-up has no person or examples",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": "Platform Review",
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Terse, lower case.",
+      "Polite, full sentences.",
+      "Never promise a date."
+    ]
+  },
+  {
+    "copy": {
+      "people": [],
+      "provider": "",
+      "refreshedAt": 0,
+      "rules": [
+        {
+          "applies": {
+            "channel": null,
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone",
+          "source": "Voice/rules.md",
+          "text": "Unscoped, for everyone."
+        },
+        {
+          "applies": {
+            "channel": "teams",
+            "kind": "everyone",
+            "value": null
+          },
+          "editable": true,
+          "id": "everyone-teams",
+          "source": "Voice/rules.md",
+          "text": "Scoped to Teams, for everyone."
+        }
+      ],
+      "state": "unavailable",
+      "style": null
+    },
+    "examples": [],
+    "expected": {
+      "block": "<voice provider=\"Knowledge\">\n<rule applies=\"everyone · teams\">Scoped to Teams, for everyone.</rule>\n<rule applies=\"everyone\">Unscoped, for everyone.</rule>\n</voice>",
+      "provenance": {
+        "cut": false,
+        "examples": 0,
+        "from": "copy",
+        "person": null,
+        "provider": "Knowledge",
+        "rules": 2,
+        "style": false
+      }
+    },
+    "from": "copy",
+    "name": "a channel-scoped rule comes before an unscoped rule of the same kind",
+    "target": {
+      "address": null,
+      "channel": "teams",
+      "chatId": null,
+      "chatTitle": null,
+      "fromId": null,
+      "inContext": [],
+      "language": null,
+      "name": null,
+      "subject": "",
+      "text": ""
+    },
+    "wantPerson": null,
+    "wantRules": [
+      "Scoped to Teams, for everyone.",
+      "Unscoped, for everyone."
+    ]
+  }
+]

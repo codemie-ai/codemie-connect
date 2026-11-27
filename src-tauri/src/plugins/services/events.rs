@@ -59,6 +59,14 @@ pub fn shared_get(s: &Services, key: &str) -> Result<Value, HostError> {
 }
 
 pub fn shared_set(s: &Services, p: &Granted, key: &str, value: &Value) -> Result<Value, HostError> {
+    // A sibling plugin with the network reads these: a reply-context plugin, which reads the
+    // user's sent messages, may not write them (ruling 10's way off the Mac).
+    if p.provides("reply-context") {
+        return Err(permission(format!(
+            "{} provides reply-context, so it can't set shared values",
+            p.id
+        )));
+    }
     let (ns, name) = split(key)?;
     if ns != p.namespace {
         return Err(permission(format!(

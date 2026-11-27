@@ -732,6 +732,58 @@ async fn auto_notes_follow_rules_and_wait() {
         .any(|j| j.payload["meetingId"] == "quiet"));
 }
 
+/// Review fix (Important 2 / Task 5 brief step 3's pin): a Formal-summary-style job
+/// (`meeting_notes:auto:<id>:<template>`) must not stand in for the meeting's own one automatic
+/// attempt (`meeting_notes:auto:<id>`) — the round must still queue the plain key.
+#[tokio::test]
+async fn a_summary_job_does_not_stand_in_for_the_meetings_own_automatic_notes() {
+    let n = notes_env(vec![]);
+    let e = &n.e;
+    op(
+        &e.core,
+        Operation::MeetingRuleSave,
+        json!({"field": "title", "value": "Philips", "template": "short-summary", "autoNotes": true}),
+    )
+    .await
+    .unwrap();
+    let end = now() - 600;
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(end - 1800), &rfc(end), json!({})),
+    );
+    teams(&e.graph, &rfc(end - 1500), LONG_VTT);
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Downloaded);
+
+    // A Formal-summary automation already queued its own job for this meeting, under its own
+    // key, before the meeting's automatic attempt was due.
+    {
+        let mut r = e.core.repo().unwrap();
+        r.enqueue(&crate::workspace::new_job(
+            "meeting_notes",
+            "meeting_notes:auto:m1:formal-summary".into(),
+            Some("personal".into()),
+            Some(ACCT.into()),
+            now(),
+            json!({}),
+            json!({"meetingId": "m1", "title": SYNC, "templateId": "formal-summary",
+                "notesKey": "m1:formal-summary", "wishes": "", "findTasks": false,
+                "auto": true, "step": null, "steps": []}),
+        ))
+        .unwrap();
+    }
+
+    // The rule waits 15 minutes after the meeting; at that point the round still queues the
+    // meeting's own automatic key, undeterred by the summary job that already exists for it.
+    meetings_round_at(&e.core, end + 15 * 60).unwrap();
+    let auto = notes_jobs(&e.core);
+    assert!(
+        auto.iter().any(|j| j.key == "meeting_notes:auto:m1"),
+        "{auto:?}"
+    );
+}
+
 #[tokio::test]
 async fn meeting_doc_main_delete_and_edit() {
     let n = notes_env(vec![outcome("# A", json!([])), outcome("# B", json!([]))]);
@@ -1134,9 +1186,14 @@ async fn templates_and_rules_save_validate_and_delete() {
         .collect();
     assert_eq!(
         names,
-        vec!["Meeting notes", "Short summary", "My client recap"]
+        vec![
+            "Meeting notes",
+            "Short summary",
+            "Formal summary",
+            "My client recap"
+        ]
     );
-    let own = &s["noteTemplates"][2];
+    let own = &s["noteTemplates"][3];
     assert_eq!(
         (own["kind"].as_str(), own["id"].as_str()),
         (Some("custom"), Some(mine.as_str()))
@@ -2220,4 +2277,263 @@ async fn plugins_hear_transcribed_then_minutes_written() {
     assert_eq!(told.len(), 2, "{told:?}");
     assert_eq!(told[1]["rewritten"], true);
     assert_ne!(told[1]["revision"], told[0]["revision"]);
+}
+
+/// The menu bar's "meetings with new notes": `menu_bar_seen` marks a meeting or the automation
+/// results seen, and editing or choosing in a meeting stamps it seen in the same request.
+#[tokio::test]
+async fn menu_bar_seen_clears_and_meeting_ops_stamp() {
+    use crate::workspace::menu_bar;
+    let n = notes_env(vec![outcome("# A", json!([]))]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    let start_over = || menu_bar::reset_seen_for_tests(&mut e.core.repo().unwrap(), now() - 100);
+    start_over();
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let menu = || async {
+        e.core
+            .request(read(Operation::Snapshot, json!({})))
+            .await
+            .unwrap()["snapshot"]["menuBar"]
+            .clone()
+    };
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+
+    let seen = op(&e.core, Operation::MenuBarSeen, json!({"meetingId": "m1"}))
+        .await
+        .unwrap();
+    assert_eq!(seen, json!({"seen": true}));
+    assert_eq!(menu().await["newMeetings"], json!([]));
+
+    // An automation result made after the mark, then seen.
+    put(
+        &e.core,
+        Record {
+            id: "run-1".into(),
+            kind: "automation_run".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "automation".into(),
+            revision: "v1".into(),
+            updated_at: now() - 10,
+            data: json!({"automationId": "auto-brief", "status": "ok", "startedAt": now() - 15,
+                "delivered": ["today"]}),
+        },
+    );
+    assert_eq!(menu().await["sources"]["automations"], 1);
+    op(
+        &e.core,
+        Operation::MenuBarSeen,
+        json!({"automations": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["sources"]["automations"], 0);
+
+    let gone = op(
+        &e.core,
+        Operation::MenuBarSeen,
+        json!({"meetingId": "nope"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(gone.code, "not_found");
+    assert_eq!(gone.message, "This meeting is no longer available.");
+    let nothing = op(&e.core, Operation::MenuBarSeen, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(nothing.code, "validation");
+    assert_eq!(nothing.message, "Say what was seen.");
+    for said in [json!({"meetingId": ""}), json!({"automations": false})] {
+        let e = op(&e.core, Operation::MenuBarSeen, said.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("validation", "Say what was seen."),
+            "{said}"
+        );
+    }
+
+    // Editing the notes stamps the meeting seen.
+    start_over();
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+    op(
+        &e.core,
+        Operation::MeetingDoc,
+        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "edit",
+            "text": "# A, edited", "baseVersion": 1, "baseRev": 1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["newMeetings"], json!([]));
+
+    // So does choosing in it.
+    start_over();
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+    op(
+        &e.core,
+        Operation::MeetingSet,
+        json!({"meetingId": "m1", "auto": false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["newMeetings"], json!([]));
+}
+
+/// The stamp finds the meeting under the account that stored it, whichever account is active
+/// (`target()` resolves it under the workspace's bound account), and switching accounts does not
+/// drop the marks of the other account's meetings.
+#[tokio::test]
+async fn meeting_stamp_follows_the_meetings_own_account() {
+    use crate::workspace::menu_bar;
+    let n = notes_env(vec![]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    let mut r = e.core.repo().unwrap();
+    let mut s = r.settings().unwrap();
+    s.active_connection = Some("another-account".into());
+    r.settings_update(&s).unwrap();
+    menu_bar::mark_meeting(&mut r, "m1", now()).unwrap();
+    menu_bar::mark_automations(&mut r, now()).unwrap();
+    assert!(menu_bar::seen(&r).meetings.contains_key("m1"));
+    let gone = menu_bar::mark_meeting(&mut r, "nope", now()).unwrap_err();
+    assert_eq!(gone.code, "not_found");
+    assert!(menu_bar::seen(&r).meetings.contains_key("m1"));
+}
+
+/// What the runner gives back when a model answered in its text instead of the structured
+/// output the schema asked for (an Ollama model behind CodeMie): `invalid_output`, the answer
+/// kept as what the run spent.
+fn text_answer(text: &str) -> std::result::Result<RunOutcome, AiError> {
+    Err(
+        AiError::new(ErrorClass::InvalidOutput).with_spent(RunOutcome {
+            structured: None,
+            text: text.into(),
+            usage: Usage::default(),
+            cost_usd: None,
+            duration_ms: 155_000,
+            model: Some("gemma4-26b-64k".into()),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn notes_from_a_local_model_are_read_from_its_text() {
+    let envelope = r##"{"notesMarkdown": "# Синк\n\n- Решили: пилот в декабре", "tasks": [{"title": "Подготовить демо", "owner": "Marek Novak", "due": "", "line": 1, "confidence": "high",},],}"##;
+    let markdown = "# Синк\n\n- Решили: пилот в декабре\n- Марек готовит демо";
+    let n = notes_env(vec![
+        text_answer(&format!("```json\n{envelope}\n```")),
+        text_answer(&format!(
+            "Конечно! Вот заметки по встрече:\n\n{envelope}\n\nЕсли нужно, могу сократить."
+        )),
+        text_answer(&format!(
+            "<think>\nThe template wants {{informal}} notes. JSON with notesMarkdown.\n</think>\n{envelope}"
+        )),
+        text_answer(&format!("<think>Пишу заметки.</think>\n\n{markdown}\n")),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for round in 1..=4 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        let ran = run_jobs(&e.core).await;
+        let job = ran.iter().find(|j| j.kind == "meeting_notes").unwrap();
+        assert_eq!(job.state, "succeeded", "round {round}: {job:?}");
+        let notes = text(&dir.join("notes.md"));
+        assert!(
+            notes.starts_with("# Синк\n\n- Решили: пилот в декабре"),
+            "round {round}: {notes}"
+        );
+        assert!(
+            !notes.contains("think") && !notes.contains("```"),
+            "{notes}"
+        );
+        // The task the JSON rounds found, once; the Markdown round finds none.
+        assert_eq!(tasks_of(&e.core, "m1").len(), 1, "round {round}");
+    }
+    assert_eq!(
+        text(&dir.join("notes.md")),
+        markdown,
+        "Markdown with no JSON at all is the notes"
+    );
+}
+
+#[tokio::test]
+async fn a_cut_off_answer_fails_and_run_log_keeps_its_beginning() {
+    // A sentinel at the start, cut off by the output limit long after 4,000 characters.
+    let long = format!(
+        "{{\"notesMarkdown\": \"SENTINEL-OLLAMA-7f3 {}",
+        "очень длинные заметки ".repeat(400)
+    );
+    let n = notes_env(vec![
+        text_answer(&long),
+        text_answer("<think>Let me think about the {notesMarkdown"),
+        text_answer("   "),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for _ in 0..3 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        let ran = run_jobs(&e.core).await;
+        let job = ran.iter().find(|j| j.kind == "meeting_notes").unwrap();
+        assert_eq!(job.error_code.as_deref(), Some("invalid_output"), "{job:?}");
+    }
+    assert!(!dir.join("notes.md").exists());
+    let log = text(&dir.join("run.log"));
+    assert!(log.contains("Meeting notes · failed"), "{log}");
+    assert!(
+        log.contains("Claude’s answer, its first 4,000 characters:"),
+        "{log}"
+    );
+    assert!(log.contains("SENTINEL-OLLAMA-7f3"), "{log}");
+    let kept: String = long.chars().take(4000).collect();
+    assert!(log.contains(&kept), "the first 4,000 characters");
+    assert!(!log.contains(&long.chars().take(4001).collect::<String>()));
+    assert!(
+        log.contains("<think>Let me think about the {notesMarkdown"),
+        "{log}"
+    );
+    // Never the ledger.
+    let runs = e.core.repo().unwrap().records_of_kind("ai_run").unwrap();
+    assert_eq!(runs.len(), 3);
+    assert!(runs
+        .iter()
+        .all(|r| !r.data.to_string().contains("SENTINEL")));
+}
+
+/// Final review M3: with review off, the tasks the notes find go straight to the active
+/// provider, so their push is queued at once rather than left for the background round.
+#[tokio::test]
+async fn tasks_the_notes_hand_to_a_provider_are_pushed_at_once() {
+    let n = notes_env(vec![outcome(
+        "# Sync\n\n## Action Items\n- Send the notes",
+        json!([{"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"}]),
+    )]);
+    let e = &n.e;
+    {
+        let mut r = e.core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.tasks.provider = "plugin:todoist".into();
+        s.meetings.review = false;
+        r.settings_update(&s).unwrap();
+    }
+    downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let tasks = tasks_of(&e.core, "m1");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].data["pending"], true, "{}", tasks[0].data);
+    assert!(
+        !jobs(&e.core, "task_sync").is_empty(),
+        "a task_sync job was queued"
+    );
 }

@@ -1,0 +1,2522 @@
+{
+  "cases": [
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 2,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 2,
+          "people": 1,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "e5",
+          "m6",
+          "m7",
+          "n8",
+          "p9",
+          "f10"
+        ],
+        "labels": {
+          "e4": "Event · Fri 27 Nov 10:00 · QBR",
+          "e5": "Event · Tue 15 Dec 14:00 · Atlas rollout review",
+          "f10": "Knowledge · Atlas rollout",
+          "m6": "Priya N. · mail · Wed 25 Nov",
+          "m7": "Jordan Lee · Teams · Tue 24 Nov",
+          "n8": "Meeting · Atlas QBR · Fri 20 Nov",
+          "p9": "Person · Marek Novak",
+          "t1": "Task · Reply to Jordan Lee about EPM-1234",
+          "t2": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 11,
+        "searched": "tasks 3 (Todoist) · events 2, Thu 19 Nov – Thu 3 Dec · messages 2 · meetings 1 · people 1 · facts 1 (Knowledge)"
+      },
+      "name": "a term match per source",
+      "now": 1795690800,
+      "question": "Where is Atlas, EPM-1234 and Marek Novak? ASK_SENTINEL_5c1e",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 1,
+          "facts": 1,
+          "meetings": 0,
+          "messages": 1,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "m5",
+          "f6"
+        ],
+        "labels": {
+          "e4": "Event · Fri 4 Dec 10:00 · Demo day",
+          "f6": "Knowledge · Atlas rollout",
+          "m5": "Priya N. · mail · Wed 25 Nov",
+          "t1": "Task · Reply to Jordan Lee about EPM-1234",
+          "t2": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 7,
+        "searched": "tasks 3 (Todoist) · events 1, Mon 30 Nov – Sun 6 Dec · messages 1 (Needs reply) · meetings 0 · people 0 · facts 1 (Knowledge)"
+      },
+      "name": "the window from next week",
+      "now": 1795690800,
+      "question": "What's on next week?",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": {
+        "kind": "message",
+        "label": "Priya N.",
+        "recordId": "msg-priya"
+      },
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 1,
+          "conversation": 0,
+          "events": 1,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 0,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "a1",
+          "t2",
+          "t3",
+          "t4",
+          "e5",
+          "n6",
+          "f7"
+        ],
+        "labels": {
+          "a1": "Priya N. · mail · Wed 25 Nov",
+          "e5": "Event · Fri 27 Nov 10:00 · QBR",
+          "f7": "Knowledge · Atlas rollout",
+          "n6": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t2": "Task · Reply to Jordan Lee about EPM-1234",
+          "t3": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t4": "Task · Book a room for demo day"
+        },
+        "nextRef": 8,
+        "searched": "tasks 3 (Todoist) · events 1, Thu 19 Nov – Thu 3 Dec · messages 0 (Needs reply) · meetings 1 · people 0 · facts 1 (Knowledge)"
+      },
+      "name": "the About pin",
+      "now": 1795690800,
+      "question": "What does she want?",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": {
+        "kind": "message",
+        "label": "Priya N.",
+        "recordId": "msg-gone"
+      },
+      "expect": {
+        "aboutGone": true,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 1,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 1,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "m5",
+          "n6",
+          "f7"
+        ],
+        "labels": {
+          "e4": "Event · Fri 27 Nov 10:00 · QBR",
+          "f7": "Knowledge · Atlas rollout",
+          "m5": "Priya N. · mail · Wed 25 Nov",
+          "n6": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t1": "Task · Reply to Jordan Lee about EPM-1234",
+          "t2": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 8,
+        "searched": "tasks 3 (Todoist) · events 1, Thu 19 Nov – Thu 3 Dec · messages 1 (Needs reply) · meetings 1 · people 0 · facts 1 (Knowledge)"
+      },
+      "name": "the About record is gone",
+      "now": 1795690800,
+      "question": "What does she want?",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 0,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 0,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "n4",
+          "f5"
+        ],
+        "labels": {
+          "f5": "Knowledge · Atlas rollout",
+          "n4": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t1": "Task · Reply to Jordan Lee about EPM-1234",
+          "t2": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 6,
+        "searched": "tasks 3 (Todoist) · meetings 1 · people 0 · facts 1 (Knowledge) · Microsoft 365 isn't connected"
+      },
+      "name": "Microsoft not connected",
+      "now": 1795690800,
+      "question": "anything urgent?",
+      "seed": "atlas",
+      "seedChanges": {
+        "events": [],
+        "m365": false,
+        "messages": []
+      },
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 2,
+          "facts": 0,
+          "meetings": 1,
+          "messages": 2,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "e5",
+          "m6",
+          "m7",
+          "n8"
+        ],
+        "labels": {
+          "e4": "Event · Fri 27 Nov 10:00 · QBR",
+          "e5": "Event · Tue 15 Dec 14:00 · Atlas rollout review",
+          "m6": "Priya N. · mail · Wed 25 Nov",
+          "m7": "Jordan Lee · Teams · Tue 24 Nov",
+          "n8": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t1": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t2": "Task · Reply to Jordan Lee about EPM-1234",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 9,
+        "searched": "tasks 3 (Todoist) · events 2, Thu 19 Nov – Thu 3 Dec · messages 2 · meetings 1"
+      },
+      "name": "the voice off",
+      "now": 1795690800,
+      "question": "Where is Atlas with Marek Novak?",
+      "seed": "atlas",
+      "seedChanges": {
+        "voice": false
+      },
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 2,
+          "facts": 0,
+          "meetings": 1,
+          "messages": 2,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "e5",
+          "m6",
+          "m7",
+          "n8"
+        ],
+        "labels": {
+          "e4": "Event · Tue 15 Dec 14:00 · Atlas rollout review",
+          "e5": "Event · Fri 27 Nov 10:00 · QBR",
+          "m6": "Priya N. · mail · Wed 25 Nov",
+          "m7": "Jordan Lee · Teams · Tue 24 Nov",
+          "n8": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t1": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t2": "Task · Reply to Jordan Lee about EPM-1234",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 9,
+        "searched": "tasks 3 (Todoist) · events 2, Thu 19 Nov – Thu 3 Dec · messages 2 · meetings 1 · people 0 · Knowledge found no facts in time"
+      },
+      "name": "facts missed",
+      "now": 1795690800,
+      "question": "Where is Atlas?",
+      "seed": "atlas",
+      "seedChanges": {
+        "facts": null
+      },
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 1,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 1,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "e4",
+          "m5",
+          "n6",
+          "f7"
+        ],
+        "labels": {
+          "e4": "Event · Fri 27 Nov 10:00 · QBR",
+          "f7": "Knowledge · Atlas rollout",
+          "m5": "Priya N. · mail · Wed 25 Nov",
+          "n6": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t1": "Task · Reply to Jordan Lee about EPM-1234",
+          "t2": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t3": "Task · Book a room for demo day"
+        },
+        "nextRef": 8,
+        "searched": "tasks 3 (Todoist) · events 1, Thu 19 Nov – Thu 3 Dec · messages 1 (Needs reply) · meetings 1 · people 0 · facts 1 (Knowledge)"
+      },
+      "name": "no term and no date",
+      "now": 1795690800,
+      "question": "anything urgent?",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 0,
+          "events": 30,
+          "facts": 4,
+          "meetings": 3,
+          "messages": 9,
+          "people": 2,
+          "tasks": 40
+        },
+        "cut": true,
+        "ids": [
+          "t1",
+          "t2",
+          "t3",
+          "t4",
+          "t5",
+          "t6",
+          "t7",
+          "t8",
+          "t9",
+          "t10",
+          "t11",
+          "t12",
+          "t13",
+          "t14",
+          "t15",
+          "t16",
+          "t17",
+          "t18",
+          "t19",
+          "t20",
+          "t21",
+          "t22",
+          "t23",
+          "t24",
+          "t25",
+          "t26",
+          "t27",
+          "t28",
+          "t29",
+          "t30",
+          "t31",
+          "t32",
+          "t33",
+          "t34",
+          "t35",
+          "t36",
+          "t37",
+          "t38",
+          "t39",
+          "t40",
+          "e41",
+          "e42",
+          "e43",
+          "e44",
+          "e45",
+          "e46",
+          "e47",
+          "e48",
+          "e49",
+          "e50",
+          "e51",
+          "e52",
+          "e53",
+          "e54",
+          "e55",
+          "e56",
+          "e57",
+          "e58",
+          "e59",
+          "e60",
+          "e61",
+          "e62",
+          "e63",
+          "e64",
+          "e65",
+          "e66",
+          "e67",
+          "e68",
+          "e69",
+          "e70",
+          "m71",
+          "m72",
+          "m73",
+          "m74",
+          "m75",
+          "m76",
+          "m77",
+          "m78",
+          "m79",
+          "n80",
+          "n81",
+          "n82",
+          "p83",
+          "p84",
+          "f85",
+          "f86",
+          "f87",
+          "f88"
+        ],
+        "labels": {
+          "e41": "Event · Fri 20 Nov 09:00 · Atlas sync 0",
+          "e42": "Event · Fri 20 Nov 09:00 · Atlas sync 10",
+          "e43": "Event · Fri 20 Nov 09:00 · Atlas sync 20",
+          "e44": "Event · Fri 20 Nov 09:00 · Atlas sync 30",
+          "e45": "Event · Sat 21 Nov 09:00 · Atlas sync 1",
+          "e46": "Event · Sat 21 Nov 09:00 · Atlas sync 11",
+          "e47": "Event · Sat 21 Nov 09:00 · Atlas sync 21",
+          "e48": "Event · Sun 22 Nov 09:00 · Atlas sync 2",
+          "e49": "Event · Sun 22 Nov 09:00 · Atlas sync 12",
+          "e50": "Event · Sun 22 Nov 09:00 · Atlas sync 22",
+          "e51": "Event · Mon 23 Nov 09:00 · Atlas sync 3",
+          "e52": "Event · Mon 23 Nov 09:00 · Atlas sync 13",
+          "e53": "Event · Mon 23 Nov 09:00 · Atlas sync 23",
+          "e54": "Event · Tue 24 Nov 09:00 · Atlas sync 4",
+          "e55": "Event · Tue 24 Nov 09:00 · Atlas sync 14",
+          "e56": "Event · Tue 24 Nov 09:00 · Atlas sync 24",
+          "e57": "Event · Wed 25 Nov 09:00 · Atlas sync 5",
+          "e58": "Event · Wed 25 Nov 09:00 · Atlas sync 15",
+          "e59": "Event · Wed 25 Nov 09:00 · Atlas sync 25",
+          "e60": "Event · Thu 26 Nov 09:00 · Atlas sync 6",
+          "e61": "Event · Thu 26 Nov 09:00 · Atlas sync 16",
+          "e62": "Event · Thu 26 Nov 09:00 · Atlas sync 26",
+          "e63": "Event · Fri 27 Nov 09:00 · Atlas sync 7",
+          "e64": "Event · Fri 27 Nov 09:00 · Atlas sync 17",
+          "e65": "Event · Fri 27 Nov 09:00 · Atlas sync 27",
+          "e66": "Event · Sat 28 Nov 09:00 · Atlas sync 8",
+          "e67": "Event · Sat 28 Nov 09:00 · Atlas sync 18",
+          "e68": "Event · Sat 28 Nov 09:00 · Atlas sync 28",
+          "e69": "Event · Sun 29 Nov 09:00 · Atlas sync 9",
+          "e70": "Event · Sun 29 Nov 09:00 · Atlas sync 19",
+          "f85": "Knowledge · Atlas 0",
+          "f86": "Knowledge · Atlas 1",
+          "f87": "Knowledge · Atlas 2",
+          "f88": "Knowledge · Atlas 3",
+          "m71": "Priya N. · mail · Thu 26 Nov",
+          "m72": "Priya N. · mail · Thu 26 Nov",
+          "m73": "Priya N. · mail · Thu 26 Nov",
+          "m74": "Priya N. · mail · Thu 26 Nov",
+          "m75": "Priya N. · mail · Thu 26 Nov",
+          "m76": "Priya N. · mail · Thu 26 Nov",
+          "m77": "Priya N. · mail · Thu 26 Nov",
+          "m78": "Priya N. · mail · Thu 26 Nov",
+          "m79": "Priya N. · mail · Thu 26 Nov",
+          "n80": "Meeting · Atlas weekly · Wed 25 Nov",
+          "n81": "Meeting · Atlas weekly · Tue 24 Nov",
+          "n82": "Meeting · Atlas weekly · Mon 23 Nov",
+          "p83": "Person · Atlas Person0",
+          "p84": "Person · Atlas Person1",
+          "t1": "Task · Atlas step 0",
+          "t10": "Task · Atlas step 9",
+          "t11": "Task · Atlas step 10",
+          "t12": "Task · Atlas step 11",
+          "t13": "Task · Atlas step 12",
+          "t14": "Task · Atlas step 13",
+          "t15": "Task · Atlas step 14",
+          "t16": "Task · Atlas step 15",
+          "t17": "Task · Atlas step 16",
+          "t18": "Task · Atlas step 17",
+          "t19": "Task · Atlas step 18",
+          "t2": "Task · Atlas step 1",
+          "t20": "Task · Atlas step 19",
+          "t21": "Task · Atlas step 20",
+          "t22": "Task · Atlas step 21",
+          "t23": "Task · Atlas step 22",
+          "t24": "Task · Atlas step 23",
+          "t25": "Task · Atlas step 24",
+          "t26": "Task · Atlas step 25",
+          "t27": "Task · Atlas step 26",
+          "t28": "Task · Atlas step 27",
+          "t29": "Task · Atlas step 28",
+          "t3": "Task · Atlas step 2",
+          "t30": "Task · Atlas step 29",
+          "t31": "Task · Atlas step 30",
+          "t32": "Task · Atlas step 31",
+          "t33": "Task · Atlas step 32",
+          "t34": "Task · Atlas step 33",
+          "t35": "Task · Atlas step 34",
+          "t36": "Task · Atlas step 35",
+          "t37": "Task · Atlas step 36",
+          "t38": "Task · Atlas step 37",
+          "t39": "Task · Atlas step 38",
+          "t4": "Task · Atlas step 3",
+          "t40": "Task · Atlas step 39",
+          "t5": "Task · Atlas step 4",
+          "t6": "Task · Atlas step 5",
+          "t7": "Task · Atlas step 6",
+          "t8": "Task · Atlas step 7",
+          "t9": "Task · Atlas step 8"
+        },
+        "nextRef": 89,
+        "searched": "tasks 40 of 41 (Todoist) · events 30 of 31, Thu 19 Nov – Thu 3 Dec · messages 9 of 16 · meetings 3 of 6 · people 2 of 4 · facts 4 of 6 (Knowledge)"
+      },
+      "name": "every cap hit",
+      "now": 1795690800,
+      "question": "Where is Atlas?",
+      "seed": "overfull",
+      "seedChanges": {},
+      "thread": null,
+      "zone": "Europe/Berlin"
+    },
+    {
+      "about": null,
+      "expect": {
+        "aboutGone": false,
+        "counts": {
+          "about": 0,
+          "conversation": 1,
+          "events": 3,
+          "facts": 1,
+          "meetings": 1,
+          "messages": 2,
+          "people": 0,
+          "tasks": 3
+        },
+        "cut": false,
+        "ids": [
+          "t7",
+          "t8",
+          "t9",
+          "e10",
+          "e11",
+          "e12",
+          "m13",
+          "m14",
+          "n15",
+          "f16"
+        ],
+        "labels": {
+          "e10": "Event · Fri 27 Nov 10:00 · QBR",
+          "e11": "Event · Fri 4 Dec 10:00 · Demo day",
+          "e12": "Event · Tue 15 Dec 14:00 · Atlas rollout review",
+          "f16": "Knowledge · Atlas rollout",
+          "m13": "Priya N. · mail · Wed 25 Nov",
+          "m14": "Jordan Lee · Teams · Tue 24 Nov",
+          "n15": "Meeting · Atlas QBR · Fri 20 Nov",
+          "t7": "Task · Reply to Jordan Lee about EPM-1234",
+          "t8": "Task · Send the Atlas budget ASK_SENTINEL_5c1e",
+          "t9": "Task · Book a room for demo day"
+        },
+        "nextRef": 17,
+        "searched": "tasks 3 (Todoist) · events 3, Thu 19 Nov – Thu 3 Dec · messages 2 · meetings 1 · people 0 · facts 1 (Knowledge)"
+      },
+      "name": "a follow-up whose ids continue",
+      "now": 1795690800,
+      "question": "And Jordan Lee?",
+      "seed": "atlas",
+      "seedChanges": {},
+      "thread": {
+        "createdAt": 1795604400,
+        "id": "ask-7f2c",
+        "nextRef": 7,
+        "turns": [
+          {
+            "about": null,
+            "actions": [],
+            "answer": "The Atlas budget by Friday [m3]. Also [x9] and [t99].",
+            "at": 1795604400,
+            "cites": [
+              {
+                "id": "m3",
+                "kind": "message",
+                "label": "Priya N. · mail · Tue 25 Nov",
+                "recordId": "msg-priya",
+                "title": null
+              }
+            ],
+            "cut": false,
+            "error": null,
+            "fallbackReason": null,
+            "fellBackFrom": null,
+            "id": "turn-1",
+            "jobId": null,
+            "model": null,
+            "profile": null,
+            "question": "What did I promise Priya this week?",
+            "searched": "tasks 2 (Todoist)",
+            "state": "done",
+            "took": null
+          },
+          {
+            "about": null,
+            "actions": [],
+            "answer": null,
+            "at": 1795690800,
+            "cites": [],
+            "cut": false,
+            "error": null,
+            "fallbackReason": null,
+            "fellBackFrom": null,
+            "id": "turn-2",
+            "jobId": null,
+            "model": null,
+            "profile": null,
+            "question": "And Jordan Lee?",
+            "searched": "tasks 2 (Todoist)",
+            "state": "queued",
+            "took": null
+          }
+        ],
+        "updatedAt": 1795690800
+      },
+      "zone": "Europe/Berlin"
+    }
+  ],
+  "seeds": {
+    "atlas": {
+      "events": [
+        {
+          "connectionId": null,
+          "data": {
+            "allDay": false,
+            "attendees": [
+              {
+                "address": "priya@example.test",
+                "name": "Priya N."
+              },
+              {
+                "address": "marek@example.test",
+                "name": "Marek Novak"
+              }
+            ],
+            "cancelled": false,
+            "end": "2026-11-27T10:00:00Z",
+            "isOnlineMeeting": true,
+            "location": "Room 4",
+            "organizer": {
+              "address": "jordan@example.test",
+              "name": "Jordan Lee"
+            },
+            "preview": "EVENT_BODY_never_in_context",
+            "start": "2026-11-27T09:00:00Z",
+            "title": "QBR"
+          },
+          "id": "ev-qbr",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "allDay": false,
+            "attendees": [
+              {
+                "address": "priya@example.test",
+                "name": "Priya N."
+              },
+              {
+                "address": "marek@example.test",
+                "name": "Marek Novak"
+              }
+            ],
+            "cancelled": false,
+            "end": "2026-12-15T14:00:00Z",
+            "isOnlineMeeting": true,
+            "location": "Room 4",
+            "organizer": {
+              "address": "jordan@example.test",
+              "name": "Jordan Lee"
+            },
+            "preview": "EVENT_BODY_never_in_context",
+            "start": "2026-12-15T13:00:00Z",
+            "title": "Atlas rollout review"
+          },
+          "id": "ev-atlas",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "allDay": false,
+            "attendees": [],
+            "cancelled": false,
+            "end": "2026-12-04T12:00:00Z",
+            "isOnlineMeeting": false,
+            "location": "Room 4",
+            "organizer": {
+              "address": "jordan@example.test",
+              "name": "Jordan Lee"
+            },
+            "preview": "EVENT_BODY_never_in_context",
+            "start": "2026-12-04T09:00:00Z",
+            "title": "Demo day"
+          },
+          "id": "ev-demo",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "allDay": false,
+            "attendees": [
+              {
+                "address": "priya@example.test",
+                "name": "Priya N."
+              },
+              {
+                "address": "marek@example.test",
+                "name": "Marek Novak"
+              }
+            ],
+            "cancelled": true,
+            "end": "2026-11-26T08:15:00Z",
+            "isOnlineMeeting": true,
+            "location": "Room 4",
+            "organizer": {
+              "address": "jordan@example.test",
+              "name": "Jordan Lee"
+            },
+            "preview": "EVENT_BODY_never_in_context",
+            "start": "2026-11-26T08:00:00Z",
+            "title": "Atlas standup"
+          },
+          "id": "ev-cancelled",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        }
+      ],
+      "facts": [
+        {
+          "id": "projects/atlas.md",
+          "text": "The Atlas rollout starts 1 Dec. ASK_SENTINEL_5c1e",
+          "title": "Atlas rollout"
+        }
+      ],
+      "factsProvider": "Knowledge",
+      "m365": true,
+      "meetings": [
+        {
+          "actionItems": [
+            "Priya sends the budget",
+            "Jordan books the review"
+          ],
+          "at": 1795172400,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-qbr",
+          "summary": "Agreed the Atlas rollout plan for December. ASK_SENTINEL_5c1e",
+          "title": "Atlas QBR"
+        },
+        {
+          "actionItems": [],
+          "at": 1787050800,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-old",
+          "summary": "Kicked off Atlas.",
+          "title": "Atlas kickoff"
+        }
+      ],
+      "messages": [
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795600800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-priya@example.test",
+            "lane": "reply",
+            "lifecycle": "open",
+            "text": "Can you send the Atlas budget by Friday? ASK_SENTINEL_5c1e",
+            "title": "Atlas budget"
+          },
+          "id": "msg-priya",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795600800,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795518000,
+            "channel": "chat",
+            "from": "Jordan Lee",
+            "fromAddress": "msg-jordan@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "moved epm-1234 to Dec",
+            "title": "Atlas squad"
+          },
+          "id": "msg-jordan",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795518000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1792234800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-old@example.test",
+            "lane": "reply",
+            "lifecycle": "open",
+            "text": "An Atlas note from long ago",
+            "title": "Atlas history"
+          },
+          "id": "msg-old",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1792234800,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795604400,
+            "channel": "chat",
+            "deleted": true,
+            "from": "Jordan Lee",
+            "fromAddress": "msg-deleted@example.test",
+            "lane": "reply",
+            "lifecycle": "open",
+            "text": "Atlas draft",
+            "title": "Atlas squad"
+          },
+          "id": "msg-deleted",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        }
+      ],
+      "people": [
+        {
+          "about": "Head of operations at the client.",
+          "addresses": [
+            "marek@example.test"
+          ],
+          "id": "marek",
+          "ids": [],
+          "name": "Marek Novak",
+          "names": [],
+          "source": "people/marek.md",
+          "text": "PROFILE_never_in_context: writes short lines.",
+          "updatedAt": "2026-11-20"
+        }
+      ],
+      "tasks": [
+        {
+          "connectionId": null,
+          "data": {
+            "due": "2026-11-27",
+            "owner": "priya@example.test",
+            "ownerName": "Priya N.",
+            "status": "todo",
+            "text": "Send the Atlas budget ASK_SENTINEL_5c1e"
+          },
+          "id": "task-budget",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "due": "2026-11-24",
+            "handled": {
+              "evidence": "replied"
+            },
+            "kind": "reply",
+            "owner": "You",
+            "status": "todo",
+            "text": "Reply to Jordan Lee about EPM-1234"
+          },
+          "id": "task-reply",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "due": "2026-12-20",
+            "owner": "You",
+            "status": "todo",
+            "text": "Book a room for demo day"
+          },
+          "id": "task-room",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "due": null,
+            "owner": "You",
+            "status": "done",
+            "text": "Atlas kickoff deck"
+          },
+          "id": "task-done",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        }
+      ],
+      "tasksProvider": "Todoist",
+      "voice": true
+    },
+    "overfull": {
+      "events": [
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-20T08:30:00Z",
+            "start": "2026-11-20T08:00:00Z",
+            "title": "Atlas sync 0"
+          },
+          "id": "ev-00",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-21T08:30:00Z",
+            "start": "2026-11-21T08:00:00Z",
+            "title": "Atlas sync 1"
+          },
+          "id": "ev-01",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-22T08:30:00Z",
+            "start": "2026-11-22T08:00:00Z",
+            "title": "Atlas sync 2"
+          },
+          "id": "ev-02",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-23T08:30:00Z",
+            "start": "2026-11-23T08:00:00Z",
+            "title": "Atlas sync 3"
+          },
+          "id": "ev-03",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-24T08:30:00Z",
+            "start": "2026-11-24T08:00:00Z",
+            "title": "Atlas sync 4"
+          },
+          "id": "ev-04",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-25T08:30:00Z",
+            "start": "2026-11-25T08:00:00Z",
+            "title": "Atlas sync 5"
+          },
+          "id": "ev-05",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-26T08:30:00Z",
+            "start": "2026-11-26T08:00:00Z",
+            "title": "Atlas sync 6"
+          },
+          "id": "ev-06",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-27T08:30:00Z",
+            "start": "2026-11-27T08:00:00Z",
+            "title": "Atlas sync 7"
+          },
+          "id": "ev-07",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-28T08:30:00Z",
+            "start": "2026-11-28T08:00:00Z",
+            "title": "Atlas sync 8"
+          },
+          "id": "ev-08",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-29T08:30:00Z",
+            "start": "2026-11-29T08:00:00Z",
+            "title": "Atlas sync 9"
+          },
+          "id": "ev-09",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-20T08:30:00Z",
+            "start": "2026-11-20T08:00:00Z",
+            "title": "Atlas sync 10"
+          },
+          "id": "ev-10",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-21T08:30:00Z",
+            "start": "2026-11-21T08:00:00Z",
+            "title": "Atlas sync 11"
+          },
+          "id": "ev-11",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-22T08:30:00Z",
+            "start": "2026-11-22T08:00:00Z",
+            "title": "Atlas sync 12"
+          },
+          "id": "ev-12",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-23T08:30:00Z",
+            "start": "2026-11-23T08:00:00Z",
+            "title": "Atlas sync 13"
+          },
+          "id": "ev-13",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-24T08:30:00Z",
+            "start": "2026-11-24T08:00:00Z",
+            "title": "Atlas sync 14"
+          },
+          "id": "ev-14",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-25T08:30:00Z",
+            "start": "2026-11-25T08:00:00Z",
+            "title": "Atlas sync 15"
+          },
+          "id": "ev-15",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-26T08:30:00Z",
+            "start": "2026-11-26T08:00:00Z",
+            "title": "Atlas sync 16"
+          },
+          "id": "ev-16",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-27T08:30:00Z",
+            "start": "2026-11-27T08:00:00Z",
+            "title": "Atlas sync 17"
+          },
+          "id": "ev-17",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-28T08:30:00Z",
+            "start": "2026-11-28T08:00:00Z",
+            "title": "Atlas sync 18"
+          },
+          "id": "ev-18",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-29T08:30:00Z",
+            "start": "2026-11-29T08:00:00Z",
+            "title": "Atlas sync 19"
+          },
+          "id": "ev-19",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-20T08:30:00Z",
+            "start": "2026-11-20T08:00:00Z",
+            "title": "Atlas sync 20"
+          },
+          "id": "ev-20",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-21T08:30:00Z",
+            "start": "2026-11-21T08:00:00Z",
+            "title": "Atlas sync 21"
+          },
+          "id": "ev-21",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-22T08:30:00Z",
+            "start": "2026-11-22T08:00:00Z",
+            "title": "Atlas sync 22"
+          },
+          "id": "ev-22",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-23T08:30:00Z",
+            "start": "2026-11-23T08:00:00Z",
+            "title": "Atlas sync 23"
+          },
+          "id": "ev-23",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-24T08:30:00Z",
+            "start": "2026-11-24T08:00:00Z",
+            "title": "Atlas sync 24"
+          },
+          "id": "ev-24",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-25T08:30:00Z",
+            "start": "2026-11-25T08:00:00Z",
+            "title": "Atlas sync 25"
+          },
+          "id": "ev-25",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-26T08:30:00Z",
+            "start": "2026-11-26T08:00:00Z",
+            "title": "Atlas sync 26"
+          },
+          "id": "ev-26",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-27T08:30:00Z",
+            "start": "2026-11-27T08:00:00Z",
+            "title": "Atlas sync 27"
+          },
+          "id": "ev-27",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-28T08:30:00Z",
+            "start": "2026-11-28T08:00:00Z",
+            "title": "Atlas sync 28"
+          },
+          "id": "ev-28",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-29T08:30:00Z",
+            "start": "2026-11-29T08:00:00Z",
+            "title": "Atlas sync 29"
+          },
+          "id": "ev-29",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "end": "2026-11-20T08:30:00Z",
+            "start": "2026-11-20T08:00:00Z",
+            "title": "Atlas sync 30"
+          },
+          "id": "ev-30",
+          "kind": "event",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        }
+      ],
+      "facts": [
+        {
+          "id": "f/0.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 0"
+        },
+        {
+          "id": "f/1.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 1"
+        },
+        {
+          "id": "f/2.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 2"
+        },
+        {
+          "id": "f/3.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 3"
+        },
+        {
+          "id": "f/4.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 4"
+        },
+        {
+          "id": "f/5.md",
+          "text": "Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. Fact text. ",
+          "title": "Atlas 5"
+        }
+      ],
+      "factsProvider": "Knowledge",
+      "m365": true,
+      "meetings": [
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795604400,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-0",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        },
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795518000,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-1",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        },
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795431600,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-2",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        },
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795345200,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-3",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        },
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795258800,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-4",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        },
+        {
+          "actionItems": [
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas",
+            "Follow up on Atlas"
+          ],
+          "at": 1795172400,
+          "attendees": [
+            "Priya N.",
+            "Jordan Lee"
+          ],
+          "id": "mtg-5",
+          "summary": "Atlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\nAtlas notes.\n",
+          "title": "Atlas weekly"
+        }
+      ],
+      "messages": [
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795690800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-00@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-00",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795690800,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795687200,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-01@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-01",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795687200,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795683600,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-02@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-02",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795683600,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795680000,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-03@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-03",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795680000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795676400,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-04@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-04",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795676400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795672800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-05@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-05",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795672800,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795669200,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-06@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-06",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795669200,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795665600,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-07@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-07",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795665600,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795662000,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-08@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-08",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795662000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795658400,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-09@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-09",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795658400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795654800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-10@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-10",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795654800,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795651200,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-11@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-11",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795651200,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795647600,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-12@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-12",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795647600,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795644000,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-13@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-13",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795644000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795640400,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-14@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-14",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795640400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "at": 1795636800,
+            "channel": "mail",
+            "from": "Priya N.",
+            "fromAddress": "msg-15@example.test",
+            "lane": "fyi",
+            "lifecycle": "open",
+            "text": "Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. Atlas budget line. ",
+            "title": "Atlas"
+          },
+          "id": "msg-15",
+          "kind": "message",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795636800,
+          "workspaceId": "personal"
+        }
+      ],
+      "people": [
+        {
+          "about": "About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. ",
+          "addresses": [
+            "p0@example.test"
+          ],
+          "id": "p0",
+          "ids": [],
+          "name": "Atlas Person0",
+          "names": [],
+          "source": "people/marek.md",
+          "text": "PROFILE_never_in_context: writes short lines.",
+          "updatedAt": "2026-11-20"
+        },
+        {
+          "about": "About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. ",
+          "addresses": [
+            "p1@example.test"
+          ],
+          "id": "p1",
+          "ids": [],
+          "name": "Atlas Person1",
+          "names": [],
+          "source": "people/marek.md",
+          "text": "PROFILE_never_in_context: writes short lines.",
+          "updatedAt": "2026-11-20"
+        },
+        {
+          "about": "About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. ",
+          "addresses": [
+            "p2@example.test"
+          ],
+          "id": "p2",
+          "ids": [],
+          "name": "Atlas Person2",
+          "names": [],
+          "source": "people/marek.md",
+          "text": "PROFILE_never_in_context: writes short lines.",
+          "updatedAt": "2026-11-20"
+        },
+        {
+          "about": "About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. About. ",
+          "addresses": [
+            "p3@example.test"
+          ],
+          "id": "p3",
+          "ids": [],
+          "name": "Atlas Person3",
+          "names": [],
+          "source": "people/marek.md",
+          "text": "PROFILE_never_in_context: writes short lines.",
+          "updatedAt": "2026-11-20"
+        }
+      ],
+      "tasks": [
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 0"
+          },
+          "id": "task-00",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 1"
+          },
+          "id": "task-01",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 2"
+          },
+          "id": "task-02",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 3"
+          },
+          "id": "task-03",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 4"
+          },
+          "id": "task-04",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 5"
+          },
+          "id": "task-05",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 6"
+          },
+          "id": "task-06",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 7"
+          },
+          "id": "task-07",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 8"
+          },
+          "id": "task-08",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 9"
+          },
+          "id": "task-09",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 10"
+          },
+          "id": "task-10",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 11"
+          },
+          "id": "task-11",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 12"
+          },
+          "id": "task-12",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 13"
+          },
+          "id": "task-13",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 14"
+          },
+          "id": "task-14",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 15"
+          },
+          "id": "task-15",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 16"
+          },
+          "id": "task-16",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 17"
+          },
+          "id": "task-17",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 18"
+          },
+          "id": "task-18",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 19"
+          },
+          "id": "task-19",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 20"
+          },
+          "id": "task-20",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 21"
+          },
+          "id": "task-21",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 22"
+          },
+          "id": "task-22",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 23"
+          },
+          "id": "task-23",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 24"
+          },
+          "id": "task-24",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 25"
+          },
+          "id": "task-25",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 26"
+          },
+          "id": "task-26",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 27"
+          },
+          "id": "task-27",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 28"
+          },
+          "id": "task-28",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 29"
+          },
+          "id": "task-29",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 30"
+          },
+          "id": "task-30",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 31"
+          },
+          "id": "task-31",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 32"
+          },
+          "id": "task-32",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 33"
+          },
+          "id": "task-33",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 34"
+          },
+          "id": "task-34",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 35"
+          },
+          "id": "task-35",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 36"
+          },
+          "id": "task-36",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 37"
+          },
+          "id": "task-37",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 38"
+          },
+          "id": "task-38",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 39"
+          },
+          "id": "task-39",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "status": "todo",
+            "text": "Atlas step 40"
+          },
+          "id": "task-40",
+          "kind": "commitment",
+          "revision": "rev-0",
+          "source": "local",
+          "updatedAt": 1795604400,
+          "workspaceId": "personal"
+        }
+      ],
+      "tasksProvider": "Todoist",
+      "voice": true
+    }
+  }
+}

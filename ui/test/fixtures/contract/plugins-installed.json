@@ -16,6 +16,7 @@
     "market": "acme",
     "name": "Stand-up digest",
     "problem": null,
+    "settings": [],
     "signin": [],
     "source": "https://github.com/acme-corp/connect-plugins#stable",
     "summary": "A morning digest of your team's updates on Today",

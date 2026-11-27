@@ -4,6 +4,16 @@
     "commit": null,
     "fetchedAt": null,
     "kind": "git",
+    "name": "codemie",
+    "ready": false,
+    "ref": null,
+    "source": "https://github.com/codemie-ai/codemie-connect-marketplace"
+  },
+  {
+    "builtIn": true,
+    "commit": null,
+    "fetchedAt": null,
+    "kind": "git",
     "name": "onetest",
     "ready": false,
     "ref": null,

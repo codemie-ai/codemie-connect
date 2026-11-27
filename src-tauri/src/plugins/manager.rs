@@ -1,27 +1,34 @@
 //! The `PluginManager` (DESIGN 7.2): it starts after `Core`, loads every enabled plugin's host
 //! half into the `PluginHost` with Connect's `Services`, and reloads when the registry changes
-//! (install, update, enable, disable, remove, reset). It gives `Core` its event sink, keeps
-//! Today's plugin records to the plugins that are on, and on its tick asks the plugins' widget
-//! and work-row providers (on load, after `refresh`, after `changed()`), refreshes what
+//! (install, update, enable, disable, remove, reset). It gives `Core` its event sink and its way
+//! into task providers (`TaskProviders`) and reply-context providers (`VoiceProviders`), keeps
+//! Today's plugin records to the plugins that are on, and on its tick asks the plugins' widget and
+//! work-row providers (on load, after `refresh`, after `changed()`), refreshes what
 //! `ctx.profiles()` answers, and starts again plugins stopped for a fault.
 use super::host::{ErrorCode, Grants, HostError, Limits, PluginHost};
 use super::registry::{Installed, PluginPaths, Registry};
 use super::services::events::HostEvents;
 use super::services::signin::{self, GhCli};
 use super::services::today::{widget_record, work_record};
-use super::services::{http, lock, FolderPicker, Granted, Outside, Services};
+use super::services::{
+    http, lock, reply_context, settings, tasks, FolderPicker, Granted, Outside, Services,
+};
+use crate::workspace::task_provider::{ProviderError, ProviderInfo, TaskProviders};
+use crate::workspace::voice::{VoiceError, VoiceInfo, VoiceProviders};
 use crate::workspace::Core;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 /// How often the manager looks after its plugins.
 const TICK: Duration = Duration::from_secs(2);
 /// A provider answers within this (PLUGIN-ENGINE.md §4.1).
 const PROVIDER_ANSWER: Duration = Duration::from_secs(5);
+/// A task provider answers within this (task-provider design §5).
+const TASK_ANSWER: Duration = Duration::from_secs(30);
 /// A provider asked again after `changed()` no sooner than this.
 const CHANGED_AFTER: Duration = Duration::from_secs(10);
 /// Work rows are asked again this often; a widget after its `refresh` (60 s at least).
@@ -76,27 +83,41 @@ impl PluginManager {
         let host = Arc::new(PluginHost::with_limits(services.clone(), limits));
         services.set_host(&host);
         core.set_event_sink(Arc::new(HostEvents(Arc::downgrade(&host))));
-        Arc::new(PluginManager {
-            paths,
-            core,
-            services,
-            host,
-            loaded: Mutex::default(),
-            problems: Mutex::default(),
-            asked: Mutex::default(),
-            profiles_at: Mutex::default(),
-            reloading: tokio::sync::Mutex::new(()),
-            reloads: tokio::sync::watch::Sender::new(0),
+        Arc::new_cyclic(|me| {
+            core.set_task_providers(Arc::new(ManagerTasks(me.clone())));
+            core.set_voice_providers(Arc::new(ManagerVoice(me.clone())));
+            PluginManager {
+                paths,
+                core,
+                services,
+                host,
+                loaded: Mutex::default(),
+                problems: Mutex::default(),
+                asked: Mutex::default(),
+                profiles_at: Mutex::default(),
+                reloading: tokio::sync::Mutex::new(()),
+                reloads: tokio::sync::watch::Sender::new(0),
+            }
         })
     }
 
     /// The app's manager: native folder picker, the GitHub CLI and the network; plugins load in
     /// the background, and the tick runs while the app does.
     pub fn start(app: &tauri::AppHandle, core: &Arc<Core>) -> Arc<PluginManager> {
+        Self::start_with_http(app, core, http::Client::new())
+    }
+
+    /// [`start`], with `http` as the `Outside.http` plugins reach the network through: the tour
+    /// passes an offline client (design § 2), so Settings › Plugins is real but sends nothing.
+    pub fn start_with_http(
+        app: &tauri::AppHandle,
+        core: &Arc<Core>,
+        http: http::Client,
+    ) -> Arc<PluginManager> {
         let outside = Outside {
             picker: Arc::new(NativePicker(app.clone())),
             signin: Arc::new(GhCli),
-            http: http::Client::new(),
+            http,
         };
         let manager = PluginManager::new(core.clone(), outside, Limits::default());
         let running = manager.clone();
@@ -161,10 +182,25 @@ impl PluginManager {
             );
         }
         lock(&self.problems).retain(|id, _| want.contains_key(id));
+        let mut loaded_now = Vec::new();
         for (id, p) in &want {
             if !lock(&self.loaded).contains_key(id) {
                 self.load(id, p).await;
+                loaded_now.push(id.clone());
             }
+        }
+        // The chosen voice provider (re)loaded: its copy is refreshed.
+        let chosen = self
+            .core
+            .repo()
+            .and_then(|r| r.settings())
+            .map(|s| s.voice.provider)
+            .unwrap_or_default();
+        let reloaded = loaded_now
+            .iter()
+            .any(|id| chosen == format!("plugin:{id}") && lock(&self.loaded).contains_key(id));
+        if reloaded {
+            self.core.voice_reloaded();
         }
     }
 
@@ -274,16 +310,9 @@ impl PluginManager {
         }
     }
 
-    /// The user pressed Choose folder for a marketplace on this computer: the folder they chose.
     /// Connect's services for the plugins, for what the window asks for a plugin's page.
     pub fn services(&self) -> &Arc<Services> {
         &self.services
-    }
-
-    pub async fn pick_market_folder(&self) -> Option<PathBuf> {
-        self.services
-            .pick_folder("Choose a plugin marketplace folder")
-            .await
     }
 
     /// The user pressed Sign in (or Sign out) on a plugin's settings.
@@ -401,6 +430,241 @@ impl PluginManager {
     }
 }
 
+/// Connect's way into the task providers (design §5): a provider plugin's `tasks:<op>` asked
+/// through the host, with 30 s to answer.
+impl TaskProviders for PluginManager {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+    ) -> BoxFuture<'static, Result<Value, ProviderError>> {
+        let (host, paths) = (self.host.clone(), self.paths.clone());
+        let (plugin, provider) = (plugin.to_string(), format!("tasks:{op}"));
+        Box::pin(async move {
+            match tokio::time::timeout(TASK_ANSWER, host.ask(&plugin, &provider, args)).await {
+                Ok(Ok(answer)) => Ok(answer),
+                Ok(Err(e)) if e.code == ErrorCode::Timeout => Err(ProviderError::Offline),
+                // The whole message is checked for a stored secret before `parse` cuts it to 200
+                // characters: a token crossing the cut would leave its start behind.
+                Ok(Err(e)) if secret_in(&paths, &plugin, &e.message) => {
+                    Err(ProviderError::parse(&e.message).without_text())
+                }
+                Ok(Err(e)) => Err(ProviderError::parse(&e.message)),
+                Err(_) => Err(ProviderError::Offline),
+            }
+        })
+    }
+
+    /// Every installed plugin whose manifest provides tasks (agreed to on its sheet): on when it
+    /// is turned on, ready once it is loaded and registered its ops (`ctx.tasks.provide`).
+    fn available(&self) -> Vec<ProviderInfo> {
+        let Ok(reg) = Registry::load(&self.paths) else {
+            return Vec::new();
+        };
+        let role = super::capabilities::role_key("tasks");
+        let loaded: Vec<String> = lock(&self.loaded).keys().cloned().collect();
+        reg.installed
+            .iter()
+            .filter(|(id, p)| super::valid_id(id) && p.agreed.contains(&role))
+            .filter_map(|(id, p)| {
+                let m = super::install::installed_manifest(&self.paths, id, p)?;
+                m.provides
+                    .iter()
+                    .any(|r| r == "tasks")
+                    .then(|| ProviderInfo {
+                        id: format!("plugin:{id}"),
+                        name: m.name,
+                        on: p.enabled,
+                        ready: p.enabled
+                            && loaded.contains(id)
+                            && tasks::ops_of(&self.services, id).is_some(),
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether a reload is still under way (I1): a provider not yet `ready` might just not have
+    /// finished loading.
+    fn loading(&self) -> bool {
+        self.reloads_pending() > 0
+    }
+
+    fn secret_matches(&self, plugin: &str, text: &str) -> bool {
+        secret_in(&self.paths, plugin, text)
+    }
+
+    /// `<id>@<version>|<plain settings>`: each setting its manifest declares, but no secret, as
+    /// set or else its default, in key order (design §4, amended 2026-11-27).
+    fn fingerprint(&self, plugin: &str) -> Option<String> {
+        let reg = Registry::load(&self.paths).ok()?;
+        let p = reg.installed.get(plugin)?;
+        let m = super::install::installed_manifest(&self.paths, plugin, p)?;
+        let stored =
+            super::services::read_json(&settings::plain_file(&self.paths, plugin), json!({}));
+        let plain: BTreeMap<&str, Value> = m
+            .settings
+            .iter()
+            .filter(|d| d.kind != "secret")
+            .map(|d| {
+                let v = match stored.get(&d.key) {
+                    Some(v) if !v.is_null() => v.clone(),
+                    _ => d.default.clone().unwrap_or(Value::Null),
+                };
+                (d.key.as_str(), v)
+            })
+            .collect();
+        Some(format!("{plugin}@{}|{}", p.version, json!(plain)))
+    }
+}
+
+/// Connect's way into the reply-context providers (reply-voice design §1): a provider plugin's
+/// `replyContext:<op>` asked through the host within `limit`. A host `timeout`, no answer in
+/// time, or anything a provider throws without a known code is `Unavailable`.
+impl VoiceProviders for PluginManager {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+        limit: Duration,
+    ) -> BoxFuture<'static, Result<Value, VoiceError>> {
+        let (host, paths) = (self.host.clone(), self.paths.clone());
+        let (plugin, provider) = (plugin.to_string(), format!("replyContext:{op}"));
+        Box::pin(async move {
+            match tokio::time::timeout(limit, host.ask(&plugin, &provider, args)).await {
+                Ok(Ok(answer)) => Ok(answer),
+                Ok(Err(e)) if e.code == ErrorCode::Timeout => Err(VoiceError::Unavailable),
+                // A refusal echoing a stored secret keeps no sentence (checked whole, before the
+                // cut to 200 characters).
+                Ok(Err(e)) if secret_in(&paths, &plugin, &e.message) => {
+                    Err(match VoiceError::parse(&e.message) {
+                        VoiceError::Refused(_) => VoiceError::Refused(String::new()),
+                        other => other,
+                    })
+                }
+                Ok(Err(e)) => Err(VoiceError::parse(&e.message)),
+                Err(_) => Err(VoiceError::Unavailable),
+            }
+        })
+    }
+
+    /// Every installed plugin whose manifest provides reply-context (agreed to on its sheet): on
+    /// when it is turned on, ready once it is loaded and registered its ops
+    /// (`ctx.replyContext.provide`), offering facts when it registered `facts`.
+    fn available(&self) -> Vec<VoiceInfo> {
+        let Ok(reg) = Registry::load(&self.paths) else {
+            return Vec::new();
+        };
+        let role = super::capabilities::role_key("reply-context");
+        let loaded: Vec<String> = lock(&self.loaded).keys().cloned().collect();
+        reg.installed
+            .iter()
+            .filter(|(id, p)| super::valid_id(id) && p.agreed.contains(&role))
+            .filter_map(|(id, p)| {
+                let m = super::install::installed_manifest(&self.paths, id, p)?;
+                if !m.provides.iter().any(|r| r == "reply-context")
+                    || super::manifest::reaches_off_mac(&m.provides, &m.uses)
+                {
+                    return None;
+                }
+                let ops = reply_context::ops_of(&self.services, id);
+                Some(VoiceInfo {
+                    id: format!("plugin:{id}"),
+                    name: m.name,
+                    on: p.enabled,
+                    ready: p.enabled && loaded.contains(id) && ops.is_some(),
+                    facts: ops.is_some_and(|ops| ops.iter().any(|op| op == "facts")),
+                })
+            })
+            .collect()
+    }
+
+    fn loading(&self) -> bool {
+        self.reloads_pending() > 0
+    }
+}
+
+/// Whether `text` contains one of plugin `plugin`'s stored secrets.
+fn secret_in(paths: &PluginPaths, plugin: &str, text: &str) -> bool {
+    settings::secret_values(paths, plugin)
+        .iter()
+        .any(|secret| text.contains(secret.as_str()))
+}
+
+/// What `Core` holds of the manager (it holds `Core`, so not the manager itself).
+struct ManagerTasks(Weak<PluginManager>);
+
+impl TaskProviders for ManagerTasks {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+    ) -> BoxFuture<'static, Result<Value, ProviderError>> {
+        match self.0.upgrade() {
+            Some(m) => TaskProviders::call(&*m, plugin, op, args),
+            None => Box::pin(async { Err(ProviderError::Offline) }),
+        }
+    }
+
+    fn available(&self) -> Vec<ProviderInfo> {
+        self.0
+            .upgrade()
+            .map(|m| TaskProviders::available(&*m))
+            .unwrap_or_default()
+    }
+
+    fn loading(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|m| TaskProviders::loading(&*m))
+    }
+
+    fn secret_matches(&self, plugin: &str, text: &str) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|m| m.secret_matches(plugin, text))
+    }
+
+    fn fingerprint(&self, plugin: &str) -> Option<String> {
+        self.0
+            .upgrade()
+            .and_then(|m| TaskProviders::fingerprint(&*m, plugin))
+    }
+}
+
+/// What `Core` holds of the manager for the reply-context providers.
+struct ManagerVoice(Weak<PluginManager>);
+
+impl VoiceProviders for ManagerVoice {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+        limit: Duration,
+    ) -> BoxFuture<'static, Result<Value, VoiceError>> {
+        match self.0.upgrade() {
+            Some(m) => VoiceProviders::call(&*m, plugin, op, args, limit),
+            None => Box::pin(async { Err(VoiceError::Unavailable) }),
+        }
+    }
+
+    fn available(&self) -> Vec<VoiceInfo> {
+        self.0
+            .upgrade()
+            .map(|m| VoiceProviders::available(&*m))
+            .unwrap_or_default()
+    }
+
+    fn loading(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|m| VoiceProviders::loading(&*m))
+    }
+}
+
 /// A reload asked for and not finished: dropped (run, or its task gone), it is no longer counted,
 /// and the window reads the installed list again (what loaded, what didn't and why).
 struct ReloadAsked(Arc<PluginManager>);
@@ -463,6 +727,9 @@ impl FolderPicker for NativePicker {
     #[cfg(any(target_os = "macos", windows))]
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>> {
         use tauri::Manager;
+        if crate::commands::tour::opens_nothing("plugin folder picker").is_err() {
+            return Box::pin(async { None });
+        }
         let app = self.0.clone();
         Box::pin(async move {
             let window = app.get_webview_window("main")?;
@@ -526,6 +793,9 @@ impl FolderPicker for NativePicker {
         exts: Vec<String>,
     ) -> BoxFuture<'static, Vec<PathBuf>> {
         use tauri::Manager;
+        if crate::commands::tour::opens_nothing("plugin file picker").is_err() {
+            return Box::pin(async { Vec::new() });
+        }
         let app = self.0.clone();
         Box::pin(async move {
             let Some(window) = app.get_webview_window("main") else {
@@ -566,7 +836,9 @@ mod tests {
     use crate::ai::fake::FakeRunner;
     use crate::plugins::registry::Source;
     use crate::plugins::services::testing::{FakeGh, Picked};
+    use crate::workspace::task_provider::{ProviderError, TaskProviders};
     use crate::workspace::test_core;
+    use crate::workspace::voice::{VoiceError, VoiceProviders};
 
     pub struct Setup {
         _dir: tempfile::TempDir,
@@ -609,10 +881,15 @@ mod tests {
             }
             std::fs::write(dir.join("echo-plugin.json"), m.to_string()).unwrap();
             std::fs::write(dir.join("main.js"), main).unwrap();
-            let agreed: Vec<String> = m["uses"]
+            let mut agreed: Vec<String> = m["uses"]
                 .as_object()
                 .map(|u| u.keys().cloned().collect())
                 .unwrap_or_default();
+            for role in m["provides"].as_array().into_iter().flatten() {
+                agreed.push(crate::plugins::capabilities::role_key(
+                    role.as_str().unwrap(),
+                ));
+            }
             Registry::update(paths, |r| {
                 r.installed.insert(
                     id.to_string(),
@@ -935,5 +1212,517 @@ mod tests {
             widget(&s.core, "gh:ci").unwrap().data["data"]["state"],
             "bad"
         );
+    }
+
+    /// The Todoist-like provider's manifest: it provides tasks and has a token.
+    fn provider_manifest() -> Value {
+        json!({
+            "name": "Todoist", "provides": ["tasks"], "requires": ["tasks_provider"],
+            "settings": [
+                {"key": "token", "label": "API token", "type": "secret"},
+                {"key": "project", "label": "Project", "type": "string", "default": "Connect"}
+            ]
+        })
+    }
+
+    fn providers(s: &Setup) -> &dyn TaskProviders {
+        &*s.manager
+    }
+
+    /// The fingerprint a sync compares (amended 2026-11-27): the version and the plain settings
+    /// as they apply (defaults too), never a secret.
+    #[tokio::test]
+    async fn a_providers_fingerprint_follows_its_version_and_plain_settings() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install("todoist", "1.0.1", provider_manifest(), "", true);
+        let p = providers(&s);
+        assert_eq!(
+            p.fingerprint("todoist").as_deref(),
+            Some(r#"todoist@1.0.1|{"project":"Connect"}"#)
+        );
+        let paths = &s.manager.paths;
+        crate::plugins::extras::set_setting(paths, "todoist", "token", &json!("tk_secret_0123"))
+            .unwrap();
+        crate::plugins::extras::set_setting(paths, "todoist", "project", &json!("Work")).unwrap();
+        let fp = p.fingerprint("todoist").unwrap();
+        assert_eq!(fp, r#"todoist@1.0.1|{"project":"Work"}"#, "no secret in it");
+        let mut manifest = provider_manifest();
+        manifest["settings"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"key": "scope", "label": "Show", "type": "string", "default": "all"}));
+        s.install("todoist", "1.1.0", manifest, "", true);
+        assert_eq!(
+            p.fingerprint("todoist").as_deref(),
+            Some(r#"todoist@1.1.0|{"project":"Work","scope":"all"}"#)
+        );
+        assert_eq!(p.fingerprint("nope"), None);
+    }
+
+    #[tokio::test]
+    async fn a_provider_plugin_answers_tasks_ops_through_the_host() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.tasks.provide({
+                status: async () => ({ ok: true, account: 'Taylor', project: 'Connect' }),
+                list: async (args) => ({ tasks: [], asked: args }),
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.loaded(),
+            ["todoist"],
+            "{:?}",
+            s.manager.problems()
+        );
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Ok(json!({"ok": true, "account": "Taylor", "project": "Connect"}))
+        );
+        assert_eq!(
+            p.call("todoist", "list", json!({"x": 1})).await,
+            Ok(json!({"tasks": [], "asked": {"x": 1}}))
+        );
+        // An op it didn't give is a temporary failure, never a crash.
+        assert_eq!(
+            p.call("todoist", "create", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+        let available = serde_json::to_value(p.available()).unwrap();
+        assert_eq!(
+            available,
+            json!([{"id": "plugin:todoist", "name": "Todoist", "on": true, "ready": true}])
+        );
+        // The core sees it too.
+        let snap = s.core.task_provider_snapshot(&Default::default());
+        assert_eq!(snap["available"][1]["id"], "plugin:todoist");
+
+        // Turned off: listed, not on and not ready; its ops went with it.
+        s.set_enabled("todoist", false);
+        s.manager.reload().await;
+        assert_eq!(
+            serde_json::to_value(p.available()).unwrap(),
+            json!([{"id": "plugin:todoist", "name": "Todoist", "on": false, "ready": false}])
+        );
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn tasks_provide_is_refused_without_the_role() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "sneaky",
+            "1.0.0",
+            json!({}),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.tasks.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.call("sneaky", "refused", Value::Null).await,
+            Ok(json!(
+                "permission: sneaky doesn't provide tasks (provides in its manifest)"
+            ))
+        );
+        let p = providers(&s);
+        assert!(p.available().is_empty());
+        assert_eq!(
+            p.call("sneaky", "status", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_errors_map_to_codes() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.tasks.provide({
+                status: async () => { throw new Error('rate_limited:90: slow down') },
+                list: async () => { throw new Error('needs_token: no token') },
+                create: async () => { throw new Error('refused: Todoist didn\'t accept the change (400)') },
+                update: async () => { throw new Error('something odd') },
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Err(ProviderError::RateLimited { retry_after: 90 })
+        );
+        assert_eq!(
+            p.call("todoist", "list", json!({})).await,
+            Err(ProviderError::NeedsToken)
+        );
+        assert_eq!(
+            p.call("todoist", "create", json!({})).await,
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into()
+            ))
+        );
+        assert_eq!(
+            p.call("todoist", "update", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_matches_finds_the_stored_secret_only() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            "export function apply(ctx) {}",
+            true,
+        );
+        let p = providers(&s);
+        const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+        assert!(!p.secret_matches("todoist", &format!("echo {SENTINEL}")));
+        crate::plugins::extras::set_setting(&s.manager.paths, "todoist", "token", &json!(SENTINEL))
+            .unwrap();
+        assert!(p.secret_matches("todoist", &format!("echo {SENTINEL} back")));
+        assert!(!p.secret_matches("todoist", "nothing secret here"));
+        assert!(!p.secret_matches("other", &format!("echo {SENTINEL}")));
+    }
+
+    /// A refusal echoing the token is checked whole, before it is cut to 200 characters: a token
+    /// crossing the cut must not leave its first characters behind.
+    #[tokio::test]
+    async fn a_refusal_with_the_token_is_dropped_before_it_is_cut() {
+        const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        // 190 characters of text, then the token: the cut at 200 falls inside it.
+        let main = format!(
+            r#"
+            export function apply(ctx) {{
+              ctx.tasks.provide({{
+                update: async () => {{ throw new Error('refused: ' + 'x'.repeat(190) + '{SENTINEL} echoed') }},
+                remove: async () => {{ throw new Error('not_found: {SENTINEL} is gone') }},
+                complete: async () => {{ throw new Error('refused: Todoist didn\'t accept the change (400)') }},
+              }})
+            }}
+            "#
+        );
+        s.install("todoist", "1.0.0", provider_manifest(), &main, true);
+        s.manager.reload().await;
+        crate::plugins::extras::set_setting(&s.manager.paths, "todoist", "token", &json!(SENTINEL))
+            .unwrap();
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "update", json!({})).await,
+            Err(ProviderError::Refused(String::new()))
+        );
+        assert_eq!(
+            p.call("todoist", "remove", json!({})).await,
+            Err(ProviderError::NotFound(String::new()))
+        );
+        // A refusal without the token keeps its sentence.
+        assert_eq!(
+            p.call("todoist", "complete", json!({})).await,
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into()
+            ))
+        );
+    }
+
+    /// A Knowledge-like reply-context provider's manifest: no network, a folder.
+    fn voice_manifest(name: &str) -> Value {
+        json!({
+            "name": name, "provides": ["reply-context"],
+            "requires": ["reply_context_provider"],
+            "uses": {"folders": {"write": true}}
+        })
+    }
+
+    fn voices(s: &Setup) -> &dyn VoiceProviders {
+        &*s.manager
+    }
+
+    #[tokio::test]
+    async fn manager_lists_and_calls_a_voice_provider() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "knowledge",
+            "1.0.0",
+            voice_manifest("Knowledge"),
+            r#"
+            export function apply(ctx) {
+              ctx.replyContext.provide({
+                status: async () => ({ ok: true, people: 2, rules: 1, style: true, skipped: 0 }),
+                export: async () => { throw new Error('needs_setup: no folder') },
+                context: () => new Promise(() => {}),
+                save: async () => { throw new Error('refused: The page changed in your folder.') },
+                remove: async () => { throw new Error('something odd') },
+              })
+            }
+            "#,
+            true,
+        );
+        s.install(
+            "notes",
+            "1.0.0",
+            voice_manifest("Notes"),
+            r#"
+            export function apply(ctx) {
+              ctx.replyContext.provide({
+                status: async () => ({ ok: true }),
+                facts: async ({ terms }) => ({ facts: [], asked: terms }),
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.loaded(),
+            ["knowledge", "notes"],
+            "{:?}",
+            s.manager.problems()
+        );
+        let v = voices(&s);
+        let available = serde_json::to_value(v.available()).unwrap();
+        assert_eq!(
+            available,
+            json!([
+                {"id": "plugin:knowledge", "name": "Knowledge", "on": true, "ready": true, "facts": false},
+                {"id": "plugin:notes", "name": "Notes", "on": true, "ready": true, "facts": true},
+            ])
+        );
+        let limit = Duration::from_millis(100);
+        assert_eq!(
+            v.call("knowledge", "status", json!({}), limit).await,
+            Ok(json!({"ok": true, "people": 2, "rules": 1, "style": true, "skipped": 0}))
+        );
+        assert_eq!(
+            v.call("notes", "facts", json!({"terms": ["EPM-1234"]}), limit)
+                .await,
+            Ok(json!({"facts": [], "asked": ["EPM-1234"]}))
+        );
+        assert_eq!(
+            v.call("knowledge", "export", json!({}), limit).await,
+            Err(VoiceError::NeedsSetup)
+        );
+        assert_eq!(
+            v.call("knowledge", "save", json!({}), limit).await,
+            Err(VoiceError::Refused(
+                "The page changed in your folder.".into()
+            ))
+        );
+        assert_eq!(
+            v.call("knowledge", "remove", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        // Never answers within the limit; an op it didn't give; a plugin that isn't loaded.
+        let started = Instant::now();
+        assert_eq!(
+            v.call("knowledge", "context", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            v.call("knowledge", "facts", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        assert_eq!(
+            v.call("nobody", "status", json!({}), limit).await,
+            Err(VoiceError::Unavailable)
+        );
+        // The core sees them through the manager.
+        let snap = s.core.voice_snapshot(&Default::default());
+        assert_eq!(snap["available"][0]["id"], "plugin:knowledge");
+
+        // Turned off: listed, not on and not ready.
+        s.set_enabled("knowledge", false);
+        s.manager.reload().await;
+        assert_eq!(
+            serde_json::to_value(v.available()).unwrap()[0],
+            json!({"id": "plugin:knowledge", "name": "Knowledge", "on": false, "ready": false, "facts": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn replycontext_provide_is_refused_without_the_role() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "sneaky",
+            "1.0.0",
+            json!({}),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.replyContext.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+              ctx.command('sent', async () => { try { await ctx.replyContext.sent({}) } catch (e) { return e.message } })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        let refusal = "permission: sneaky doesn't provide reply-context (provides in its manifest)";
+        assert_eq!(
+            s.manager.call("sneaky", "refused", Value::Null).await,
+            Ok(json!(refusal))
+        );
+        assert_eq!(
+            s.manager.call("sneaky", "sent", Value::Null).await,
+            Ok(json!(refusal))
+        );
+        let v = voices(&s);
+        assert!(v.available().is_empty());
+        assert_eq!(
+            v.call("sneaky", "status", json!({}), Duration::from_millis(100))
+                .await,
+            Err(VoiceError::Unavailable)
+        );
+    }
+
+    const OFF_MAC: &str = "A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.";
+
+    const PROVIDES_STATUS: &str = r#"
+        export function apply(ctx) {
+          ctx.replyContext.provide({ status: async () => ({ ok: true }) })
+        }
+    "#;
+
+    /// Its manifest edited on disk (or its registry entry written by hand) to add the network to
+    /// the role, with every line agreed: it never loads, and isn't listed.
+    #[tokio::test]
+    async fn a_reply_context_plugin_with_the_network_never_loads() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        for (id, key) in [
+            ("chatty", "network"),
+            ("signer", "signin"),
+            ("sender", "deliver"),
+        ] {
+            let mut m = voice_manifest("Chatty");
+            m["uses"][key] = json!({});
+            s.install(id, "1.0.0", m, PROVIDES_STATUS, true);
+        }
+        s.manager.reload().await;
+        assert!(s.manager.loaded().is_empty());
+        for id in ["chatty", "signer", "sender"] {
+            assert_eq!(s.manager.problems()[id], OFF_MAC, "{id}");
+        }
+        assert!(voices(&s).available().is_empty());
+        // Turned off, it still isn't listed.
+        s.set_enabled("chatty", false);
+        s.manager.reload().await;
+        assert!(voices(&s).available().is_empty());
+    }
+
+    /// The manifest provides the role, but its sheet line wasn't agreed: it loads without it.
+    #[tokio::test]
+    async fn a_role_not_agreed_to_is_not_taken() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "unsure",
+            "1.0.0",
+            voice_manifest("Unsure"),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.replyContext.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+            }
+            "#,
+            true,
+        );
+        Registry::update(&s.manager.paths, |r| {
+            r.installed
+                .get_mut("unsure")
+                .unwrap()
+                .agreed
+                .retain(|k| k != "provides_reply-context");
+            Ok(())
+        })
+        .unwrap();
+        s.manager.reload().await;
+        assert_eq!(s.manager.loaded(), ["unsure"], "{:?}", s.manager.problems());
+        assert_eq!(
+            s.manager.call("unsure", "refused", Value::Null).await,
+            Ok(json!(
+                "permission: unsure doesn't provide reply-context (provides in its manifest)"
+            ))
+        );
+        assert!(voices(&s).available().is_empty());
+    }
+
+    /// A reload that loads the chosen provider tells the core; one that loads another plugin,
+    /// or loads nothing new, doesn't.
+    #[tokio::test]
+    async fn loading_the_chosen_provider_tells_the_core() {
+        use std::sync::atomic::Ordering;
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "knowledge",
+            "1.0.0",
+            voice_manifest("Knowledge"),
+            PROVIDES_STATUS,
+            true,
+        );
+        s.install(
+            "other",
+            "1.0.0",
+            voice_manifest("Other"),
+            PROVIDES_STATUS,
+            false,
+        );
+        {
+            let mut r = s.core.repo().unwrap();
+            let mut settings = r.settings().unwrap();
+            settings.voice.provider = "plugin:knowledge".into();
+            r.settings_update(&settings).unwrap();
+        }
+        s.manager.reload().await;
+        assert_eq!(s.core.voice_reloads.load(Ordering::SeqCst), 1);
+        s.manager.reload().await;
+        assert_eq!(
+            s.core.voice_reloads.load(Ordering::SeqCst),
+            1,
+            "nothing new loaded"
+        );
+        s.set_enabled("other", true);
+        s.manager.reload().await;
+        assert_eq!(
+            s.core.voice_reloads.load(Ordering::SeqCst),
+            1,
+            "not the chosen one"
+        );
+        // Updated: unloaded and loaded again.
+        s.install(
+            "knowledge",
+            "1.1.0",
+            voice_manifest("Knowledge"),
+            PROVIDES_STATUS,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(s.core.voice_reloads.load(Ordering::SeqCst), 2);
     }
 }

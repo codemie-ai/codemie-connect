@@ -70,7 +70,7 @@ test('an ended session says what happened and what to do next', () => {
   assert.deepEqual(endedText(info('t1', { running: false, code: 1, resumable: false, program: 'Gemini CLI' })), { title: 'Gemini CLI stopped (exit 1)', detail: 'Start it again when you need it.', tone: 'warning' });
   const missing = endedText(info('t1', { running: false, code: 127 }));
   assert.equal(missing.title, 'Connect couldn’t find Claude Code on this Mac');
-  assert.equal(missing.detail, 'Install it in Settings → Claude, then start again.');
+  assert.equal(missing.detail, 'Install it in Settings → AI, then start again.');
   assert.equal(missing.tone, 'error');
   assert.match(endedText(info('t1', { code: 127, program: 'Codex' })).detail, /Settings → CodeMie/);
 });

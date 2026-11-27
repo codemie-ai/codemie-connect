@@ -24,10 +24,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The marketplace every Connect has (DESIGN 7.1).
-pub const BUILT_IN_NAME: &str = "onetest";
-/// Its source, as `owner/repo` on GitHub.
-pub const BUILT_IN_REPO: &str = "onetest-ai/echo-plugins";
+/// A marketplace every Connect has (DESIGN 7.1): its name, and its source as `owner/repo` on GitHub.
+pub struct BuiltIn {
+    pub name: &'static str,
+    pub repo: &'static str,
+}
+
+/// The built-in marketplaces, listed first and in this order.
+pub const BUILT_INS: [BuiltIn; 2] = [
+    BuiltIn {
+        name: "codemie",
+        repo: "codemie-ai/codemie-connect-marketplace",
+    },
+    BuiltIn {
+        name: "onetest",
+        repo: "onetest-ai/echo-plugins",
+    },
+];
 /// How long a change waits for another one to finish.
 const LOCK_WAIT: Duration = Duration::from_secs(30);
 /// The registry format this Connect writes; a newer one is refused, never rewritten.
@@ -130,10 +143,10 @@ pub enum Source {
 }
 
 impl Source {
-    /// The built-in marketplace's source.
-    pub fn built_in() -> Self {
+    /// A built-in marketplace's source, from its `owner/repo`.
+    pub fn built_in(repo: &str) -> Self {
         Source::Git {
-            url: format!("https://github.com/{BUILT_IN_REPO}"),
+            url: format!("https://github.com/{repo}"),
             reference: None,
         }
     }
@@ -217,9 +230,29 @@ pub struct Registry {
     pub format: u32,
     #[serde(default)]
     pub installed: BTreeMap<String, Installed>,
-    /// The built-in marketplace first, then the ones the user added.
+    /// The built-in marketplaces first, then the ones the user added.
     #[serde(default)]
     pub markets: Vec<Market>,
+}
+
+/// Where `source` stands among the built-ins, or `None` for a marketplace the user added.
+fn built_in_rank(source: &Source) -> Option<usize> {
+    BUILT_INS
+        .iter()
+        .position(|b| &Source::built_in(b.repo) == source)
+}
+
+/// `wanted`, or `wanted-2` … `wanted-9` when that name is taken.
+pub(super) fn unique_name(reg: &Registry, wanted: &str) -> Result<String> {
+    std::iter::once(wanted.to_string())
+        .chain((2..=9).map(|n| format!("{wanted}-{n}")))
+        .find(|n| super::valid_id(n) && reg.market(n).is_none())
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "exists",
+                format!("A marketplace named “{wanted}” is already added."),
+            )
+        })
 }
 
 fn first_format() -> u32 {
@@ -248,8 +281,10 @@ fn unreadable(why: &str) -> WorkspaceError {
 }
 
 impl Registry {
-    /// The registry, or an empty one when there is none yet. The built-in marketplace is always
-    /// listed first. A file that can't be read, or one written by a newer Connect, is
+    /// The registry, or an empty one when there is none yet. The built-in marketplaces are always
+    /// listed first, in `BUILT_INS` order. One is known by its source, not its name: a copy the
+    /// user added by hand becomes the built-in and keeps its name, and a user marketplace that
+    /// already has a built-in's name keeps it while the built-in takes the next free one. A file that can't be read, or one written by a newer Connect, is
     /// `registry_unreadable`.
     pub fn load(paths: &PluginPaths) -> Result<Registry> {
         let mut reg = match std::fs::read(paths.registry()) {
@@ -261,18 +296,28 @@ impl Registry {
         if reg.format > FORMAT {
             return Err(unreadable("it was written by a newer Connect"));
         }
-        if !reg.markets.iter().any(|m| m.built_in) {
-            reg.markets.insert(
-                0,
-                Market {
-                    name: BUILT_IN_NAME.into(),
-                    source: Source::built_in(),
+        for m in &mut reg.markets {
+            m.built_in = built_in_rank(&m.source).is_some();
+        }
+        for b in &BUILT_INS {
+            let source = Source::built_in(b.repo);
+            if reg.markets.iter().all(|m| m.source != source) {
+                // With every name taken the built-in is left out, rather than failing every read.
+                let Ok(name) = unique_name(&reg, b.name) else {
+                    log::warn!("plugins: no free name for the built-in {}", b.name);
+                    continue;
+                };
+                reg.markets.push(Market {
+                    name,
+                    source,
                     built_in: true,
                     commit: None,
                     fetched_at: None,
-                },
-            );
+                });
+            }
         }
+        reg.markets
+            .sort_by_key(|m| built_in_rank(&m.source).unwrap_or(BUILT_INS.len()));
         Ok(reg)
     }
 
@@ -415,6 +460,100 @@ pub fn io_error(what: &str, e: &io::Error) -> WorkspaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+
+    const CODEMIE: &str = "codemie-ai/codemie-connect-marketplace";
+
+    fn git_market(name: &str, url: &str, built_in: bool) -> Value {
+        json!({"name": name, "source": {"kind": "git", "url": url}, "built_in": built_in})
+    }
+
+    /// The registry `load` gives for a registry.json holding `file`.
+    fn load_written(file: Value) -> Registry {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(dir.path(), dir.path());
+        std::fs::create_dir_all(&paths.root).unwrap();
+        std::fs::write(paths.registry(), file.to_string()).unwrap();
+        Registry::load(&paths).unwrap()
+    }
+
+    #[test]
+    fn every_built_in_is_listed_first_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::load(&PluginPaths::new(dir.path(), dir.path())).unwrap();
+        let names: Vec<_> = reg
+            .markets
+            .iter()
+            .map(|m| (m.name.as_str(), m.built_in))
+            .collect();
+        assert_eq!(names, [("codemie", true), ("onetest", true)]);
+        assert_eq!(reg.markets[0].source, Source::built_in(CODEMIE));
+        assert_eq!(
+            reg.markets[1].source,
+            Source::built_in("onetest-ai/echo-plugins")
+        );
+    }
+
+    #[test]
+    fn an_older_registry_gets_the_new_built_in_before_the_others() {
+        let reg = load_written(json!({
+            "format": 1,
+            "markets": [
+                git_market("onetest", "https://github.com/onetest-ai/echo-plugins", true),
+                git_market("acme", "https://github.com/acme/plugins", false),
+            ],
+            "installed": {"hello": {
+                "version": "1.0.0", "market": "acme", "source": "https://github.com/acme/plugins",
+                "hash": "h", "enabled": true, "agreed": [], "installed_at": "2026-11-01T00:00:00Z"
+            }}
+        }));
+        let names: Vec<_> = reg.markets.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["codemie", "onetest", "acme"]);
+        assert!(!reg.market("acme").unwrap().built_in);
+        assert_eq!(reg.installed["hello"].market, "acme");
+    }
+
+    #[test]
+    fn a_hand_added_copy_becomes_the_built_in() {
+        let reg = load_written(json!({"format": 1, "markets": [
+            git_market("acme", "https://github.com/acme/plugins", false),
+            git_market("connect", &format!("https://github.com/{CODEMIE}"), false),
+        ]}));
+        let ours: Vec<_> = reg
+            .markets
+            .iter()
+            .filter(|m| m.source == Source::built_in(CODEMIE))
+            .collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!((ours[0].name.as_str(), ours[0].built_in), ("connect", true));
+        let names: Vec<_> = reg.markets.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["connect", "onetest", "acme"]);
+    }
+
+    #[test]
+    fn a_built_in_with_no_free_name_is_left_out_and_the_rest_still_load() {
+        let taken: Vec<_> = std::iter::once("codemie".to_string())
+            .chain((2..=9).map(|n| format!("codemie-{n}")))
+            .map(|n| git_market(&n, &format!("https://github.com/acme/{n}"), false))
+            .collect();
+        let reg = load_written(json!({"format": 1, "markets": taken}));
+        assert!(reg
+            .markets
+            .iter()
+            .all(|m| m.source != Source::built_in(CODEMIE)));
+        assert_eq!(reg.markets[0].name, "onetest");
+        assert_eq!(reg.markets.len(), 10);
+    }
+
+    #[test]
+    fn a_user_market_keeps_a_built_in_name() {
+        let reg = load_written(json!({"format": 1, "markets": [
+            git_market("codemie", "https://github.com/acme/plugins", false),
+        ]}));
+        assert!(!reg.market("codemie").unwrap().built_in);
+        assert!(reg.market("codemie-2").unwrap().built_in);
+        assert_eq!(reg.markets[0].name, "codemie-2");
+    }
 
     #[test]
     fn concurrent_registry_writes_are_serialised() {
@@ -433,8 +572,8 @@ mod tests {
                             format!("plugin-{i:02}"),
                             Installed {
                                 version: "1.0.0".into(),
-                                market: BUILT_IN_NAME.into(),
-                                source: Source::built_in().text(),
+                                market: BUILT_INS[1].name.into(),
+                                source: Source::built_in(BUILT_INS[1].repo).text(),
                                 commit: None,
                                 hash: seen.to_string(),
                                 enabled: true,
@@ -462,10 +601,10 @@ mod tests {
             .collect();
         seen.sort_unstable();
         assert_eq!(seen, (0..12).collect::<Vec<_>>());
-        // The built-in marketplace is listed first, and written once.
-        assert_eq!(reg.markets.len(), 1);
-        assert!(reg.markets[0].built_in);
-        assert_eq!(reg.markets[0].name, BUILT_IN_NAME);
+        // The built-in marketplaces are listed first, each written once.
+        assert_eq!(reg.markets.len(), 2);
+        assert!(reg.markets.iter().all(|m| m.built_in));
+        assert_eq!(reg.markets[0].name, BUILT_INS[0].name);
         // No temporary file is left behind by the atomic writes.
         let leftovers: Vec<_> = std::fs::read_dir(&paths.root)
             .unwrap()
@@ -554,8 +693,8 @@ mod tests {
         assert_eq!(active_version(&paths, "hello"), None);
         let entry = |enabled| Installed {
             version: "1.2.0".into(),
-            market: BUILT_IN_NAME.into(),
-            source: Source::built_in().text(),
+            market: BUILT_INS[1].name.into(),
+            source: Source::built_in(BUILT_INS[1].repo).text(),
             commit: None,
             hash: "h".into(),
             enabled,

@@ -1,7 +1,8 @@
 //! Test doubles shared by the crate's unit tests and the tests in `tests/` (the plugin conformance
 //! tests, `tests/echo_plugins.rs`), which can't see `#[cfg(test)]` items: a scripted Claude, a
-//! `Core` over a temp folder, a ready Claude Code profile, and stand-ins for what plugins reach
-//! outside Connect (the folder picker, the GitHub CLI). Built only for tests and with the
+//! `Core` over a temp folder, a ready Claude Code profile, stand-ins for what plugins reach
+//! outside Connect (the folder picker, the GitHub CLI, Todoist), and a way to run the workspace's
+//! operations and task sync from outside the crate. Built only for tests and with the
 //! `test-support` feature, which only the crate's own dev-dependency turns on.
 use crate::ai::command::{build_command, RunSpec};
 use crate::ai::profiles::{AccountInfo, AiProfile, ModelChoice, ProfileKind, ProfileState};
@@ -25,6 +26,7 @@ pub fn claude_profile() -> AiProfile {
     AiProfile {
         id: "claude".into(),
         kind: ProfileKind::Native,
+        provider: None,
         label: "Claude Code · your subscription".into(),
         state: ProfileState::Ready,
         version: None,
@@ -38,6 +40,7 @@ pub fn claude_profile() -> AiProfile {
             .collect(),
         default_model: None,
         message: None,
+        local: None,
     }
 }
 
@@ -106,6 +109,8 @@ pub struct Picked(
     pub Mutex<Vec<PathBuf>>,
     /// What the user types in the address box next.
     pub Mutex<Option<String>>,
+    /// The title of every folder picker opened, in order.
+    pub Mutex<Vec<String>>,
 );
 
 impl Picked {
@@ -121,7 +126,8 @@ impl Picked {
 }
 
 impl FolderPicker for Picked {
-    fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
+    fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>> {
+        self.3.lock().unwrap().push(title);
         let picked = self.0.lock().unwrap().take();
         Box::pin(async move { picked })
     }
@@ -251,4 +257,654 @@ pub fn saved_meeting(
 /// `minutes_written`, as after a notes run.
 pub fn minutes_written(core: &Core, id: &str, rewritten: bool) {
     core.tell_minutes_written(id, rewritten);
+}
+
+// ------------------------------------------------------------------ task providers
+
+/// Runs the workspace operation `op` (its wire name, `task_save`, `task_provider_set`, …) on the
+/// personal workspace as the window sends it: with an operation id and the current revision.
+pub async fn workspace_op(core: &Arc<Core>, op: &str, data: Value) -> Result<Value, String> {
+    let fail = |e: crate::workspace::models::WorkspaceError| format!("{}: {}", e.code, e.message);
+    let op = serde_json::from_value(json!(op)).map_err(|e| format!("{op}: {e}"))?;
+    let revision = core.repo().and_then(|r| r.revision()).map_err(fail)?;
+    let req = crate::workspace::models::Request {
+        op,
+        workspace_id: Some("personal".into()),
+        expected_revision: Some(revision),
+        operation_id: Some(crate::workspace::models::id()),
+        data,
+    };
+    core.request(req).await.map_err(fail)
+}
+
+/// One `task_sync` run with the active provider at `at` (seconds), as the job runs it: answers its
+/// summary (`Tasks <state>: …`).
+pub async fn task_sync(core: &Arc<Core>, at: i64) -> String {
+    let provider = core.repo().unwrap().settings().unwrap().tasks.provider;
+    crate::workspace::task_provider::sync::run(core, &provider, at)
+        .await
+        .unwrap()
+        .summary()
+}
+
+/// The snapshot's `taskProvider`: the active provider, every available one, its state.
+pub fn task_provider(core: &Core) -> Value {
+    let settings = core.repo().unwrap().settings().unwrap();
+    core.task_provider_snapshot(&settings)
+}
+
+// ------------------------------------------------------------------ reply voice
+
+/// [`core`], and every Microsoft URL its AI runs read so far (none is answered: each read fails
+/// like an offline one, and a draft falls back to the synced preview).
+pub fn core_and_graph_reads(
+    dir: &Path,
+    runner: Arc<FakeRunner>,
+    profiles: Vec<AiProfile>,
+) -> (Arc<Core>, Arc<dyn Fn() -> Vec<String> + Send + Sync>) {
+    crate::workspace::test_core_recording_graph(dir, runner, profiles)
+}
+
+/// One played-back Claude answer, as [`FakeRunner`]'s script takes it.
+pub type ClaudeAnswer = Result<RunOutcome, AiError>;
+
+/// A structured Claude answer (`--json-schema`), as a reply draft's run gives it.
+pub fn answer_json(structured: Value) -> Result<RunOutcome, AiError> {
+    let mut outcome = answered("");
+    outcome.structured = Some(structured);
+    Ok(outcome)
+}
+
+/// The snapshot's `replyVoice`: the chosen provider, every available one, the state and the copy
+/// as Settings › Your voice shows it.
+pub fn voice_snapshot(core: &Core) -> Value {
+    let settings = core.repo().unwrap().settings().unwrap();
+    core.voice_snapshot(&settings)
+}
+
+/// Connect's whole copy of the voice (profiles' text included), `None` when there is none.
+pub fn voice_copy(core: &Core) -> Option<Value> {
+    let r = core.repo().unwrap();
+    crate::workspace::voice::copy::read_copy(&r)
+        .unwrap()
+        .map(|c| serde_json::to_value(c).unwrap())
+}
+
+/// One `voice_refresh` of the chosen provider now, as the job runs it: answers its code
+/// (`ready`, `needs_setup`, `unavailable` or `skipped`).
+pub async fn voice_refresh(core: &Arc<Core>) -> String {
+    let provider = core.repo().unwrap().settings().unwrap().voice.provider;
+    crate::workspace::voice::refresh::run(core, &provider, crate::workspace::models::now())
+        .await
+        .unwrap()
+}
+
+/// Asks the chosen provider's `op` (`status`, `export`, `context`, `facts`, `save`, `remove`)
+/// within 10 s, as Connect asks it; a failure reads as its code (`needs_setup`, `refused: …`,
+/// `unavailable`).
+pub async fn voice_call(core: &Arc<Core>, op: &str, args: Value) -> Result<Value, String> {
+    use crate::workspace::voice::VoiceError;
+    core.voice_call_chosen(op, args, std::time::Duration::from_secs(10))
+        .await
+        .map_err(|e| match e {
+            VoiceError::NeedsSetup => "needs_setup".into(),
+            VoiceError::Refused(s) => format!("refused: {s}"),
+            VoiceError::Unavailable => "unavailable".into(),
+        })
+}
+
+/// A message the signed-in account ([`signed_in`]) synced: `data` as Connect keeps it
+/// (`channel`, `isMine`, `at`, `text`, …), filed under its mailbox or chat.
+pub fn synced_message(core: &Core, id: &str, data: Value) {
+    let at = data["at"].as_i64().unwrap_or(1);
+    let source = match data["chatId"].as_str() {
+        Some(chat) => format!("chat:{chat}"),
+        None if data["isMine"] == true => "mail:sentitems".into(),
+        None => "mail:inbox".into(),
+    };
+    core.repo()
+        .unwrap()
+        .put_record(&Record {
+            id: id.into(),
+            kind: "message".into(),
+            connection_id: Some(ACCOUNT.into()),
+            workspace_id: None,
+            source,
+            revision: "v1".into(),
+            updated_at: at,
+            data,
+        })
+        .unwrap();
+}
+
+/// Claims and runs every due job, one at a time, as the background loop does.
+pub async fn run_jobs(core: &Arc<Core>) {
+    core.run_due_jobs().await;
+}
+
+/// The reply draft `id` (`ai:<message id>`) of the personal workspace, as stored.
+pub fn draft(core: &Core, id: &str) -> Option<Value> {
+    core.repo()
+        .unwrap()
+        .record("draft", id, Some(ACCOUNT), Some("personal"))
+        .ok()
+        .map(|r| r.data)
+}
+
+/// A Todoist on loopback for the tests that run the real Todoist plugin (`tests/
+/// connect_marketplace.rs`): the endpoints of the marketplace's `tests/helpers/fake-todoist.mjs`
+/// (`GET /user`, `GET|POST /projects`, `GET|POST /tasks`, `GET|POST /tasks/{id}`,
+/// `/tasks/{id}/close` and `/reopen`, `DELETE /tasks/{id}`, `POST /sync` with sync tokens) under
+/// `/api/v1`, a bearer-token check, a request log, failures by route (`fail_once`) and a lost
+/// answer (`lose_once`: the work is done, then the connection closes unanswered). Each connection
+/// is served on its own thread until the test ends; give its `base` to `HttpClient::for_tests` as
+/// `api.todoist.com`.
+pub struct FakeTodoist {
+    base: String,
+    state: Arc<Mutex<TodoistState>>,
+}
+
+#[derive(Default)]
+struct TodoistState {
+    token: String,
+    projects: Vec<Value>,
+    /// Every task ever made, in order: `(revision, deleted, Todoist's task)`.
+    tasks: Vec<(u64, bool, Value)>,
+    next_id: u64,
+    rev: u64,
+    requests: Vec<String>,
+    /// `METHOD /path` -> `(status, Retry-After)`, once.
+    fail: std::collections::HashMap<String, (u16, Option<u64>)>,
+    lose: std::collections::HashSet<String>,
+}
+
+/// An answer: status, extra header lines and a JSON body; `None` closes the connection unanswered.
+type Answer = Option<(u16, String, String)>;
+
+fn todoist_time() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+impl TodoistState {
+    fn bump(&mut self) -> u64 {
+        self.rev += 1;
+        self.rev
+    }
+
+    fn new_id(&mut self) -> String {
+        self.next_id += 1;
+        (8000 + self.next_id).to_string()
+    }
+
+    fn task_mut(&mut self, id: &str) -> Option<&mut (u64, bool, Value)> {
+        self.tasks
+            .iter_mut()
+            .find(|(_, deleted, t)| !deleted && t["id"] == id)
+    }
+
+    fn answer(&mut self, method: &str, target: &str, auth: &str, body: &str) -> Answer {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let path = path.strip_prefix("/api/v1").unwrap_or(path).to_string();
+        let route = format!("{method} {path}");
+        self.requests.push(format!(
+            "{method} {path}{}",
+            if query.is_empty() {
+                String::new()
+            } else {
+                format!("?{query}")
+            }
+        ));
+        let ok = |v: Value| Some((200, String::new(), v.to_string()));
+        let status = |code: u16| Some((code, String::new(), json!({"error": "test"}).to_string()));
+        if auth != format!("Bearer {}", self.token) {
+            return Some((
+                401,
+                String::new(),
+                json!({"error": "Invalid token"}).to_string(),
+            ));
+        }
+        if let Some((code, retry)) = self.fail.remove(&route) {
+            // As Todoist: `retry_after` in the body, and here in `Retry-After` too.
+            let extra = retry.map_or(String::new(), |s| format!("Retry-After: {s}\r\n"));
+            let mut body = json!({"error": "forced failure (test)"});
+            if let Some(s) = retry {
+                body["error_extra"] = json!({"retry_after": s});
+            }
+            return Some((code, extra, body.to_string()));
+        }
+        let lost = self.lose.remove(&route);
+        let query: std::collections::HashMap<String, String> =
+            url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect();
+        let data: Value = if path == "/sync" && !body.trim_start().starts_with('{') {
+            let form: serde_json::Map<String, Value> = url::form_urlencoded::parse(body.as_bytes())
+                .into_owned()
+                .map(|(k, v)| (k, Value::String(v)))
+                .collect();
+            Value::Object(form)
+        } else {
+            serde_json::from_str(body).unwrap_or(json!({}))
+        };
+        let now = todoist_time();
+        let task_route = path.strip_prefix("/tasks/").map(|rest| {
+            let (id, action) = rest.split_once('/').unwrap_or((rest, ""));
+            (id.to_string(), action.to_string())
+        });
+        let answer = match (method, path.as_str(), task_route) {
+            ("GET", "/user", _) => ok(
+                json!({"id": "u1", "email": "taylor@example.test", "full_name": "Taylor Morgan"}),
+            ),
+            ("GET", "/projects", _) => ok(json!({"results": self.projects, "next_cursor": null})),
+            // Todoist allows two projects of one name.
+            ("POST", "/projects", _) => {
+                let p = json!({"id": self.new_id(), "name": data["name"], "is_archived": false});
+                self.projects.push(p.clone());
+                ok(p)
+            }
+            ("GET", p, _) if p.starts_with("/projects/") => {
+                let id = &p["/projects/".len()..];
+                match self.projects.iter().find(|p| p["id"] == id) {
+                    Some(p) => ok(p.clone()),
+                    None => status(404),
+                }
+            }
+            ("GET", "/tasks", _) => {
+                let project = query.get("project_id");
+                let open: Vec<Value> = self
+                    .tasks
+                    .iter()
+                    .filter(|(_, deleted, t)| {
+                        !deleted
+                            && t["checked"] != true
+                            && project.is_none_or(|p| t["project_id"] == p.as_str())
+                    })
+                    .map(|(_, _, t)| t.clone())
+                    .collect();
+                ok(json!({"results": open, "next_cursor": null}))
+            }
+            ("POST", "/tasks", _) => {
+                let due = match (data["due_date"].as_str(), data["due_string"].as_str()) {
+                    (Some(d), _) => json!({"date": d, "string": d, "is_recurring": false}),
+                    _ => Value::Null,
+                };
+                let task = json!({
+                    "id": self.new_id(), "content": data["content"],
+                    "description": data["description"].as_str().unwrap_or(""),
+                    "project_id": data["project_id"], "labels": data["labels"].as_array().cloned().unwrap_or_default(),
+                    "priority": 1, "checked": false, "is_deleted": false, "due": due,
+                    "added_at": now, "updated_at": now,
+                });
+                let rev = self.bump();
+                self.tasks.push((rev, false, task.clone()));
+                ok(task)
+            }
+            ("POST", "/sync", _) => {
+                let since: u64 = data["sync_token"]
+                    .as_str()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                let items: Vec<Value> = self
+                    .tasks
+                    .iter()
+                    // A full sync lists open tasks only.
+                    .filter(|(rev, deleted, t)| {
+                        *rev > since && (since > 0 || (!deleted && t["checked"] != true))
+                    })
+                    .map(|(_, deleted, t)| {
+                        let mut t = t.clone();
+                        t["is_deleted"] = (*deleted).into();
+                        t
+                    })
+                    .collect();
+                ok(
+                    json!({"sync_token": self.rev.to_string(), "full_sync": since == 0, "items": items}),
+                )
+            }
+            (_, _, Some((id, action))) => {
+                // Only a change moves the sync revision.
+                let rev = self.rev + 1;
+                let mut changed = false;
+                let answer = match self.task_mut(&id) {
+                    None => status(404),
+                    // A completed task can't be read (as REST v2 did; v1 is unconfirmed).
+                    Some((_, _, t))
+                        if method == "GET" && action.is_empty() && t["checked"] == true =>
+                    {
+                        status(404)
+                    }
+                    Some((_, _, t)) if method == "GET" && action.is_empty() => ok(t.clone()),
+                    Some(entry) if method == "DELETE" && action.is_empty() => {
+                        changed = true;
+                        entry.0 = rev;
+                        entry.1 = true;
+                        entry.2["updated_at"] = now.into();
+                        Some((204, String::new(), String::new()))
+                    }
+                    Some(entry) if method == "POST" => {
+                        let t = &mut entry.2;
+                        match action.as_str() {
+                            "close" => t["checked"] = true.into(),
+                            "reopen" => t["checked"] = false.into(),
+                            "" => {
+                                for k in ["content", "description", "labels", "priority"] {
+                                    if !data[k].is_null() {
+                                        t[k] = data[k].clone();
+                                    }
+                                }
+                                if let Some(d) = data["due_date"].as_str() {
+                                    t["due"] =
+                                        json!({"date": d, "string": d, "is_recurring": false});
+                                }
+                                if data["due_string"].is_string() {
+                                    t["due"] = Value::Null;
+                                }
+                            }
+                            _ => return status(404),
+                        }
+                        t["updated_at"] = now.into();
+                        entry.0 = rev;
+                        changed = true;
+                        if action.is_empty() {
+                            ok(entry.2.clone())
+                        } else {
+                            Some((204, String::new(), String::new()))
+                        }
+                    }
+                    Some(_) => status(404),
+                };
+                if changed {
+                    self.rev = rev;
+                }
+                answer
+            }
+            _ => status(404),
+        };
+        if lost {
+            None
+        } else {
+            answer
+        }
+    }
+}
+
+/// Reads one HTTP request from `stream`: its method, target, `Authorization` and body.
+fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, String, String)> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let head_end = loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let mut lines = head.lines();
+    let mut first = lines.next()?.split_whitespace();
+    let (method, target) = (first.next()?.to_string(), first.next()?.to_string());
+    let header = |name: &str| {
+        head.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
+        })
+    };
+    let length: usize = header("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    while buf.len() < head_end + length {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let body = String::from_utf8_lossy(&buf[head_end..]).to_string();
+    Some((
+        method,
+        target,
+        header("authorization").unwrap_or_default(),
+        body,
+    ))
+}
+
+impl FakeTodoist {
+    /// Starts it on loopback; it accepts `Bearer <token>` only.
+    pub fn start(token: &str) -> FakeTodoist {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let state = Arc::new(Mutex::new(TodoistState {
+            token: token.into(),
+            ..Default::default()
+        }));
+        let shared = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let state = shared.clone();
+                std::thread::spawn(move || {
+                    let Some((method, target, auth, body)) = read_request(&mut stream) else {
+                        return;
+                    };
+                    let answer = state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .answer(&method, &target, &auth, &body);
+                    // A lost answer: the connection closes with nothing said.
+                    let Some((status, extra, body)) = answer else {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        return;
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                });
+            }
+        });
+        FakeTodoist { base, state }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, TodoistState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where it listens (`http://127.0.0.1:<port>`).
+    pub fn base(&self) -> String {
+        self.base.clone()
+    }
+
+    /// The tasks it holds (open and done; not the deleted ones), as Todoist answers them.
+    pub fn tasks(&self) -> Vec<Value> {
+        self.lock()
+            .tasks
+            .iter()
+            .filter(|(_, deleted, _)| !deleted)
+            .map(|(_, _, t)| t.clone())
+            .collect()
+    }
+
+    /// A change made in Todoist itself: `fields` merged into task `id`.
+    pub fn edit(&self, id: &str, fields: Value) {
+        let mut s = self.lock();
+        let rev = s.bump();
+        let entry = s.task_mut(id).expect("a task Todoist holds");
+        for (k, v) in fields.as_object().into_iter().flatten() {
+            entry.2[k] = v.clone();
+        }
+        entry.2["updated_at"] = todoist_time().into();
+        entry.0 = rev;
+    }
+
+    /// The next `METHOD /path` (e.g. `POST /sync`) answers `status`, with `Retry-After` when given.
+    pub fn fail_once(&self, route: &str, status: u16, retry_after: Option<u64>) {
+        self.lock().fail.insert(route.into(), (status, retry_after));
+    }
+
+    /// The next `METHOD /path` is done, but its connection closes unanswered.
+    pub fn lose_once(&self, route: &str) {
+        self.lock().lose.insert(route.into());
+    }
+
+    /// Every request so far, as `METHOD /path?query`.
+    pub fn requests(&self) -> Vec<String> {
+        self.lock().requests.clone()
+    }
+}
+
+/// Every log line of the test process, kept once `capture_logs` installed the logger. The
+/// process has one logger, so every test that reads log lines shares this one.
+struct Capture;
+static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        LOGGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+/// Installs the capturing logger (once per process) at `Info`.
+pub fn capture_logs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = log::set_logger(&Capture);
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+/// Every log line captured so far, in every test of the process.
+pub fn logged_lines() -> Vec<String> {
+    LOGGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "tk_SENTINEL_do_not_log_0123456789";
+
+    /// `METHOD path` with `body` to `fake`: status, headers and JSON body.
+    async fn ask(
+        fake: &FakeTodoist,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> (u16, reqwest::header::HeaderMap, Value) {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/api/v1{path}", fake.base());
+        let mut req = client
+            .request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), url)
+            .header("Authorization", format!("Bearer {TOKEN}"));
+        if let Some(b) = body {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(b.to_string());
+        }
+        let res = req.send().await.unwrap();
+        let status = res.status().as_u16();
+        let headers = res.headers().clone();
+        let text = res.text().await.unwrap();
+        (
+            status,
+            headers,
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn sync_token(fake: &FakeTodoist, token: &str) -> Value {
+        let body = format!("sync_token={token}&resource_types=%5B%22items%22%5D");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let res = client
+            .post(format!("{}/api/v1/sync", fake.base()))
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        serde_json::from_str(&res.text().await.unwrap()).unwrap()
+    }
+
+    /// Review M3/M6 and I2: the fake behaves as Todoist does where the plugin depends on it.
+    #[tokio::test]
+    async fn the_fake_todoist_behaves_like_todoist() {
+        let fake = FakeTodoist::start(TOKEN);
+        // Project names may repeat; a project is read by id.
+        let (_, _, a) = ask(&fake, "POST", "/projects", Some(r#"{"name":"Connect"}"#)).await;
+        let (status, _, _) = ask(&fake, "POST", "/projects", Some(r#"{"name":"Connect"}"#)).await;
+        assert_eq!(status, 200, "a second project of the same name");
+        let pid = a["id"].as_str().unwrap().to_string();
+        let (status, _, p) = ask(&fake, "GET", &format!("/projects/{pid}"), None).await;
+        assert_eq!((status, p["name"].clone()), (200, json!("Connect")));
+
+        let make = |content: &str| format!(r#"{{"content":"{content}","project_id":"{pid}"}}"#);
+        let (_, _, open) = ask(&fake, "POST", "/tasks", Some(&make("Open"))).await;
+        let (_, _, done) = ask(&fake, "POST", "/tasks", Some(&make("Done"))).await;
+        let (_, _, gone) = ask(&fake, "POST", "/tasks", Some(&make("Gone"))).await;
+        let id = |v: &Value| v["id"].as_str().unwrap().to_string();
+        ask(&fake, "POST", &format!("/tasks/{}/close", id(&done)), None).await;
+        ask(&fake, "DELETE", &format!("/tasks/{}", id(&gone)), None).await;
+
+        // A completed task can't be read (as REST v2; v1 unconfirmed), an open one can.
+        let (status, _, _) = ask(&fake, "GET", &format!("/tasks/{}", id(&done)), None).await;
+        assert_eq!(status, 404);
+        let (status, _, _) = ask(&fake, "GET", &format!("/tasks/{}", id(&open)), None).await;
+        assert_eq!(status, 200);
+
+        // A full sync lists open tasks only; an incremental one lists done and deleted ones.
+        let full = sync_token(&fake, "*").await;
+        let contents: Vec<&str> = full["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(contents, ["Open"]);
+        let delta = sync_token(&fake, "1").await;
+        let changed: Vec<(&str, bool, bool)> = delta["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                let content = i["content"].as_str().unwrap();
+                (content, i["checked"] == true, i["is_deleted"] == true)
+            })
+            .collect();
+        assert_eq!(changed, [("Done", true, false), ("Gone", false, true)]);
+
+        // Reads and 404s don't move the sync revision.
+        let before = sync_token(&fake, "*").await["sync_token"].clone();
+        ask(&fake, "GET", &format!("/tasks/{}", id(&open)), None).await;
+        ask(&fake, "GET", "/tasks/nope", None).await;
+        ask(&fake, "POST", "/tasks/nope", Some("{}")).await;
+        assert_eq!(sync_token(&fake, "*").await["sync_token"], before);
+
+        // A 429 says retry_after in its body, and in Retry-After.
+        fake.fail_once("GET /user", 429, Some(7));
+        let (status, headers, body) = ask(&fake, "GET", "/user", None).await;
+        assert_eq!(status, 429);
+        assert_eq!(headers["retry-after"], "7");
+        assert_eq!(body["error_extra"]["retry_after"], 7);
+    }
 }

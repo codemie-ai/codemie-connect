@@ -173,6 +173,7 @@ mod tests {
         AiProfile {
             id: "x".into(),
             kind,
+            provider: None,
             label: "x".into(),
             state: ProfileState::Ready,
             version: None,
@@ -180,6 +181,7 @@ mod tests {
             models: vec![],
             default_model: None,
             message: None,
+            local: None,
         }
     }
 

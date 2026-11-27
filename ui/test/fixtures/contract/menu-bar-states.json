@@ -1,0 +1,148 @@
+{
+  "amberOnly": {
+    "amber": true,
+    "count": 0,
+    "counted": [
+      "replies"
+    ],
+    "fixes": [
+      {
+        "id": "tasks-token",
+        "open": {
+          "route": "settings",
+          "tab": "meetings-tasks"
+        },
+        "text": "Todoist needs your API token."
+      }
+    ],
+    "label": "",
+    "newMeetings": [],
+    "sources": {
+      "automations": 0,
+      "meetings": 0,
+      "replies": 0,
+      "tasks": 0
+    },
+    "tooltip": "CodeMie Connect · Needs fixing: Todoist needs your API token."
+  },
+  "amberWithCount": {
+    "amber": true,
+    "count": 2,
+    "counted": [
+      "replies"
+    ],
+    "fixes": [
+      {
+        "id": "tasks-token",
+        "open": {
+          "route": "settings",
+          "tab": "meetings-tasks"
+        },
+        "text": "Todoist needs your API token."
+      }
+    ],
+    "label": "2",
+    "newMeetings": [
+      "m-ready"
+    ],
+    "sources": {
+      "automations": 2,
+      "meetings": 1,
+      "replies": 2,
+      "tasks": 1
+    },
+    "tooltip": "CodeMie Connect · 2 messages need a reply · Needs fixing: Todoist needs your API token."
+  },
+  "capped": {
+    "amber": false,
+    "count": 120,
+    "counted": [
+      "replies"
+    ],
+    "fixes": [],
+    "label": "99+",
+    "newMeetings": [],
+    "sources": {
+      "automations": 0,
+      "meetings": 0,
+      "replies": 120,
+      "tasks": 0
+    },
+    "tooltip": "CodeMie Connect · 120 messages need a reply"
+  },
+  "nothingChosen": {
+    "amber": false,
+    "count": 0,
+    "counted": [],
+    "fixes": [],
+    "label": "",
+    "newMeetings": [
+      "m-ready"
+    ],
+    "sources": {
+      "automations": 2,
+      "meetings": 1,
+      "replies": 2,
+      "tasks": 1
+    },
+    "tooltip": "CodeMie Connect"
+  },
+  "replies": {
+    "amber": false,
+    "count": 2,
+    "counted": [
+      "replies"
+    ],
+    "fixes": [],
+    "label": "2",
+    "newMeetings": [
+      "m-ready"
+    ],
+    "sources": {
+      "automations": 2,
+      "meetings": 1,
+      "replies": 2,
+      "tasks": 1
+    },
+    "tooltip": "CodeMie Connect · 2 messages need a reply"
+  },
+  "several": {
+    "amber": false,
+    "count": 6,
+    "counted": [
+      "replies",
+      "tasks",
+      "meetings",
+      "automations"
+    ],
+    "fixes": [],
+    "label": "6",
+    "newMeetings": [
+      "m-ready"
+    ],
+    "sources": {
+      "automations": 2,
+      "meetings": 1,
+      "replies": 2,
+      "tasks": 1
+    },
+    "tooltip": "CodeMie Connect · 2 messages need a reply, 1 task due or late, 1 meeting with new notes, 2 automation results"
+  },
+  "zero": {
+    "amber": false,
+    "count": 0,
+    "counted": [
+      "replies"
+    ],
+    "fixes": [],
+    "label": "",
+    "newMeetings": [],
+    "sources": {
+      "automations": 0,
+      "meetings": 0,
+      "replies": 0,
+      "tasks": 0
+    },
+    "tooltip": "CodeMie Connect"
+  }
+}

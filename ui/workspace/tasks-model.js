@@ -10,9 +10,16 @@ export const COLUMN_NAMES = { review: 'To review', todo: 'To do', doing: 'In pro
 export const OPEN = ['review', 'todo', 'doing', 'waiting'];
 export const DEFAULT_FILTERS = Object.freeze({ who: 'all', person: '', meeting: '', due: 'any', q: '' });
 
-/** The Tasks page's view state (only view state lives in the window: the tasks are native's). */
+/** The Tasks page's view state (only view state lives in the window: the tasks are native's).
+ *  `view` is Local's Board, List or By date; `providerView` the view chosen while a provider is
+ *  active (null: By date); `folds` the Later folds opened, `rowOpen` the By date row unfolded and
+ *  `footer` By date's last action with its Undo. `provider` is Settings › Tasks's own state: a
+ *  "Turn on" in flight (`busy`), the last Check (`check`) and a token save in flight (`savingSecret`). */
 export const newTasksView = (view = 'board') => ({
-  view: view === 'list' ? 'list' : 'board', filters: { ...DEFAULT_FILTERS }, drawer: null, quickAdd: null, showDismissed: false, showOlder: false,
+  view: ['list', 'dates'].includes(view) ? view : 'board', providerView: null,
+  filters: { ...DEFAULT_FILTERS }, drawer: null, quickAdd: null, showDismissed: false, showOlder: false,
+  folds: {}, rowOpen: null, footer: null,
+  provider: { busy: {}, check: null, checking: false, savingSecret: false },
 });
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -20,7 +27,16 @@ const DAY_MS = 86_400_000;
 const bodyOf = task => task?.data ?? task ?? {};
 const lower = v => String(v ?? '').trim().toLowerCase();
 
-export const tasksOf = s => s.records.filter(r => r.kind === 'commitment');
+/** The snapshot's active task provider: `'local'` or `'plugin:<id>'`; no `taskProvider` (an
+ *  older snapshot, or one built without it) means Local. */
+export const activeProvider = s => s.taskProvider?.active || 'local';
+
+/** The commitment records of the active provider (`data.provider || 'local'`): what the Tasks
+ *  page, Today's widget, the meeting column and the people popover's task links all show. */
+export const tasksOf = s => {
+  const active = activeProvider(s);
+  return s.records.filter(r => r.kind === 'commitment' && (r.data.provider || 'local') === active);
+};
 
 /** A column's name: the one set in Settings › Meetings › Tasks, or the built-in one. */
 export function columnName(status, settings) {
@@ -110,7 +126,7 @@ export function ownerOf(task, me) {
 }
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
-const daysBetween = (from, to) => Math.round((dateFromKey(to) - dateFromKey(from)) / DAY_MS);
+export const daysBetween = (from, to) => Math.round((dateFromKey(to) - dateFromKey(from)) / DAY_MS);
 
 /** A due date as a chip, relative to today in the workspace `zone`: `{tone, text, title}` with
  *  tone `overdue`, `today`, `soon` (within six days) or `later`; null without a date. */

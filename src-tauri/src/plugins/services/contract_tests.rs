@@ -244,3 +244,75 @@ async fn connects_answers_have_the_shapes_the_plugins_fakes_give() {
         json!({"text": "str", "size": "num", "truncated": "bool"})
     );
 }
+
+#[test]
+fn tasks_provide_answers_null_and_refuses_a_plugin_without_the_role() {
+    let env = Env::new();
+    env.provider("todoist", &["tasks"], json!([]));
+    env.plugin("kn", json!({}), json!([]));
+    let given = json!([["status", "list", "changedSince"]]);
+    assert_eq!(
+        shape(&env.call("todoist", "tasks.provide", given.clone()).unwrap()),
+        json!("null")
+    );
+    let e = env.call("kn", "tasks.provide", given).unwrap_err();
+    matches(&e, &["/^permission: /", "/doesn't provide tasks/"]);
+}
+
+#[tokio::test]
+async fn reply_context_answers_have_their_shapes_and_texts() {
+    use crate::workspace::plugin_data::tests::{seed, source};
+    let dir = tempfile::tempdir().unwrap();
+    let core = crate::workspace::test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), vec![]);
+    let env = Env::with(Some(core.clone()), http::Client::new());
+    env.provider("kn", &["reply-context"], json!([]));
+    env.plugin("other", json!({}), json!([]));
+    // Signed out, `sent` says so the way plugins match.
+    let e = env
+        .call_async("kn", "replyContext.sent", json!([{}]))
+        .await
+        .unwrap_err();
+    matches(&e, &["/isn't connected/"]);
+    seed(&core);
+    let now = chrono::Utc::now().timestamp();
+    core.repo()
+        .unwrap()
+        .put_record(&source(
+            "m1",
+            "message",
+            "mail:inbox",
+            now - 60,
+            json!({"channel": "mail", "title": "Atlas", "text": "Sounds good.", "isMine": true, "at": now - 60,
+                   "to": [{"emailAddress": {"name": "Priya N.", "address": "priya.n@example.test"}}]}),
+        ))
+        .unwrap();
+    assert_eq!(
+        shape(
+            &env.call(
+                "kn",
+                "replyContext.provide",
+                json!([["status", "export", "context"]])
+            )
+            .unwrap()
+        ),
+        json!("null")
+    );
+    assert_eq!(
+        shape(
+            &env.call_async("kn", "replyContext.sent", json!([{"channel": "mail"}]))
+                .await
+                .unwrap()
+        ),
+        json!({"messages": [{"channel": "str", "at": "str", "text": "str", "subject": "str", "to": "str", "chatType": "null"}]})
+    );
+    for name in ["replyContext.provide", "replyContext.sent"] {
+        let e = if name.ends_with("sent") {
+            env.call_async("other", name, json!([{}]))
+                .await
+                .unwrap_err()
+        } else {
+            env.call("other", name, json!([["status"]])).unwrap_err()
+        };
+        matches(&e, &["/^permission: /", "/doesn't provide reply-context/"]);
+    }
+}

@@ -7,11 +7,12 @@ import { attentionMessages, records, active, connectionState, messageTitle, deci
 import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 import { automationResultsCard } from './view-automations.js';
+import { openRow } from './view-inbox.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
-import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
+import { activeProvider, isMine, meOf, ownerOf, sortTasks, taskStatus, tasksOf } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
 import { GRID, autoCards, optionsOf, todayOf } from './today-grid.js';
-import { addTile, editBar, gallery, layoutMenu, optionsPanel, widgetMenu } from './today-edit-view.js';
+import { addTile, editBar, gallery, optionsPanel, todayMenu, widgetMenu } from './today-edit-view.js';
 
 const toggle = (key, label, def) => ({ key, type: 'toggle', label, def });
 const choice = (key, label, choices, def) => ({ key, type: 'select', label, choices, def });
@@ -127,7 +128,8 @@ export function todayModel(s, hidden, nowMs = Date.now()) {
     zone, nowMs, nowMin, todayKey, today, timed, current, upcoming, remaining, busyMinutes, freeMinutes,
     tomorrowFirst: tomorrow.timed[0] || null,
     attention: attentionMessages(s),
-    commitments: records(s, 'commitment'),
+    // The active provider's tasks (task provider design §10): Local's, or Todoist's.
+    commitments: tasksOf(s),
   };
 }
 
@@ -148,7 +150,7 @@ export function today(s, ctx) {
     brief: o => upNextCard(s, m, connected, o),
     focus: o => glanceCard(s, m, connected, o),
     calendar: o => scheduleCard(s, m, connected, o),
-    inbox: o => attentionCard(s, m, connected, ctx.state?.ai, o),
+    inbox: o => attentionCard(s, m, connected, ctx.state || {}, o),
     commitments: o => commitmentsCard(s, m, o),
     notes: o => notesCard(s, m, w, o),
     meetings: o => todayMeetingsCard(s, m.nowMs, { needsMe: o.needsMe, hidden: ctx.meetingsHidden }),
@@ -175,18 +177,32 @@ export function today(s, ctx) {
     ? `<div class="ws-tiles" data-today-grid style="--rows:${rows + (editing ? 3 : 0)}">${tiles}${panel}${editing ? addTile(rows) : ''}</div>`
     : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) });
   const locked = !!ui.locked;
-  // Customize and a ⋯ (layouts, Add widget, Lock); while locked, a lock to undo it shows too.
-  const actions = editing ? '' : `${locked ? button('', { action: 'today-lock', iconName: 'lock', title: 'Unlock layouts', attrs: { 'aria-label': 'Unlock layouts', 'aria-pressed': 'true' } }) : ''}${button('Customize', { action: 'today-customize', iconName: 'sliders' })}${layoutMenu(t, { more: { locked } })}`;
-  return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
-    <header class="ws-today-head">
+  // One ⋯ in both views (layouts, Add widget, Customize, Lock); while locked, a lock to undo it
+  // shows first.
+  const unlock = locked ? button('', { action: 'today-lock', iconName: 'lock', title: 'Unlock layouts', attrs: { 'aria-label': 'Unlock layouts', 'aria-pressed': 'true' } }) : '';
+  const actions = editing ? '' : `${unlock}${todayMenu(t, { locked })}`;
+  const date = e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }));
+  const summaryLink = p => `<button type="button" class="ws-today-sum-link" data-action="route" data-route="${e(p.route)}"${p.lane ? ` data-lane="${e(p.lane)}"` : ''}>${e(p.text)}</button>`;
+  const header = ctx.view === 'compact'
+    ? `<header class="ws-today-head ws-today-head-compact">
+      <div class="ws-today-title">
+        <h1 class="ws-sr">Today</h1>
+        <p class="ws-eyebrow">${date}</p>
+        <p class="ws-description">${connected ? daySummaryParts(m).map(summaryLink).join(' · ') : e(summary)}</p>
+      </div>
+      <div class="ws-actions ws-today-actions">${actions}</div>
+    </header>`
+    : `<header class="ws-today-head">
       ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 40, className: 'ws-today-avatar' })}
       <div class="ws-today-title">
-        <p class="ws-eyebrow">${e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
+        <p class="ws-eyebrow">${date}</p>
         <h1>${e(greeting(hour))}${name ? `, ${e(name)}` : ''}</h1>
         <p class="ws-description">${e(summary)}</p>
       </div>
       <div class="ws-actions ws-today-actions">${actions}</div>
-    </header>
+    </header>`;
+  return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
+    ${header}
     ${editing ? editBar(t, { canUndo: !!ui.history?.length, canRedo: !!ui.future?.length }) : ''}
     ${banners}
     ${ctx.codemieCard || ''}
@@ -228,14 +244,20 @@ function tile(html, it, order, title, { editing = false, renaming = false } = {}
     .replace(/<\/section>$/, () => `${HANDLES}</section>`);
 }
 
-function daySummary(m) {
+/** The day summary's parts: meetings left (or none) and free time open Calendar; "needs you"
+ *  opens Inbox on the Needs reply lane. */
+export function daySummaryParts(m) {
   const parts = [];
   const left = m.remaining.length;
-  parts.push(left ? `${left} meeting${left === 1 ? '' : 's'} left today` : m.timed.length ? 'No more meetings today' : 'No meetings today');
-  if (m.freeMinutes >= 15 && m.nowMin < WORKDAY_END) parts.push(`${durationLabel(m.freeMinutes)} free until ${formatTime(endOfWorkday(m), m.zone)}`);
+  parts.push({ text: left ? `${left} meeting${left === 1 ? '' : 's'} left today` : m.timed.length ? 'No more meetings today' : 'No meetings today', route: 'calendar' });
+  if (m.freeMinutes >= 15 && m.nowMin < WORKDAY_END) parts.push({ text: `${durationLabel(m.freeMinutes)} free until ${formatTime(endOfWorkday(m), m.zone)}`, route: 'calendar' });
   const replies = m.attention.length;
-  if (replies) parts.push(`${replies} message${replies === 1 ? '' : 's'} need${replies === 1 ? 's' : ''} you`);
-  return parts.join(' · ');
+  if (replies) parts.push({ text: `${replies} message${replies === 1 ? '' : 's'} need${replies === 1 ? 's' : ''} you`, route: 'inbox', lane: 'reply' });
+  return parts;
+}
+
+function daySummary(m) {
+  return daySummaryParts(m).map(p => p.text).join(' · ');
 }
 
 function endOfWorkday(m) {
@@ -420,18 +442,22 @@ function scheduleCard(s, m, connected, o) {
 
 // ---------------------------------------------------------------- Attention
 
-function messageRow(s, msg, zone, canDraft) {
+/** A "Needs your reply" row. A click opens it in place (`isOpen`): the last messages of the thread,
+ *  then the same composer and action line as the Inbox (`openRow`); a click again closes it. */
+function messageRow(s, msg, zone, canDraft, state, isOpen) {
   const d = msg.data;
   const glyph = d.channel === 'chat' ? teamsGlyph : outlookGlyph;
-  // Own Outlook messages cannot be answered through Review & send, so they get no draft.
-  const draft = canDraft && (d.channel === 'chat' || !d.isMine)
+  const body = `today-reply-${msg.id}`;
+  // Own Outlook messages cannot be answered through Review & send, so they get no draft. The open
+  // row's ✦ is the composer's own link.
+  const draft = canDraft && !isOpen && (d.channel === 'chat' || !d.isMine)
     ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
     : '';
-  return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}"><button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
+  return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}${isOpen ? ' ws-msg-open' : ''}"><button type="button" class="ws-msg-row" data-action="attention-open" data-id="${e(msg.id)}" aria-expanded="${isOpen}" aria-controls="${e(body)}">
     <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 28, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
     <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span><time>${e(relativeAge(d.at, zone))}</time></span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
-  </button>${draft}</div>`;
+  </button>${draft}${isOpen ? openRow(s, msg, zone, state, body, { today: true }) : ''}</div>`;
 }
 
 /** 1:1 Teams chats are titled with the other person, so show the channel instead of a repeat. */
@@ -441,16 +467,16 @@ export function listTitle(msg, s) {
   return title;
 }
 
-function attentionCard(s, m, connected, ai, o) {
+function attentionCard(s, m, connected, state, o) {
   if (!connected) {
     return card({ title: 'Needs your reply', iconName: 'reply', className: 'ws-attention', body: emptyState({ iconName: 'inbox', title: 'Replies you owe, in one list', text: 'Direct questions from Outlook and Teams, with the newest first.' }) });
   }
   const items = m.attention.filter(msg => o.sources.includes(msg.data.channel === 'chat' ? 'chat' : 'mail')).slice(0, Number(o.max));
-  const canDraft = claudeAvailable(ai);
+  const canDraft = claudeAvailable(state.ai);
   return card({
     title: 'Needs your reply', iconName: 'reply', className: 'ws-attention',
     actions: button(m.attention.length ? `Inbox · ${m.attention.length}` : 'Inbox', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'inbox', 'data-lane': 'reply' } }),
-    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone, canDraft)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
+    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone, canDraft, state, msg.id === state.todayOpen)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
   });
 }
 
@@ -458,6 +484,9 @@ function attentionCard(s, m, connected, ai, o) {
 
 function commitmentsCard(s, m, o) {
   const me = meOf(s);
+  // With a provider a row has no trash (delete asks first, on the Tasks page) and the page is By
+  // date, not the Board (design §10).
+  const local = activeProvider(s) === 'local';
   const shown = c => !o.mine || isMine(c, me);
   // Today lists what is on the board to do; To review and dismissed ones stay on the Tasks page.
   const open = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c)) && shown(c)).sort((a, b) => sortTasks(a, b, m.nowMs, m.zone));
@@ -470,12 +499,12 @@ function commitmentsCard(s, m, o) {
     return `<div class="ws-todo${isDone ? ' ws-done' : ''}">
     <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${isDone ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${isDone ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
     <div class="ws-todo-text"><button type="button" class="ws-link-title" data-action="task-open-today" data-id="${e(c.id)}">${e(c.data.text)}</button>${due || owner ? `<small>${due}${owner ? `<span class="ws-todo-owner">${due ? ' · ' : ''}${e(owner)}</span>` : ''}</small>` : ''}</div>
-    ${button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } })}
+    ${local ? button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } }) : ''}
   </div>`;
   };
   return card({
     title: 'Tasks', iconName: 'tasks', className: 'ws-commitments',
-    actions: button('Board', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
+    actions: button(local ? 'Board' : 'Tasks', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
     // One quiet line for what meetings found, then a row that opens the add form (a details that
     // render keeps open, `data-menu`; app.js focuses the field as it opens).
     body: `${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review}</strong> ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</span>${icon('arrow')}</button>` : ''}

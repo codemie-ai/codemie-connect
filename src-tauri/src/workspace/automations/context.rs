@@ -19,6 +19,9 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_EVENTS: usize = 30;
 const MAX_NEEDS_REPLY: usize = 20;
+const MAX_RECENT_MESSAGES: usize = 40;
+/// "Messages since the last run" never reaches further back than three days.
+pub(super) const RECENT_FLOOR_SECS: i64 = 3 * 86_400;
 const MAX_SENDER_MAIL: usize = 20;
 const MAX_COMMITMENTS: usize = 30;
 const MAX_NOTES: usize = 10;
@@ -44,6 +47,14 @@ pub struct Run<'a> {
     /// Who "me" is (the active account's name, aliases and address), so the user's own tasks
     /// read as theirs; the default (only "You") when no account is known.
     pub me: &'a MeAlias,
+    /// The start of `recentMessages`: this automation's last `ok` run's `startedAt`, or a
+    /// first-run/floor default. `None` when it is not yet known, which skips the section
+    /// (DESIGN step 5 §3; Task 4 computes it).
+    pub since: Option<i64>,
+    /// After an earlier `ok` run, when it started (floored like `since`): a message Connect first
+    /// stored (`seenAt`) at or after this is read too, though it arrived before `since` (a late
+    /// sync), as long as it arrived within the last three days. `None` on a first run.
+    pub seen_since: Option<i64>,
 }
 
 /// One block Claude read, and the record it stands for.
@@ -55,6 +66,11 @@ pub struct Source {
     pub title: String,
     pub at: i64,
     pub channel: Option<String>,
+    /// A commitment's own kind (`task`, `reply`, `waiting` or `budget`); `None` for every other
+    /// kind of source. Lets `parse_automation` tell a reply/waiting commitment from a plain one.
+    pub task_kind: Option<String>,
+    /// Whether a commitment source is still open; `false` for every other kind of source.
+    pub open: bool,
 }
 
 impl Source {
@@ -72,21 +88,11 @@ impl Source {
 pub struct RunInput {
     /// The JSON written to Claude's stdin.
     pub input: Value,
-    /// Every block given to Claude, in id order.
+    /// Every block given to Claude, in id order; `parse_automation` reads citations against it.
     pub sources: Vec<Source>,
     /// The triggering conversation as a reply draft reads it, to check later that it did not
     /// change while Claude worked.
     pub conversation: Option<PromptInput>,
-}
-
-impl RunInput {
-    /// "s3" -> record id, for reading Claude's citations.
-    pub fn handles(&self) -> HashMap<String, String> {
-        self.sources
-            .iter()
-            .map(|s| (s.handle.clone(), s.record_id.clone()))
-            .collect()
-    }
 }
 
 /// A block before its id is known.
@@ -108,11 +114,12 @@ impl Block {
 }
 
 /// The section keys in the order Claude reads them.
-const SECTIONS: [&str; 7] = [
+const SECTIONS: [&str; 8] = [
     "triggerConversation",
     "triggerMeeting",
     "calendarToday",
     "needsReply",
+    "recentMessages",
     "senderMail",
     "commitments",
     "notes",
@@ -130,11 +137,27 @@ fn source(kind: &'static str, record: &Record, title: String, at: i64) -> Source
         title,
         at,
         channel: record.data["channel"].as_str().map(String::from),
+        task_kind: None,
+        open: false,
+    }
+}
+
+/// The user's `<voice>` and `<facts>` blocks for a run's reply draft (reply voice design §4: an
+/// automation that drafts gets the same fields as a manual draft). They are added on top of the
+/// 16,000-character data budget, which [`build`] spends on what the run reads; each has its own
+/// budget (9,000 voice, 2,500 facts) and is already escaped and bounded by `voice::draft`.
+pub fn add_voice(input: &mut Value, voice: Option<&str>, facts: Option<&str>) {
+    if let Some(voice) = voice {
+        input["voice"] = voice.into();
+    }
+    if let Some(facts) = facts {
+        input["facts"] = facts.into();
     }
 }
 
 /// The input for one run: only what the automation's Read set names (plus the conversation a
-/// requested reply draft answers), newest first within the 16,000-character budget. The
+/// requested reply draft answers), newest first within the 16,000-character budget. A reply
+/// draft's `voice` and `facts` are not part of it: [`add_voice`] adds them on top. The
 /// triggering conversation is what the run is about, so it is kept first.
 pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput> {
     let a = run.automation;
@@ -158,6 +181,9 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
     }
     if run.draft {
         input["draftReply"] = true.into();
+    }
+    if a.deliver.create_tasks {
+        input["createTasks"] = true.into();
     }
     // Each present section, with how many entries of it there are before any cap.
     let mut totals: Vec<(&'static str, usize)> = Vec::new();
@@ -190,6 +216,14 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
         }
         if a.read.needs_reply {
             add("needsReply", needs_reply(repo, w, c, tz, reading.now)?);
+        }
+        if a.read.recent_messages {
+            if let Some(since) = run.since {
+                add(
+                    "recentMessages",
+                    recent_messages(repo, w, c, (since, run.seen_since), reading.now, tz)?,
+                );
+            }
         }
         if a.read.mail_from_sender_days > 0 {
             let skip: HashSet<&str> = conversation
@@ -278,7 +312,16 @@ fn trigger_conversation(
     trigger: &Record,
     reading: &Reading,
 ) -> Result<(PromptInput, Vec<Block>, usize)> {
-    let ctx = prompts::draft_context(repo, w, trigger, c, &DraftOptions::default(), reading)?;
+    let ctx = prompts::draft_context(
+        repo,
+        w,
+        trigger,
+        c,
+        &DraftOptions::default(),
+        reading,
+        None,
+        None,
+    )?;
     let total = prompts::reply_thread(repo, w, c, trigger)?.len();
     let window: HashMap<String, Record> = prompts::draft_window(repo, w, c, trigger)?
         .into_iter()
@@ -532,6 +575,50 @@ fn needs_reply(
     Ok((blocks, messages.len()))
 }
 
+/// "Messages since the last run" (DESIGN step 5 §3): every synced mail and Teams message the
+/// workspace shows, both directions, since `since` and no later than `now`, newest first;
+/// `by="user"` marks a message the user sent. With `seen_since`, a message Connect first stored
+/// at or after it counts too when it arrived within [`RECENT_FLOOR_SECS`] (a late sync).
+fn recent_messages(
+    repo: &Repository,
+    w: &Workspace,
+    c: &Connection,
+    (since, seen_since): (i64, Option<i64>),
+    now: i64,
+    tz: Tz,
+) -> Result<(Vec<Block>, usize)> {
+    let late = |m: &Record| {
+        seen_since.is_some_and(|s| m.data["seenAt"].as_i64().is_some_and(|seen| seen >= s))
+            && at(m) >= now - RECENT_FLOOR_SECS
+    };
+    let mut messages: Vec<Record> = repo
+        .provider_records(&c.id, "message")?
+        .into_iter()
+        .filter(|m| {
+            (at(m) >= since || late(m))
+                && at(m) <= now
+                && record_selected(m, w)
+                && source_permitted(m, c)
+                && source_available(m)
+        })
+        .collect();
+    messages.sort_by(|x, y| at(y).cmp(&at(x)).then(x.id.cmp(&y.id)));
+    let blocks = messages
+        .iter()
+        .take(MAX_RECENT_MESSAGES)
+        .enumerate()
+        .map(|(i, m)| {
+            let extra = if m.data["isMine"] == true {
+                " by=\"user\"".to_string()
+            } else {
+                String::new()
+            };
+            message_block("recentMessages", i, m, &extra, PREVIEW_CHARS, tz)
+        })
+        .collect();
+    Ok((blocks, messages.len()))
+}
+
 /// Email from the address of the message that started the run, since `since`, newest first;
 /// messages already in the triggering conversation are not repeated.
 fn sender_mail(
@@ -576,10 +663,12 @@ fn sender_mail(
 /// The user's open tasks (To do, In progress, Waiting; not those still To review, done or
 /// dismissed), newest first, each saying who promised it: "You promised: …" for the user's own
 /// (`"You"`, their address or name), "Sam Stone promised you: …" for someone else's (by name when
-/// known), "Nobody named: …" for one without an owner.
+/// known), "Nobody named: …" for one without an owner. Each block carries the task's own kind
+/// (`task-kind=`, absent for a plain task), `handled="true"` when already flagged and
+/// `kept="true"` when the user pressed Keep open on it, so `parse_automation` can tell a reply or
+/// waiting commitment from a plain one.
 fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Block>, usize)> {
-    let open: Vec<Record> = repo
-        .local_records(&w.id, tasks::KIND)?
+    let open: Vec<Record> = tasks::active(repo, &w.id)?
         .into_iter()
         .filter(|c| tasks::is_open(&c.data))
         .collect();
@@ -589,11 +678,31 @@ fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Bl
         .enumerate()
         .map(|(i, c)| {
             let body = prompts::sanitize_text(&text(c, "text"), COMMITMENT_CHARS);
+            let kind = c.data["kind"]
+                .as_str()
+                .filter(|k| crate::workspace::tasks::KINDS.contains(k))
+                .unwrap_or("task")
+                .to_string();
+            let task_kind_attr = if kind == "task" {
+                String::new()
+            } else {
+                format!(" task-kind=\"{kind}\"")
+            };
             let due = c.data["due"]
                 .as_str()
                 .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
                 .map(|d| format!(" due=\"{d}\""))
                 .unwrap_or_default();
+            let handled_attr = if c.data["handled"]["evidence"].is_string() {
+                " handled=\"true\"".to_string()
+            } else {
+                String::new()
+            };
+            let kept_attr = if c.data["keptAt"].is_i64() {
+                " kept=\"true\""
+            } else {
+                ""
+            };
             let name = Some(text(c, "ownerName"))
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| text(c, "owner"));
@@ -605,16 +714,21 @@ fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Bl
             } else {
                 format!("{owner} promised you")
             };
+            let mut src = source(
+                "commitment",
+                c,
+                prompts::sanitize_line(&text(c, "text"), 200),
+                c.updated_at,
+            );
+            src.task_kind = Some(kind);
+            src.open = true;
             Block {
                 section: "commitments",
                 order: i,
-                template: format!("<item {ID} kind=\"commitment\"{due}>\n{who}: {body}\n</item>"),
-                source: source(
-                    "commitment",
-                    c,
-                    prompts::sanitize_line(&text(c, "text"), 200),
-                    c.updated_at,
+                template: format!(
+                    "<item {ID} kind=\"commitment\"{task_kind_attr}{due}{handled_attr}{kept_attr}>\n{who}: {body}\n</item>"
                 ),
+                source: src,
             }
         })
         .collect();
@@ -777,6 +891,8 @@ mod tests {
             source,
             draft: false,
             me: &me,
+            since: None,
+            seen_since: None,
         };
         build(r, &run, &reading).unwrap()
     }
@@ -821,7 +937,7 @@ mod tests {
         assert!(blocks[2].contains("Time: 17:00–18:00"));
         let ids: Vec<&str> = built.sources.iter().map(|s| s.record_id.as_str()).collect();
         assert_eq!(ids, ["standup", "private", "late"]);
-        assert_eq!(built.handles()["s3"], "late");
+        assert_eq!(built.sources[2].handle, "s3");
         assert!(built.input.get("truncated").is_none(), "nothing was cut");
         // The automation's name and instructions are sanitised too.
         assert_eq!(built.input["automation"], "Morning ‹brief›");
@@ -943,7 +1059,8 @@ mod tests {
         // Ids follow the reading order and map back to their records.
         assert_eq!(built.sources[0].record_id, "q0");
         assert_eq!(built.sources[0].handle, "s1");
-        assert_eq!(built.handles().len(), built.sources.len());
+        let handles: HashSet<&str> = built.sources.iter().map(|s| s.handle.as_str()).collect();
+        assert_eq!(handles.len(), built.sources.len(), "every handle is unique");
     }
 
     #[test]
@@ -1000,6 +1117,142 @@ mod tests {
             .input
             .to_string()
             .contains("taylor@example.test promised"));
+    }
+
+    #[test]
+    fn recent_messages_read_both_directions_since_the_last_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, w, c) = repo(dir.path());
+        let since = BASE;
+        r.put_record(&mail(
+            "too-old",
+            since - 10,
+            "ann@example.test",
+            "before the window",
+        ))
+        .unwrap();
+        let mut mine = mail("mine", since + 10, "taylor@example.test", "my own message");
+        mine.data["isMine"] = true.into();
+        r.put_record(&mine).unwrap();
+        r.put_record(&mail("ann", since + 20, "ann@example.test", "from Ann"))
+            .unwrap();
+        let a = automation(ReadSet {
+            recent_messages: true,
+            ..ReadSet::default()
+        });
+        let texts = FullTexts::new();
+        let reading = Reading {
+            now: since + 3600,
+            zone: "UTC",
+            texts: &texts,
+        };
+        let me = MeAlias::of(&c);
+        let run = Run {
+            automation: &a,
+            trigger: &json!({"kind": "schedule"}),
+            workspace: &w,
+            account: Some(&c),
+            source: None,
+            draft: false,
+            me: &me,
+            since: Some(since),
+            seen_since: None,
+        };
+        let built = build(&r, &run, &reading).unwrap();
+        let blocks: Vec<&str> = built.input["recentMessages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
+        // Newest first; the user's own message carries by="user", Ann's does not.
+        assert_eq!(blocks.len(), 2, "{blocks:#?}");
+        assert!(blocks[0].contains("from Ann") && !blocks[0].contains("by=\"user\""));
+        assert!(blocks[1].contains("my own message") && blocks[1].contains("by=\"user\""));
+        let ids: Vec<&str> = built.sources.iter().map(|s| s.record_id.as_str()).collect();
+        assert!(!ids.contains(&"too-old"), "before since is never read");
+
+        // 47 messages pass the window; only 40 are shown (the section's own cap), and
+        // truncated says so. Short bodies keep the run well under the 16,000-character budget,
+        // so the cap below is the section's own, not the shared one; one long body still
+        // proves each text is cut to 500 characters.
+        for i in 0..44 {
+            r.put_record(&mail(
+                &format!("bulk{i:02}"),
+                since + 100 + i as i64,
+                "ann@example.test",
+                "FYI, short.",
+            ))
+            .unwrap();
+        }
+        r.put_record(&mail(
+            "bulk-long",
+            since + 200,
+            "ann@example.test",
+            &"x".repeat(600),
+        ))
+        .unwrap();
+        let built = build(&r, &run, &reading).unwrap();
+        let blocks = built.input["recentMessages"].as_array().unwrap();
+        assert_eq!(blocks.len(), 40);
+        assert_eq!(
+            built.input["truncated"]["recentMessages"],
+            json!({"shown": 40, "total": 47})
+        );
+        assert!(
+            blocks.iter().any(|b| b.as_str().unwrap().contains('…')),
+            "a 600-character body is cut to 500"
+        );
+    }
+
+    #[test]
+    fn commitment_blocks_carry_task_kind_and_handled() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, w, c) = repo(dir.path());
+        r.put_record(&local(
+            "reply1",
+            "commitment",
+            json!({"text": "Reply to Olga", "done": false, "owner": "You", "kind": "reply",
+                "handled": {"evidence": "Olga sent the SOW"}}),
+            BASE,
+        ))
+        .unwrap();
+        r.put_record(&local(
+            "plain1",
+            "commitment",
+            json!({"text": "Book the room", "done": false, "owner": "You"}),
+            BASE - 60,
+        ))
+        .unwrap();
+        let a = automation(ReadSet {
+            commitments_notes: true,
+            ..ReadSet::default()
+        });
+        let built = build_with(&r, &w, &c, &a, &json!({"kind": "schedule"}), None);
+        let blocks: Vec<&str> = built.input["commitments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
+        assert!(
+            blocks[0].starts_with(
+                "<item id=\"s1\" kind=\"commitment\" task-kind=\"reply\" handled=\"true\">"
+            ),
+            "{}",
+            blocks[0]
+        );
+        assert!(
+            blocks[1].starts_with("<item id=\"s2\" kind=\"commitment\">")
+                && !blocks[1].contains("task-kind")
+                && !blocks[1].contains("handled"),
+            "{}",
+            blocks[1]
+        );
+        assert_eq!(built.sources[0].task_kind.as_deref(), Some("reply"));
+        assert!(built.sources[0].open);
+        assert_eq!(built.sources[1].task_kind.as_deref(), Some("task"));
+        assert!(built.sources[1].open);
     }
 
     #[test]

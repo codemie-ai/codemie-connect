@@ -1,0 +1,33 @@
+{
+  "attempts": 0,
+  "connectionId": "acct",
+  "dueAt": 1795000400,
+  "id": "job-1",
+  "key": "ai_draft:op-1",
+  "kind": "ai_draft",
+  "leaseUntil": null,
+  "payload": {
+    "channel": "mail",
+    "conversationKey": "mail:conv-1",
+    "draftKey": "m3",
+    "purpose": "mail_draft",
+    "request": {
+      "includeFreeTimes": false,
+      "instructions": "Say 15:00 instead",
+      "intent": "reply",
+      "length": "medium",
+      "revise": "Sure, 14:30, see you then.",
+      "sourceId": "m3",
+      "tone": "neutral"
+    }
+  },
+  "policy": {
+    "generation": 1,
+    "policyRevision": 1,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": null,
+  "state": "queued",
+  "workspaceId": "personal"
+}

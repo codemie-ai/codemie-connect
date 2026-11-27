@@ -15,7 +15,7 @@ APP        := $(TARGET_DIR)/release/bundle/macos/$(PRODUCT).app
 .PHONY: help setup stage restage dev run open \
         build build-fast build-app sign notarize \
         fmt fmt-check lint lint-fix test test-js test-rust test-ui check \
-        version clean
+        tour version clean
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -92,6 +92,11 @@ test-ui: ## Run Playwright UI tests
 	npm run test:ui
 
 check: fmt-check lint test ## Run all quality gates (fmt, clippy, tests)
+
+## ---- Real-app tour ------------------------------------------------------
+
+tour: | $(NODE_BIN) ## Build, seed and run the real-app tour; report in output/tour/
+	scripts/tour/run.sh $(if $(ONLY),--only "$(ONLY)",)
 
 ## ---- Misc --------------------------------------------------------------
 

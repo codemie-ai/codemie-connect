@@ -1,0 +1,24 @@
+{
+  "afterTemplateDelete": {
+    "actionItems": false,
+    "openOn": "transcript",
+    "summaryTabs": [
+      "short-summary",
+      "plugin:podervianskyi"
+    ]
+  },
+  "default": {
+    "actionItems": true,
+    "openOn": "summary",
+    "summaryTabs": []
+  },
+  "updated": {
+    "actionItems": false,
+    "openOn": "transcript",
+    "summaryTabs": [
+      "short-summary",
+      "custom-formal",
+      "plugin:podervianskyi"
+    ]
+  }
+}

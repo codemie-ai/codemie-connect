@@ -1,0 +1,13 @@
+{
+  "default": {
+    "hiddenPages": [],
+    "view": "default"
+  },
+  "updated": {
+    "hiddenPages": [
+      "calendar",
+      "tasks"
+    ],
+    "view": "compact"
+  }
+}

@@ -67,8 +67,8 @@ export function select(options, value, attrs = {}) {
   return `<span class="ws-select-wrap"><select ${attrsOf({ class: 'ws-select', ...attrs })}>${options.map(([v, label]) => `<option value="${e(v)}" ${String(v) === String(value) ? 'selected' : ''}>${e(label)}</option>`).join('')}</select>${icon('chevron-down', 'ws-select-caret')}</span>`;
 }
 
-export function settingRow({ title, text = '', control = '', iconName }) {
-  return `<div class="ws-setting-row">${iconName ? `<span class="ws-setting-icon">${icon(iconName)}</span>` : ''}<div class="ws-setting-copy"><strong>${e(title)}</strong>${text ? `<p>${e(text)}</p>` : ''}</div><div class="ws-setting-control">${control}</div></div>`;
+export function settingRow({ title, text = '', control = '', iconName, hintId }) {
+  return `<div class="ws-setting-row">${iconName ? `<span class="ws-setting-icon">${icon(iconName)}</span>` : ''}<div class="ws-setting-copy"><strong>${e(title)}</strong>${text ? `<p${hintId ? ` id="${e(hintId)}"` : ''}>${e(text)}</p>` : ''}</div><div class="ws-setting-control">${control}</div></div>`;
 }
 
 export const spinner = (label = 'Loading') => `<span class="ws-spinner" role="status" aria-label="${e(label)}"></span>`;
@@ -104,9 +104,10 @@ export function soleMatch(root, selector) {
 
 /**
  * A toast. `action` (`{label, run}`) adds one button, such as Undo: it runs once and the toast
- * goes; a failure shows as an error toast. Such a toast stays 10 s instead of 6 s.
+ * goes; a failure shows as an error toast. Such a toast stays 10 s instead of 6 s, unless `life`
+ * (ms) says otherwise (Ask's "← Back to Ask" stays 6 s).
  */
-export function toast(message, tone = 'info', action = null) {
+export function toast(message, tone = 'info', action = null, { life: lifeMs } = {}) {
   let host = document.querySelector('.ws-toasts');
   if (!host) {
     host = document.createElement('div');
@@ -131,7 +132,7 @@ export function toast(message, tone = 'info', action = null) {
   host.append(el);
   while (host.children.length > 3) host.firstElementChild.remove();
   // A toast with an action (Undo) stays longer, so there is time to use it.
-  const life = action ? 10000 : 6000;
+  const life = lifeMs || (action ? 10000 : 6000);
   setTimeout(() => el.classList.add('ws-toast-leave'), life);
   setTimeout(() => el.remove(), life + 400);
   return el;
@@ -157,8 +158,14 @@ export const COMMIT_GUARD_MS = 400;
  * 'cancel'` focuses Cancel, so Enter never commits by default, and `guard` ignores a submit within
  * `COMMIT_GUARD_MS` of opening or of `dialog.arm()` (a step change) and a held-down Enter, so a
  * double click or a repeated key can't commit.
+ *
+ * `returnCancels` is for a dialog Return must never confirm (the mail send review): it implies
+ * `initialFocus: 'cancel'` and `guard`, and a capturing keydown closes the dialog as Cancel would
+ * on Enter anywhere inside it, rather than letting it reach the form's submit. Space on a
+ * focused submit button is unaffected and still submits.
  */
-export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '', initialFocus = 'auto', guard = false }) {
+export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '', initialFocus = 'auto', guard = false, returnCancels = false }) {
+  if (returnCancels) { initialFocus = 'cancel'; guard = true; }
   const restore = document.activeElement;
   const dialog = document.createElement('dialog');
   dialog.className = `ws-modal ws-modal-${size}`;
@@ -194,6 +201,13 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
       if (ev.key === 'Enter' && ev.repeat) ev.preventDefault();
     }, true);
   }
+  if (returnCancels) {
+    dialog.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      requestClose().catch(err => toast(err.message || String(err), 'error'));
+    }, true);
+  }
   form.onsubmit = async ev => {
     ev.preventDefault();
     if (guard && performance.now() - dialog.armedAt < COMMIT_GUARD_MS) return;
@@ -206,15 +220,19 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
       return;
     }
     const submitter = ev.submitter || form.querySelector('[type=submit]');
-    if (submitter) submitter.disabled = true;
+    // Built before any button is disabled: a disabled control (including the submitter itself)
+    // is left out of FormData, which would silently drop the submitter's own name/value.
+    const data = new FormData(form, submitter);
+    const buttons = [...form.querySelectorAll('[type=submit]')];
+    buttons.forEach(b => { b.disabled = true; });
     error.textContent = '';
     try {
-      const result = await onSubmit(new FormData(form), dialog);
+      const result = await onSubmit(data, dialog);
       if (result !== false && dialog.open) dialog.close();
     } catch (err) {
       error.textContent = err?.message || String(err);
     } finally {
-      if (submitter) submitter.disabled = false;
+      buttons.forEach(b => { b.disabled = false; });
     }
   };
   document.body.append(dialog);
@@ -225,6 +243,6 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
   return dialog;
 }
 
-export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId, initialFocus, guard, onClose }) {
-  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId, initialFocus, guard, onClose });
+export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId, initialFocus, guard, onClose, returnCancels = false }) {
+  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId, initialFocus, guard, onClose, returnCancels });
 }

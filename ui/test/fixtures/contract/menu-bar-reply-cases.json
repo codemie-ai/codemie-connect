@@ -1,0 +1,189 @@
+{
+  "records": [
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "mail",
+        "lane": "reply"
+      },
+      "id": "m1",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "reply"
+      },
+      "id": "c1-1",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "reply"
+      },
+      "id": "c1-2",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "reply"
+      },
+      "id": "c1-3",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "reply"
+      },
+      "id": "c1-4",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "reply"
+      },
+      "id": "c1-5",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "acknowledgedAt": null,
+        "channel": "chat",
+        "conversationId": "c1",
+        "lane": "critical"
+      },
+      "id": "c1-critical",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "acknowledgedAt": 5,
+        "channel": "chat",
+        "conversationId": "c2",
+        "lane": "critical"
+      },
+      "id": "c2-critical",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "chat",
+        "conversationId": "c2",
+        "lane": "reply"
+      },
+      "id": "c2-reply",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "acknowledgedAt": 0,
+        "channel": "chat",
+        "conversationId": "c3",
+        "lane": "critical"
+      },
+      "id": "c3-critical-zero",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "mail",
+        "lane": "reply",
+        "lifecycle": "archived"
+      },
+      "id": "archived",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "mail",
+        "deleted": true,
+        "lane": "reply"
+      },
+      "id": "deleted",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "channel": "mail",
+        "lane": "reply",
+        "snoozedUntil": 4102444800
+      },
+      "id": "snoozed",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    }
+  ],
+  "replies": 3
+}

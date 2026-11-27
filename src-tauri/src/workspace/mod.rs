@@ -3,6 +3,10 @@ mod actions;
 mod ai;
 mod ai_jobs;
 pub(crate) mod analytics;
+#[allow(dead_code)]
+// `ask_start`, `ask_read` and `ask_delete` wire in the store's reads, writes and deletes (later
+// tasks); this task wires the snapshot's `ask` and the start-up prune.
+pub mod ask;
 mod automations;
 mod changes;
 mod credentials;
@@ -13,17 +17,27 @@ pub mod graph;
 mod inbox;
 pub(crate) mod markdown;
 pub mod meetings;
+pub(crate) mod menu_bar;
 pub mod models;
 mod paths;
 mod plugin_calls;
 pub(crate) mod plugin_data;
 mod plugin_m365;
+mod plugin_voice;
 mod prompts;
 pub mod repository;
 pub mod schedules;
 mod slots;
+pub(crate) mod task_provider;
 pub(crate) mod tasks;
 mod today;
+#[allow(dead_code)]
+// the role and host, the operations and the refresh job wire this in (later tasks)
+pub(crate) mod voice;
+#[allow(dead_code)]
+// `window` and `Window` are Ask's date span; Ask's own task wires them in (this task only
+// wires `capture_parse`, which uses `parse`).
+pub mod when;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -114,6 +128,20 @@ pub struct Core {
     plugin_ops: AtomicUsize,
     /// Where plugins hear what happened (`plugin_data`), once the plugin manager has started.
     events: std::sync::OnceLock<Arc<dyn EventSink>>,
+    /// Connect's way into provider plugins' host halves (`task_provider`), set once by the
+    /// plugin manager; `None` while nothing has set it (every workspace test, and Task 1's own
+    /// Local-only snapshot).
+    task_providers: std::sync::OnceLock<Arc<dyn task_provider::TaskProviders>>,
+    /// Connect's way into reply-context provider plugins' host halves (`voice`), set once by
+    /// the plugin manager; `None` while nothing has set it (every test with no voice provider).
+    voice_providers: std::sync::OnceLock<Arc<dyn voice::VoiceProviders>>,
+    /// Moves each time Connect's copy of the voice is deleted; a voice edit asked before a delete
+    /// writes nothing after it (`voice::ops`).
+    voice_epoch: AtomicUsize,
+    /// How often the plugin manager said it loaded the chosen voice provider
+    /// (`Core::voice_reloaded`); tests read it.
+    #[cfg(test)]
+    pub(crate) voice_reloads: AtomicUsize,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
     /// Held by one writer of meeting records and transcript files at a time
@@ -122,6 +150,8 @@ pub struct Core {
     /// The user's home folder, where the default meetings root lives. Tests use a folder inside
     /// their temp data folder, so they never write into the real home.
     home: Option<PathBuf>,
+    /// Keeps the menu-bar tray's count, icon and rows up to date (`menu_bar::Refresher`).
+    pub(crate) menu_bar: menu_bar::Refresher,
 }
 
 fn poisoned() -> WorkspaceError {
@@ -155,6 +185,40 @@ impl Drop for PluginOp {
         self.0.plugin_ops.fetch_sub(1, Ordering::SeqCst);
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Tests flip this instead of driving the real, environment-driven tour startup: see
+    /// [`tour_sends_nothing`]. Per thread: `cargo test` runs tests on parallel threads of one
+    /// process, and one test touring must never turn another's `Core` quiet (final review I3).
+    /// Each `#[tokio::test]` runs on its own current-thread runtime, so its awaits stay here too.
+    static TOUR_FOR_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(feature = "tour")]
+fn touring() -> bool {
+    crate::commands::tour::active().is_some()
+}
+
+#[cfg(not(feature = "tour"))]
+fn touring() -> bool {
+    false
+}
+
+/// Whether this process is touring (design § 2, rulings 7 and 9): [`Core::start`] then starts
+/// only the menu-bar refresher, and [`Core::request`] refuses the ops that would send or open
+/// something on the user's desktop. The app reads [`touring`] (the real tour's
+/// `commands::tour::active()`, always `false` without the `tour` feature); `cfg(test)` reads
+/// [`TOUR_FOR_TESTS`] instead, so both quiet behaviors can be tested without the real,
+/// environment-driven tour startup.
+fn tour_sends_nothing() -> bool {
+    #[cfg(test)]
+    if TOUR_FOR_TESTS.with(|depth| depth.get() > 0) {
+        return true;
+    }
+    touring()
+}
+
 impl Core {
     pub fn open(app: tauri::AppHandle, paths: &CorePaths) -> Result<Arc<Self>> {
         // The bundled `codemie-claude` shim is searched after the user's own install.
@@ -206,8 +270,12 @@ impl Core {
         let home = paths::home_dir();
         #[cfg(any(test, feature = "test-support"))]
         let home = Some(paths.data.join("home"));
+        let mut repository = Repository::open(&paths.database())?;
+        // Written once, the first time Core opens with this step: nothing made before it is new
+        // (menu-bar count design §2).
+        menu_bar::ensure_since(&mut repository, now())?;
         Ok(Arc::new(Self {
-            repository: Mutex::new(Repository::open(&paths.database())?),
+            repository: Mutex::new(repository),
             paths: paths.clone(),
             owner_lock,
             connect_lock,
@@ -240,10 +308,34 @@ impl Core {
             jobs_in_flight: AtomicUsize::new(0),
             plugin_ops: AtomicUsize::new(0),
             events: std::sync::OnceLock::new(),
+            task_providers: std::sync::OnceLock::new(),
+            voice_providers: std::sync::OnceLock::new(),
+            voice_epoch: AtomicUsize::new(0),
+            #[cfg(test)]
+            voice_reloads: AtomicUsize::new(0),
             meetings_told: Default::default(),
             meeting_writes: Default::default(),
             home,
+            menu_bar: menu_bar::Refresher::new(now),
         }))
+    }
+    /// A quiet `Core` for the tour (design § 2): Claude, Microsoft reads and the analytics CLI
+    /// are the test fakes, and `profiles` (the seed's fixed three, `commands::tour::quiet`)
+    /// never probes a CLI.
+    #[cfg(feature = "tour")]
+    pub fn open_tour(
+        app: tauri::AppHandle,
+        paths: &CorePaths,
+        profiles: Vec<crate::ai::profiles::AiProfile>,
+    ) -> Result<Arc<Self>> {
+        Self::open_with(
+            Some(app),
+            paths,
+            Arc::new(crate::commands::tour::quiet::QuietRunner),
+            ProfileCache::fixed(profiles),
+            Arc::new(ai_jobs::FakeGraph::default()),
+            Arc::new(analytics::cli::FakeAnalyticsCli::new()),
+        )
     }
     /// Counts a plugin request as running, or refuses it while the workspace is held for a
     /// data-folder change. Counted before `hold` is read, and `quiesce` sets `hold` before it
@@ -366,6 +458,8 @@ impl Core {
     }
     pub fn stop_background(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        // The menu-bar refresher sees `stop` and ends.
+        self.menu_bar.wake();
         self.ai_cancel.cancel();
         self.kill_graph_reads();
         // The process exits without dropping tasks: an analytics export would outlive it.
@@ -412,13 +506,53 @@ impl Core {
         Ok(repo)
     }
     pub fn emit(&self, event: &str) {
+        // Only a wake: callers may hold the repository guard, so the count happens later. A
+        // finished plugin reload recounts too (I1): the task plugin's `ready`/`failed` state can
+        // only have changed once it settles.
+        if event == "workspace:changed" || event == "plugins:reloaded" {
+            self.menu_bar.wake();
+        }
         if let Some(app) = &self.app {
             let _ = app.emit(event, json!({"changed":true}));
         }
     }
+    /// Whether [`start`](Self::start) would run anything past the menu-bar refresher: a real
+    /// app to run it with (the only caller, `workspace::startup`, always has one; every unit
+    /// test's `Core` has none), and not touring. A pure, directly-testable decision — `start`
+    /// itself still keeps the plain `self.app` check too, so an app-less test `Core` behaves
+    /// exactly as it did before this module knew about the tour.
+    fn starts_background(&self) -> bool {
+        self.app.is_some() && !tour_sends_nothing()
+    }
+    /// Starts the background work: the menu-bar refresher, notification clicks and the
+    /// background loop. Touring (design § 2, ruling 9) starts only the menu-bar refresher: no
+    /// schedules, jobs, Graph sync, task sync, automations or notifications, so every screenshot
+    /// is deterministic for the seed. A `Core` with no app (every unit test) runs nothing at
+    /// all, as before the tour existed.
     pub fn start(self: &Arc<Self>) {
         let Some(app) = self.app.clone() else { return };
+        if !self.starts_background() {
+            // Touring: the tour's windows are fixed sizes (design § 2), so there is nothing for
+            // `geometry::restore` to do, and no notification will ever fire to click.
+            self.start_menu_bar();
+            return;
+        }
         geometry::restore(&app, &self.paths.private);
+        // Ask's threads past their 30 days, or beyond the newest 50, go once at start-up
+        // (ask-capture design § 5).
+        if let Err(e) = self
+            .repo()
+            .and_then(|mut r| ask::store::prune(&mut r, now()))
+        {
+            eprintln!("ask: start-up prune failed: {}", e.code);
+        }
+        // A turn left queued or running whose job is no longer queued or running reads failed
+        // with the job's own sentence (stopped for a stopped job). Runs whether the prune
+        // worked or not.
+        if let Err(e) = self.ask_startup() {
+            eprintln!("ask: start-up check failed: {}", e.code);
+        }
+        self.start_menu_bar();
         let click_app = app.clone();
         let _ = app.notification().on_action(move |action| {
             if action.action_id() == "dismiss" {
@@ -509,6 +643,14 @@ impl Core {
             *last_sync = now();
             let _ = self.queue_sync();
         }
+        // The task provider syncs with the window closed too (every 5 minutes).
+        if let Err(e) = self.task_sync_round(now()) {
+            eprintln!("tasks: sync round failed: {}", e.code);
+        }
+        // The chosen voice provider's copy is refreshed every 30 minutes, window open or closed.
+        if let Err(e) = self.voice_refresh_round(now()) {
+            log::warn!("voice: refresh round failed: {}", e.code);
+        }
         if ticks.is_multiple_of(30) {
             self.announce_meetings(now());
         }
@@ -529,6 +671,19 @@ impl Core {
             executor.run_claimed_job(job).await;
             drop(running);
         });
+    }
+    /// Claims and runs every due job, one at a time, the way the background loop does (the tests
+    /// outside the crate, `testing::run_jobs`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn run_due_jobs(self: &Arc<Self>) {
+        while let Some(job) = self
+            .repo()
+            .and_then(|mut r| r.claim_ready(now(), true))
+            .ok()
+            .flatten()
+        {
+            self.clone().run_claimed_job(job).await;
+        }
     }
     async fn run_claimed_job(self: Arc<Self>, job: Job) {
         let result = {
@@ -584,6 +739,13 @@ impl Core {
                 }
                 job.lease_until = None;
                 let _ = repo.save_job(&job);
+                // An answer that ended other than by its own write (cancelled by Connect, or a
+                // write that didn't land) never leaves its turn "Answering…".
+                if job.kind == ask::ops::KIND && job.state != "succeeded" {
+                    if let Err(e) = ask::ops::settle_ended(&mut repo, &job) {
+                        eprintln!("ask: settling an ended answer failed: {}", e.code);
+                    }
+                }
             }
         }
         self.emit("workspace:changed");
@@ -652,6 +814,17 @@ impl Core {
                 let started = now();
                 self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
+                // A round that changed messages may hold the user's own replies (design §6).
+                let changed = self
+                    .repo()?
+                    .records_of_kind("message")?
+                    .iter()
+                    .any(|m| m.updated_at >= started);
+                if changed {
+                    if let Err(e) = task_provider::handled::sweep(self, now()) {
+                        eprintln!("tasks: the own-reply sweep failed: {}", e.code);
+                    }
+                }
                 // Plugins hear once per round which sources changed.
                 self.after_sync_round(started);
                 // New messages may start automations; a failure here must not fail the sync.
@@ -697,11 +870,22 @@ impl Core {
             }
             "ai_draft" => self.run_ai_draft(job).await,
             "ai_summarize" => self.run_ai_summary(job).await,
+            ask::ops::KIND => self.run_ask_job(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
             "automation_run" => self.run_automation(job).await,
             "transcript_check" => self.run_transcript_check(job).await,
             "transcript_download" => self.run_transcript_download(job).await,
             "meeting_notes" => self.run_meeting_notes(job).await,
+            voice::refresh::JOB_KIND => {
+                let provider = job.payload["provider"].as_str().unwrap_or_default();
+                voice::refresh::run(self, provider, now()).await
+            }
+            "task_sync" => {
+                let provider = job.payload["provider"].as_str().unwrap_or_default();
+                Ok(task_provider::sync::run(self, provider, now())
+                    .await?
+                    .summary())
+            }
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -751,10 +935,47 @@ impl Core {
             })
     }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
+        // Checked before the mutation lock (design § 2, ruling 7): no revision bump, and the
+        // runner's own deny-list (design § 5) is the first guard, this the second. `GraphConnect`,
+        // `OpenSource` and `MeetingsReveal` each open another app on the user's desktop (the
+        // Microsoft sign-in page, or Finder); the tour's deny-list regex does not name them, so
+        // they are refused here too (controller ruling, Task 2 fix round 1).
+        // Each refusal is recorded under the op's name (or the setting's) for the tour's report.
+        if tour_sends_nothing() {
+            let op = serde_json::to_value(&req.op)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default();
+            let refusal = if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm) {
+                Some((op, "The tour sends nothing."))
+            } else if matches!(
+                req.op,
+                Operation::GraphConnect | Operation::OpenSource | Operation::MeetingsReveal
+            ) {
+                Some((op, "The tour opens nothing."))
+            } else if req.op == Operation::SettingsUpdate && req.data.get("launchAtLogin").is_some()
+            {
+                // A login item would start the tour binary at the user's next login; the OS
+                // prompt for notifications would show on their screen (Task 6 fix round 2).
+                Some(("launchAtLogin".into(), "The tour changes no login items."))
+            } else if req.op == Operation::NotificationPermission {
+                Some((op, "The tour shows no notifications."))
+            } else {
+                None
+            };
+            if let Some((what, why)) = refusal {
+                crate::commands::tour::record_refusal(&what, why);
+                return Err(WorkspaceError::new("tour", why));
+            }
+        }
         if req.op == Operation::Snapshot {
             let (mut snapshot, scope) = self.repo()?.snapshot_scoped()?;
             snapshot.meetings_root = self.shown_meetings_root(&snapshot.settings.meetings);
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
+            snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
+            snapshot.reply_voice = self.voice_snapshot(&snapshot.settings);
+            snapshot.ask = self.ask_snapshot(&snapshot.settings);
+            snapshot.menu_bar = self.menu_bar_snapshot(&mut snapshot);
             return Ok(
                 json!({"snapshot":snapshot,"scope":scope,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
@@ -771,6 +992,48 @@ impl Core {
         }
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
+        }
+        // Read-only: queues a sync job at most once in 30 s; no operation id.
+        if req.op == Operation::TaskSyncNow {
+            return self.task_sync_now(&req.data);
+        }
+        // Read-only: Settings › Tasks's Check, the active provider's `status`; no operation id.
+        if req.op == Operation::TaskProviderCheck {
+            return self.task_provider_check().await;
+        }
+        // Read-style: Refresh now queues a voice refresh at most once in 30 s; no operation id.
+        if req.op == Operation::VoiceRefresh {
+            return self.voice_refresh_now();
+        }
+        // Read-only: one person's profile from Connect's copy of the voice.
+        if req.op == Operation::VoiceRead {
+            return self.voice_read(&req);
+        }
+        // Read-only (ask-capture design § 6): one whole Ask thread; no operation id.
+        if req.op == Operation::AskRead {
+            return self.ask_read(&req);
+        }
+        // Read-only, pure (ask-capture design § 9): the date parser reads `text` and nothing
+        // stored; no operation id, no revision bump.
+        if req.op == Operation::CaptureParse {
+            let text = req.data["text"].as_str().unwrap_or("");
+            if text.chars().count() > 2000 {
+                return Err(WorkspaceError::new(
+                    "validation",
+                    "Write what needs doing (up to 2,000 characters).",
+                ));
+            }
+            let zone = self.repo()?.settings()?.time_zone;
+            return Ok(serde_json::to_value(when::parse(text, now(), &zone)).unwrap());
+        }
+        // Read-style: the skill import's scan reads the folder the user picked, and its Shorten
+        // with AI runs Claude (up to 120 s) — both before the mutation lock, nothing stored but
+        // the run's own `ai_run` record, so no operation id.
+        if req.op == Operation::VoiceImportScan {
+            return self.voice_import_scan(&req).await;
+        }
+        if req.op == Operation::VoiceImportDistil {
+            return self.voice_import_distil(&req).await;
         }
         // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
         if matches!(
@@ -811,6 +1074,16 @@ impl Core {
             return Ok(json!({"cancelled":true}));
         }
         if req.op == Operation::OpenSource {
+            // A task's "Open in Todoist ↗": the address comes from the stored task.
+            if req.data["kind"] == "task" {
+                let wid = req
+                    .workspace_id
+                    .as_deref()
+                    .ok_or_else(|| WorkspaceError::new("validation", "Choose a workspace."))?;
+                let link = self.task_remote_link(wid, required(&req.data, "id", 200)?)?;
+                graph::open_url(&link)?;
+                return Ok(json!({"opened":true}));
+            }
             // A link in an automation's result: the address comes from the stored run.
             if req.data["kind"] == "automation_run" {
                 let run = required(&req.data, "id", 200)?;
@@ -853,6 +1126,24 @@ impl Core {
         } else {
             Vec::new()
         };
+        // A voice edit goes through the provider (up to 10 s), also before the lock; the locked
+        // part writes its answer into Connect's copy. A replay of an operation id that already
+        // succeeded answers its stored result, and a stale request is refused, before anything
+        // is asked of the provider.
+        let asked = if matches!(
+            req.op,
+            Operation::VoiceSave | Operation::VoiceDelete | Operation::VoiceImport
+        ) {
+            if !self.repo()?.peek_request(&req)? {
+                let stored = self
+                    .repo()?
+                    .operation_result(req.operation_id.as_deref().unwrap_or(""))?;
+                return self.voice_replayed(stored);
+            }
+            Some(self.voice_ask(&req).await?)
+        } else {
+            None
+        };
         let synchronous = !matches!(
             req.op,
             Operation::GraphConnect
@@ -867,10 +1158,28 @@ impl Core {
         } else {
             None
         };
-        if !self.repo()?.check_request(&req)? {
-            return self
+        // A voice edit the provider already accepted is recorded even if the revision moved
+        // while it was asked (`peek_request` checked it first): refusing it as stale would have
+        // the store resend it to the provider.
+        let fresh = match &asked {
+            Some(a) => {
+                let fresh = self.repo().and_then(|r| r.reserve(&req, false));
+                if !matches!(fresh, Ok(true)) {
+                    self.voice_catch_up(a);
+                }
+                fresh?
+            }
+            None => self.repo()?.check_request(&req)?,
+        };
+        if !fresh {
+            let stored = self
                 .repo()?
-                .operation_result(req.operation_id.as_deref().unwrap_or(""));
+                .operation_result(req.operation_id.as_deref().unwrap_or(""))?;
+            return if asked.is_some() {
+                self.voice_replayed(stored)
+            } else {
+                Ok(stored)
+            };
         }
         let response = match req.op {
             Operation::WorkspaceCreate => {
@@ -1021,7 +1330,12 @@ impl Core {
                         }
                     }
                     let _folders = self.meeting_lock();
-                    let task = tasks::task_save(&mut *self.repo()?, &w.id, &data, now())?;
+                    let mut r = self.repo()?;
+                    let task = tasks::task_save(&mut r, &w.id, &data, now())?;
+                    if task.data["pending"] == true {
+                        // Pushed at once, as `task_save` is (task-provider ruling 4).
+                        task_provider::sync::queue(&mut r, tasks::provider_of(&task.data), now())?;
+                    }
                     json!({"id": task.id})
                 } else {
                     let text = required(&req.data, "text", 20000)?;
@@ -1064,6 +1378,20 @@ impl Core {
                     self.repo()?.delete_local(kind, rid, &w.id)?;
                 }
                 json!({"deleted":true})
+            }
+            // Quick capture's Note (ask-capture design § 10): appends a line to Today's Notes.
+            // `sourceId` names a message (the Inbox selection); an id that names no such record
+            // is dropped rather than refused, and the line carries no "(from ...)" part.
+            Operation::NoteAppend => {
+                let (w, _) = self.active_workspace(&req, false)?;
+                let text = req.data["text"].as_str().unwrap_or("");
+                let source = req.data["sourceId"].as_str().and_then(|sid| {
+                    self.repo()
+                        .ok()?
+                        .record("message", sid, w.connection_id.as_deref(), None)
+                        .ok()
+                });
+                today::note_append(&mut *self.repo()?, &w.id, text, source.as_ref(), now())?
             }
             Operation::GraphConnect => self.graph_connect(connect_capabilities(&req.data)?).await?,
             Operation::GraphDisconnect => {
@@ -1194,10 +1522,17 @@ impl Core {
                     .into_iter()
                     .find(|j| {
                         j.id == jid
-                            && (j.workspace_id.as_deref() == Some(&w.id) || j.kind == "sync")
+                            && (j.workspace_id.as_deref() == Some(&w.id)
+                                // One Ask runs app-wide: Stop reaches it from any workspace.
+                                || j.kind == "sync"
+                                || j.kind == ask::ops::KIND)
                     })
                     .ok_or_else(|| WorkspaceError::new("not_found", "Job is unavailable."))?;
                 if req.op == Operation::JobRetry {
+                    // Try again on a turn asks again through `ask_start` (a new turn).
+                    if job.kind == ask::ops::KIND {
+                        return Err(WorkspaceError::new("validation", "Ask the question again."));
+                    }
                     if matches!(job.kind.as_str(), "notification" | "send" | "reminder") {
                         return Err(WorkspaceError::new(
                             "review_required",
@@ -1221,7 +1556,23 @@ impl Core {
                     }
                     job.state = "cancelled".into();
                 }
-                r.save_job(&job)?;
+                // Stop on an answer (ask-capture design § 6): its turn reads `stopped`, under the
+                // same repository guard, so the job's own write after its claim sees it. First,
+                // so a failed turn write changes nothing: the job and the turn still both answer,
+                // the window shows the error, and Stop can be pressed again.
+                let stop_ask = req.op == Operation::JobCancel && job.kind == ask::ops::KIND;
+                if stop_ask {
+                    ask::ops::stop_turn(&mut r, &job)?;
+                }
+                if let Err(e) = r.save_job(&job) {
+                    // The turn already reads `stopped`: the run is cancelled anyway, so its job
+                    // ends `cancelled` too (`run_claimed_job`), and the window shows the error.
+                    if stop_ask {
+                        drop(r);
+                        self.cancel_ai_job(&job.id);
+                    }
+                    return Err(e);
+                }
                 drop(r);
                 if req.op == Operation::JobCancel {
                     self.cancel_graph_job(&job.id);
@@ -1278,6 +1629,8 @@ impl Core {
             }
             Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
+            Operation::AskStart => self.ask_start(&req)?,
+            Operation::AskDelete => self.ask_delete(&req)?,
             Operation::AiSummarize => self.queue_ai_summary(&req)?,
             Operation::AutomationSave
             | Operation::AutomationDelete
@@ -1297,10 +1650,31 @@ impl Core {
             | Operation::MeetingRuleOrder
             | Operation::MeetingTextSave => self.library_op(&req)?,
             Operation::TaskSave | Operation::TaskDelete => self.task_op(&req)?,
+            Operation::TaskProviderSet
+            | Operation::TaskWithdraw
+            | Operation::TaskBulk
+            | Operation::TaskHandled
+            | Operation::TaskParked => self.task_provider_op(&req)?,
+            Operation::MenuBarSeen => self.menu_bar_seen(&req)?,
+            Operation::VoiceSet
+            | Operation::VoiceSave
+            | Operation::VoiceDelete
+            | Operation::VoiceForget
+            | Operation::VoiceImport => self.voice_op(&req, asked)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
+        // A voice edit's stored answer is an ack without its text (design §6: no voice text
+        // outlives Delete Connect's copy); a replay rebuilds the answer from the copy.
+        let stored = if matches!(
+            req.op,
+            Operation::VoiceSave | Operation::VoiceDelete | Operation::VoiceImport
+        ) {
+            voice::ops::ack(&req, &response)
+        } else {
+            response.clone()
+        };
         self.repo()?
-            .finish_operation(req.operation_id.as_deref().unwrap_or(""), &response)?;
+            .finish_operation(req.operation_id.as_deref().unwrap_or(""), &stored)?;
         self.refresh_incidents()?;
         self.emit("workspace:changed");
         Ok(response)
@@ -1312,12 +1686,32 @@ impl Core {
         if let Some(meetings) = data.get("meetings") {
             s.meetings.apply(meetings)?;
         }
+        if let Some(menu_bar) = data.get("menuBar") {
+            s.menu_bar.apply(menu_bar)?;
+        }
         let old_registration = (s.client_id.clone(), s.tenant.clone());
         if let Some(theme) = data["theme"].as_str() {
             if !matches!(theme, "light" | "dark" | "system") {
                 return Err(WorkspaceError::new("validation", "Unknown theme."));
             }
             s.theme = theme.into();
+        }
+        if let Some(view) = data["view"].as_str() {
+            if !matches!(view, "default" | "compact") {
+                return Err(WorkspaceError::new("validation", "Unknown view."));
+            }
+            s.view = view.into();
+        }
+        if let Some(v) = data.get("hiddenPages") {
+            let given = v
+                .as_array()
+                .ok_or_else(|| WorkspaceError::new("validation", "Choose pages from the menu."))?;
+            let given: Vec<&str> = given.iter().filter_map(Value::as_str).collect();
+            s.hidden_pages = MENU_PAGES
+                .iter()
+                .filter(|p| given.contains(p))
+                .map(|p| p.to_string())
+                .collect();
         }
         if let Some(zone) = data["timeZone"].as_str() {
             zone.parse::<chrono_tz::Tz>().map_err(|_| {
@@ -1341,6 +1735,9 @@ impl Core {
         }
         if let Some(v) = data["criticalRepeat"].as_bool() {
             s.critical_repeat = v;
+        }
+        if let Some(v) = data["askInMenu"].as_bool() {
+            s.ask_in_menu = v;
         }
         if let Some(days) = data["syncDays"].as_i64() {
             if ![1, 7, 30, 90].contains(&days) {
@@ -1626,6 +2023,10 @@ impl Core {
         materialize_due_schedules(&mut *self.repo()?)
     }
     fn deliver_notification(&self, job: &Job) -> Result<String> {
+        // A tour shows nothing on the user's screen: no banner, whatever the schedule says.
+        if tour_sends_nothing() {
+            return Ok("The tour shows no notifications.".into());
+        }
         let mut r = self.repo()?;
         r.check_claim(&job.id, job.attempts)?;
         if job_paused(job) {
@@ -2051,6 +2452,17 @@ fn valid_color(v: &str) -> Result<String> {
 }
 /// The background sync intervals Settings › Microsoft 365 offers, in minutes.
 const SYNC_EVERY_MIN: [i64; 5] = [1, 2, 5, 15, 30];
+/// Main-menu pages, in menu order (mirrors `ui/workspace/shell.js`'s `NAV`); `hiddenPages` is
+/// restricted and reordered to this list.
+const MENU_PAGES: [&str; 7] = [
+    "today",
+    "inbox",
+    "calendar",
+    "meetings",
+    "tasks",
+    "automations",
+    "analytics",
+];
 /// Seconds between background syncs: the setting while the window is open, and never more often
 /// than every five minutes while it is hidden.
 fn sync_interval(settings: Option<Settings>, visible: bool) -> i64 {
@@ -2183,15 +2595,131 @@ pub fn workspace_installer_busy(state: tauri::State<'_, WorkspaceState>, busy: b
     }
 }
 
-pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use tauri::{
-        menu::{Menu, MenuItem},
-        tray::TrayIconBuilder,
+/// The menu bar's template glyph (36 × 36), tinted by AppKit unless it is amber.
+const TRAY_TEMPLATE: tauri::image::Image<'static> =
+    tauri::include_image!("icons/tray-template.png");
+
+/// The menu: the menu-bar rows, a separator when there are any, then Open and Quit.
+fn tray_menu<M: Manager<tauri::Wry>>(
+    app: &M,
+    rows: &[menu_bar::TrayRow],
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new(app)?;
+    for row in rows {
+        menu.append(&MenuItem::with_id(
+            app,
+            &row.id,
+            &row.text,
+            true,
+            None::<&str>,
+        )?)?;
+    }
+    if !rows.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    menu.append(&MenuItem::with_id(
+        app,
+        "show",
+        "Open CodeMie Connect",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "quit",
+        "Quit CodeMie Connect",
+        true,
+        None::<&str>,
+    )?)?;
+    Ok(menu)
+}
+
+/// The app's tray (id `main`) as the menu-bar refresher sets it (design §5): on macOS the
+/// title and the template or amber glyph; elsewhere no title, the amber glyph when amber.
+struct AppTray {
+    app: tauri::AppHandle,
+    amber: tauri::image::Image<'static>,
+}
+
+impl AppTray {
+    fn new(app: &tauri::AppHandle) -> Self {
+        let amber = tauri::image::Image::new_owned(
+            menu_bar::amber_rgba(TRAY_TEMPLATE.rgba()),
+            TRAY_TEMPLATE.width(),
+            TRAY_TEMPLATE.height(),
+        );
+        Self {
+            app: app.clone(),
+            amber,
+        }
+    }
+}
+
+impl menu_bar::TraySink for AppTray {
+    fn apply(&self, view: &menu_bar::TrayView) {
+        let Some(tray) = self.app.tray_by_id("main") else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let _ = tray.set_title(view.title.as_deref());
+            let icon = if view.amber {
+                self.amber.clone()
+            } else {
+                TRAY_TEMPLATE.clone()
+            };
+            // One call, so the amber glyph is never drawn as a template.
+            let _ = tray.set_icon_with_as_template(Some(icon), !view.amber);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let icon = if view.amber {
+                Some(self.amber.clone())
+            } else {
+                self.app.default_window_icon().cloned()
+            };
+            if let Some(icon) = icon {
+                let _ = tray.set_icon(Some(icon));
+            }
+        }
+        let _ = tray.set_tooltip(Some(&view.tooltip));
+        match tray_menu(&self.app, &view.rows) {
+            Ok(menu) => {
+                let _ = tray.set_menu(Some(menu));
+            }
+            Err(e) => log::warn!("menu bar: the tray menu could not be built ({e})"),
+        }
+    }
+}
+
+/// A menu-bar row was clicked: show the window and open the row's place.
+fn open_menu_row(app: &tauri::AppHandle, id: &str) {
+    let Some(state) = app.try_state::<WorkspaceState>() else {
+        return;
     };
-    let show = MenuItem::with_id(app, "show", "Open CodeMie Connect", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit CodeMie Connect", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    let tray = TrayIconBuilder::new()
+    let Some(core) = &state.core else { return };
+    let Some(row) = core
+        .menu_bar
+        .last()
+        .and_then(|v| v.rows.into_iter().find(|r| r.id == id))
+    else {
+        return;
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit(
+        "workspace:notification-open",
+        menu_bar::open_payload(&row.open),
+    );
+}
+
+pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tauri::tray::TrayIconBuilder;
+    let menu = tray_menu(app, &[])?;
+    let tray = TrayIconBuilder::with_id("main")
         .tooltip("CodeMie Connect")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -2217,20 +2745,26 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
                 }
                 app.exit(0);
             }
+            id if id.starts_with("mb:") => open_menu_row(app, id),
             _ => {}
         });
     // The menu bar wants a monochrome template that AppKit tints for the light or dark
     // bar, like the system icons; the colour app icon stays for other platforms' trays.
     #[cfg(target_os = "macos")]
-    let tray = tray
-        .icon(tauri::include_image!("icons/tray-template.png"))
-        .icon_as_template(true);
+    let tray = tray.icon(TRAY_TEMPLATE).icon_as_template(true);
     #[cfg(not(target_os = "macos"))]
     let tray = match app.default_window_icon() {
         Some(icon) => tray.icon(icon.clone()),
         None => tray,
     };
     tray.build(app)?;
+    // The tray exists now: the refresher sets it from here on, starting with a count.
+    if let Some(state) = app.try_state::<WorkspaceState>() {
+        if let Some(core) = &state.core {
+            core.menu_bar.install(Box::new(AppTray::new(app.handle())));
+            core.menu_bar.wake();
+        }
+    }
     Ok(())
 }
 
@@ -2262,6 +2796,19 @@ pub(crate) fn test_core(
     )
 }
 
+/// [`test_core`] with no Microsoft answers, and the URLs it was asked so far
+/// (`crate::testing::core_and_graph_reads`).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn test_core_recording_graph(
+    dir: &Path,
+    runner: Arc<dyn ClaudeRunner>,
+    profiles: Vec<crate::ai::profiles::AiProfile>,
+) -> (Arc<Core>, Arc<dyn Fn() -> Vec<String> + Send + Sync>) {
+    let graph = Arc::new(ai_jobs::FakeGraph::default());
+    let core = test_core_with_graph(dir, runner, profiles, graph.clone());
+    (core, Arc::new(move || graph.calls()))
+}
+
 /// [`test_core`] whose Microsoft reads for AI runs are answered by `graph`.
 #[cfg(any(test, feature = "test-support"))]
 fn test_core_with_graph(
@@ -2270,7 +2817,7 @@ fn test_core_with_graph(
     profiles: Vec<crate::ai::profiles::AiProfile>,
     graph: Arc<dyn ai_jobs::GraphReads>,
 ) -> Arc<Core> {
-    Core::open_with(
+    let core = Core::open_with(
         None,
         &test_paths(dir),
         runner,
@@ -2278,7 +2825,10 @@ fn test_core_with_graph(
         graph,
         Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
-    .unwrap()
+    .unwrap();
+    #[cfg(test)]
+    core.menu_bar.install_fake();
+    core
 }
 
 /// Opens a `Core` on `paths` with no window and a scripted runner, for tests outside this module.
@@ -2347,6 +2897,105 @@ mod tests {
         assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
         assert_eq!(core.request(set(3)).await.unwrap_err().code, "validation");
         assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
+    }
+
+    #[tokio::test]
+    async fn settings_update_takes_a_known_view_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        let set = |view: &str| mutation(&core, Operation::SettingsUpdate, json!({ "view": view }));
+        core.request(set("compact")).await.unwrap();
+        assert_eq!(core.repo().unwrap().settings().unwrap().view, "compact");
+        let err = core.request(set("dense")).await.unwrap_err();
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.message, "Unknown view.");
+        assert_eq!(core.repo().unwrap().settings().unwrap().view, "compact");
+    }
+
+    #[tokio::test]
+    async fn settings_update_keeps_known_menu_pages_in_menu_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "hiddenPages": ["tasks", "nope", "calendar", "tasks", 3] }),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            vec!["calendar".to_string(), "tasks".to_string()]
+        );
+        let err = core
+            .request(mutation(
+                &core,
+                Operation::SettingsUpdate,
+                json!({ "hiddenPages": "calendar" }),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.message, "Choose pages from the menu.");
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            vec!["calendar".to_string(), "tasks".to_string()]
+        );
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "hiddenPages": [] }),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn older_settings_read_as_the_default_view_with_no_hidden_pages() {
+        let s: Settings = serde_json::from_str(r#"{"syncDays":7}"#).unwrap();
+        assert_eq!(s.view, "default");
+        assert!(s.hidden_pages.is_empty());
+    }
+
+    /// The default and updated `view`/`hiddenPages` the UI fixture and the browser mock build on.
+    /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_real_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        let field = |s: &Settings| {
+            let full = serde_json::to_value(s).unwrap();
+            json!({ "view": full["view"], "hiddenPages": full["hiddenPages"] })
+        };
+        let default = field(&core.repo().unwrap().settings().unwrap());
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "view": "compact", "hiddenPages": ["tasks", "nope", "calendar"] }),
+        ))
+        .await
+        .unwrap();
+        let updated = field(&core.repo().unwrap().settings().unwrap());
+        crate::plugins::testkit::contract_fixture(
+            "settings-view.json",
+            &json!({ "default": default, "updated": updated }),
+        );
     }
 
     #[tokio::test]
@@ -2935,5 +3584,202 @@ mod tests {
         assert!(connect_capabilities(&json!({"capabilities":["everything"]})).is_err());
         assert!(connect_capabilities(&json!({"capabilities":[1]})).is_err());
         assert!(connect_capabilities(&json!({"capabilities":"calendar"})).is_err());
+    }
+
+    /// RAII: increments this thread's [`TOUR_FOR_TESTS`] while alive, decrements on drop (even on panic, since
+    /// unwinding still runs `Drop`). Kept alive across `.await` points by simply staying in
+    /// scope, with no need for the function under test to be given a future to run inside.
+    struct Touring;
+    impl Touring {
+        fn on() -> Self {
+            TOUR_FOR_TESTS.with(|depth| depth.set(depth.get() + 1));
+            Touring
+        }
+    }
+    impl Drop for Touring {
+        fn drop(&mut self) {
+            TOUR_FOR_TESTS.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+
+    #[tokio::test]
+    async fn tour_refuses_action_prepare_and_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        let _touring = Touring::on();
+        for op in [Operation::ActionPrepare, Operation::ActionConfirm] {
+            let req = mutation(&core, op, json!({"kind": "chat_reply"}));
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour");
+            assert_eq!(err.message, "The tour sends nothing.");
+        }
+        // No mutation ran: the refusal is checked before the mutation lock.
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        // Each refusal is recorded for the tour's report (final review I2).
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [
+                ("action_prepare".into(), "The tour sends nothing.".into()),
+                ("action_confirm".into(), "The tour sends nothing.".into()),
+            ]
+        );
+    }
+
+    /// `GraphConnect`, `OpenSource` and `MeetingsReveal` each open another app on the user's
+    /// desktop (the Microsoft sign-in page, or Finder); the tour's deny-list regex names none of
+    /// them, so `Core::request` refuses them too (controller ruling, Task 2 fix round 1).
+    /// No login item and no OS notification from a tour (controller ruling, Task 6 fix round 2):
+    /// a login item would point at the tour binary, and a banner or a permission prompt would
+    /// show on the user's screen.
+    #[tokio::test]
+    async fn tour_refuses_launch_at_login_and_the_notification_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        let _touring = Touring::on();
+        for on in [true, false] {
+            let req = mutation(
+                &core,
+                Operation::SettingsUpdate,
+                json!({ "launchAtLogin": on }),
+            );
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour", "{on}");
+            assert_eq!(err.message, "The tour changes no login items.", "{on}");
+        }
+        let req = mutation(&core, Operation::NotificationPermission, json!({}));
+        let err = core.request(req).await.unwrap_err();
+        assert_eq!(err.code, "tour");
+        assert_eq!(err.message, "The tour shows no notifications.");
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        let login = (
+            "launchAtLogin".to_string(),
+            "The tour changes no login items.".to_string(),
+        );
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [
+                login.clone(),
+                login,
+                (
+                    "notification_permission".into(),
+                    "The tour shows no notifications.".into()
+                ),
+            ]
+        );
+        // Other settings still save in a tour.
+        let req = mutation(&core, Operation::SettingsUpdate, json!({ "theme": "dark" }));
+        assert!(core.request(req).await.is_ok());
+    }
+
+    /// Every place that shows an OS notification asks `tour_sends_nothing()` first.
+    #[test]
+    fn every_notification_banner_is_off_in_a_tour() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workspace");
+        for (file, signature) in [
+            ("mod.rs", "fn deliver_notification("),
+            ("plugin_data.rs", "pub(crate) fn plugin_notify("),
+        ] {
+            let text = std::fs::read_to_string(src.join(file)).unwrap();
+            let start = text
+                .find(signature)
+                .unwrap_or_else(|| panic!("{file}: no {signature}"));
+            let body = &text[start..];
+            let end = body.find("\n    }\n").unwrap();
+            let body = &body[..end];
+            let guard = body
+                .find("tour_sends_nothing()")
+                .unwrap_or_else(|| panic!("{file}: {signature} has no tour guard"));
+            let shown = body.find(".notification()").unwrap();
+            assert!(
+                guard < shown,
+                "{file}: {signature} shows before asking tour_sends_nothing()"
+            );
+        }
+    }
+
+    /// A plugin's notification is dropped in a tour, and recorded as refused (final review I2).
+    #[test]
+    fn a_tour_records_a_plugin_notification_as_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let _touring = Touring::on();
+        core.plugin_notify("Hello", "from a plugin");
+        assert_eq!(
+            crate::commands::tour::take_refusals(),
+            [(
+                "plugin_notify".to_string(),
+                "The tour shows no notifications.".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn tour_refuses_ops_that_open_the_desktop() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        let _touring = Touring::on();
+        for op in [
+            Operation::GraphConnect,
+            Operation::OpenSource,
+            Operation::MeetingsReveal,
+        ] {
+            let label = format!("{op:?}");
+            let req = mutation(&core, op, json!({}));
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour", "{label}");
+            assert_eq!(err.message, "The tour opens nothing.", "{label}");
+        }
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+        let names: Vec<String> = crate::commands::tour::take_refusals()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["graph_connect", "open_source", "meetings_reveal"]);
+    }
+
+    /// A pure-function test of `start()`'s decision — no `Core::start`, no sleeping, no
+    /// background loop ever actually spawned, so it cannot be flaky and proves nothing by
+    /// accident. `starts_background()` ANDs two independent things: `self.app.is_some()` (this
+    /// task restored `start()`'s original early return for it, so every pre-existing app-less
+    /// test `Core` is unaffected — asserted below, though it is not new) and `!tour_sends_nothing()`
+    /// (what this task adds — exercised directly on the predicate itself, since no unit test in
+    /// this crate can build a real `tauri::AppHandle` to flip the first half to `true` and
+    /// isolate the second).
+    /// Tests run in parallel threads of one process: a test touring on another thread must not
+    /// turn this one's `Core` quiet (final review I3, the flaky `a_tour_core_starts_no_background_loop`).
+    #[test]
+    fn touring_on_another_thread_is_invisible_here() {
+        let (touring_tx, touring_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let _touring = Touring::on();
+            touring_tx.send(()).unwrap();
+            done_rx.recv().unwrap();
+        });
+        touring_rx.recv().unwrap();
+        let here = tour_sends_nothing();
+        done_tx.send(()).unwrap();
+        other.join().unwrap();
+        assert!(!here, "another thread's tour leaked into this one");
+    }
+
+    #[test]
+    fn a_tour_core_starts_no_background_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        assert!(
+            !core.starts_background(),
+            "every unit test's Core has no app"
+        );
+        assert!(!tour_sends_nothing());
+        {
+            let _touring = Touring::on();
+            assert!(tour_sends_nothing());
+            assert!(!core.starts_background(), "still false: no app either way");
+        }
+        assert!(!tour_sends_nothing());
     }
 }

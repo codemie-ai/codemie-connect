@@ -45,15 +45,19 @@ fn nvm_bins(home: &Path) -> Vec<PathBuf> {
 }
 
 /// Look for `name` in the order of DESIGN 6.1: the PATH, `~/.local/bin`,
-/// `~/.claude/local`, `~/.npm-global/bin`, `~/.codemie/agents/bin`,
-/// `/opt/homebrew/bin`, `/usr/local/bin`, nvm bins (newest first), then `extra`.
+/// `~/.claude/local`, `~/.npm-global/bin`, `~/.codemie/agents/bin`, `system_dirs`
+/// (the fixed OS dirs: `/opt/homebrew/bin`, `/usr/local/bin`, the Ollama.app
+/// Resources dir in production; empty in tests, so a program that happens to be
+/// installed there does not leak into a test's "nothing installed" case), nvm
+/// bins (newest first), then `extra`.
 pub fn find_program_in(
     name: &str,
     path_var: &str,
     home: &Path,
+    system_dirs: &[PathBuf],
     extra: &[PathBuf],
 ) -> Option<PathBuf> {
-    program_candidates(name, path_var, home, extra).next()
+    program_candidates(name, path_var, home, system_dirs, extra).next()
 }
 
 /// The copy of a CodeMie CLI program (`codemie`, `codemie-claude`) to run: the first one
@@ -64,9 +68,10 @@ pub fn find_codemie_program_in(
     name: &str,
     path_var: &str,
     home: &Path,
+    system_dirs: &[PathBuf],
     extra: &[PathBuf],
 ) -> Option<PathBuf> {
-    let mut found = program_candidates(name, path_var, home, extra);
+    let mut found = program_candidates(name, path_var, home, system_dirs, extra);
     let first = found.next()?;
     // A first copy of unknown version (the bundled launcher) is not known to be old: it runs.
     let Some(version) = codemie_version(&first) else {
@@ -117,6 +122,7 @@ fn program_candidates(
     name: &str,
     path_var: &str,
     home: &Path,
+    system_dirs: &[PathBuf],
     extra: &[PathBuf],
 ) -> impl Iterator<Item = PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_var)
@@ -132,8 +138,7 @@ fn program_candidates(
         .iter()
         .map(|d| home.join(d)),
     );
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.extend(system_dirs.iter().cloned());
     dirs.extend(nvm_bins(home));
     dirs.extend(extra.iter().cloned());
     if cfg!(windows) {
@@ -160,6 +165,20 @@ fn program_names(name: &str) -> Vec<String> {
     names
 }
 
+/// The fixed OS dirs `find_program_in` searches unconditionally in production:
+/// Homebrew, `/usr/local/bin`, and the Ollama.app Resources dir (DESIGN 6.1 plus
+/// spec §1's Ollama extra dir). `DetectEnv::system` seeds `system_dirs` with
+/// these; a test's `DetectEnv` leaves `system_dirs` empty so a program actually
+/// installed there on the developer's own Mac cannot leak into a "nothing
+/// installed" assertion.
+pub fn system_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/Applications/Ollama.app/Contents/Resources"),
+    ]
+}
+
 /// The user's home folder: `HOME`, or `USERPROFILE` on Windows, where `HOME` is normally unset.
 /// Empty when neither is set.
 pub fn home_dir() -> PathBuf {
@@ -167,13 +186,14 @@ pub fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var_os(var).unwrap_or_default())
 }
 
-/// `find_program_in` with the process PATH and home folder.
+/// `find_program_in` with the process PATH and home folder, and the real system dirs.
 #[allow(dead_code)] // used from Task 5
 pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     find_program_in(
         name,
         &std::env::var("PATH").unwrap_or_default(),
         &home_dir(),
+        &system_dirs(),
         extra,
     )
 }
@@ -199,21 +219,21 @@ pub(super) mod tests {
 
         // Newest nvm version wins (numerically: v22 beats v9).
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".nvm/versions/node/v22.3.0/bin/claude"))
         );
 
         // A non-executable file is ignored.
         touch(&h.join(".local/bin/claude"), 0o644);
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".nvm/versions/node/v22.3.0/bin/claude"))
         );
 
         // With an empty PATH, ~/.local/bin wins over nvm.
         touch(&h.join(".local/bin/claude"), 0o755);
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".local/bin/claude"))
         );
 
@@ -221,7 +241,7 @@ pub(super) mod tests {
         let on_path = tempfile::tempdir().unwrap();
         touch(&on_path.path().join("claude"), 0o755);
         assert_eq!(
-            find_program_in("claude", on_path.path().to_str().unwrap(), h, &[]),
+            find_program_in("claude", on_path.path().to_str().unwrap(), h, &[], &[]),
             Some(on_path.path().join("claude"))
         );
 
@@ -234,11 +254,44 @@ pub(super) mod tests {
                 "claude",
                 "",
                 empty_home.path(),
+                &[],
                 &[extra.path().to_path_buf()]
             ),
             Some(extra.path().join("claude"))
         );
-        assert_eq!(find_program_in("claude", "", empty_home.path(), &[]), None);
+        assert_eq!(
+            find_program_in("claude", "", empty_home.path(), &[], &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn find_program_in_system_dirs_lose_to_home_and_are_empty_by_default_in_tests() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let sys = tempfile::tempdir().unwrap();
+        touch(&sys.path().join("claude"), 0o755);
+
+        // A program only in a `system_dirs` entry is found.
+        assert_eq!(
+            find_program_in("claude", "", h, &[sys.path().to_path_buf()], &[]),
+            Some(sys.path().join("claude"))
+        );
+
+        // `~/.local/bin` still wins over `system_dirs`.
+        touch(&h.join(".local/bin/claude"), 0o755);
+        assert_eq!(
+            find_program_in("claude", "", h, &[sys.path().to_path_buf()], &[]),
+            Some(h.join(".local/bin/claude"))
+        );
+
+        // An empty `system_dirs` (the test `DetectEnv`) never finds a program that
+        // happens to be installed at a real, fixed OS dir on the developer's Mac.
+        let empty_home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            find_program_in("claude", "", empty_home.path(), &[], &[]),
+            None
+        );
     }
 
     /// A CodeMie package at `root` with `version`, and `bin_dir/<name>` linked to its program
@@ -278,12 +331,12 @@ pub(super) mod tests {
         let path = path_of(&[npm_bin.path()]);
 
         assert_eq!(
-            find_codemie_program_in("codemie-claude", &path, h, &[]),
+            find_codemie_program_in("codemie-claude", &path, h, &[], &[]),
             Some(agents.join("bin/codemie-claude"))
         );
         // Other programs still take the first one found.
         assert_eq!(
-            find_program_in("codemie-claude", &path, h, &[]),
+            find_program_in("codemie-claude", &path, h, &[], &[]),
             Some(npm_bin.path().join("codemie-claude"))
         );
     }
@@ -296,8 +349,13 @@ pub(super) mod tests {
             codemie_package(&one.path().join("pkg"), a, &bin1, "codemie");
             codemie_package(&two.path().join("pkg"), b, &bin2, "codemie");
             let home = tempfile::tempdir().unwrap();
-            let found =
-                find_codemie_program_in("codemie", &path_of(&[&bin1, &bin2]), home.path(), &[]);
+            let found = find_codemie_program_in(
+                "codemie",
+                &path_of(&[&bin1, &bin2]),
+                home.path(),
+                &[],
+                &[],
+            );
             found == Some(bin1.join("codemie"))
         };
         assert!(
@@ -332,7 +390,7 @@ pub(super) mod tests {
         let shim = tempfile::tempdir().unwrap();
         touch(&shim.path().join("codemie-claude"), 0o755);
         assert_eq!(
-            find_codemie_program_in("codemie-claude", &path_of(&[shim.path()]), h, &[]),
+            find_codemie_program_in("codemie-claude", &path_of(&[shim.path()]), h, &[], &[]),
             Some(shim.path().join("codemie-claude"))
         );
 
@@ -351,7 +409,7 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(
-            find_codemie_program_in("codemie-claude", &path_of(&[&other_bin]), h, &[]),
+            find_codemie_program_in("codemie-claude", &path_of(&[&other_bin]), h, &[], &[]),
             Some(other_bin.join("codemie-claude"))
         );
 
@@ -367,6 +425,7 @@ pub(super) mod tests {
                 "codemie",
                 &path_of(&[&known_bin, later.path()]),
                 empty_home.path(),
+                &[],
                 &[]
             ),
             Some(known_bin.join("codemie"))

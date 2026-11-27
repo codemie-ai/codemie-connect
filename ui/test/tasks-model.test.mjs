@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  taskStatus, isMine, meOf, filterTasks, sortTasks, orderBetween, dueInfo, splitDone, COLUMNS, columnName, laneCounts, quoteTime, quickDates, DEFAULT_FILTERS, previewTaskSave, previewTaskDelete,
+  taskStatus, isMine, meOf, filterTasks, sortTasks, orderBetween, dueInfo, splitDone, COLUMNS, columnName, laneCounts, quoteTime, quickDates, DEFAULT_FILTERS, tasksOf, activeProvider, previewTaskSave, previewTaskDelete,
 } from '../workspace/tasks-model.js';
 import { formatDate, dateFromKey } from '../workspace/format.js';
 import { buildSnapshot, withTasks } from './fixtures/workspace-fixture.mjs';
@@ -28,6 +28,17 @@ test('legacy commitments read as todo or done', () => {
   assert.deepEqual(COLUMNS.map(c => columnName(c, {})), ['To review', 'To do', 'In progress', 'Waiting', 'Done']);
   assert.equal(columnName('todo', { meetings: { columns: { todo: 'Next up' } } }), 'Next up');
   assert.equal(columnName('dismissed', { meetings: { columns: { dismissed: 'Gone' } } }), 'Dismissed');
+});
+
+test("tasksOf keeps the active provider's tasks; no taskProvider means Local", () => {
+  const s = snapshot();
+  const all = tasks(s);
+  assert.equal(activeProvider(s), 'local', 'no taskProvider on the snapshot: Local');
+  assert.deepEqual(ids(tasksOf(s)), ids(all), 'every commitment is Local\'s: none carries a provider');
+  const remote = { id: 'todoist-1', kind: 'commitment', data: { text: 'Check with Marek', provider: 'plugin:todoist' } };
+  const mixed = { ...s, taskProvider: { active: 'plugin:todoist' }, records: [...s.records, remote] };
+  assert.equal(activeProvider(mixed), 'plugin:todoist');
+  assert.deepEqual(ids(tasksOf(mixed)), ['todoist-1'], 'only the active provider\'s task, none of Local\'s');
 });
 
 test('isMine: "You", my address and my aliases are mine; another address is not', () => {

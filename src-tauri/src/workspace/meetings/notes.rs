@@ -234,9 +234,10 @@ pub struct NotesOutput {
 
 /// Reads Claude's answer: notes (not empty, at most 300 KB) and at most 50 tasks, each with a
 /// title and a line of the transcript (`< n_lines`); a due date that is not a real day is
-/// dropped, and an unclear confidence is `low`. `None` when the answer can't be used.
+/// dropped, and an unclear confidence is `low`. `None` when the answer can't be used. A plain
+/// string is notes with no tasks: a model that answered in Markdown instead of the JSON.
 pub fn parse_notes(v: &Value, n_lines: usize) -> Option<NotesOutput> {
-    let raw = v["notesMarkdown"].as_str()?;
+    let raw = v.as_str().or_else(|| v["notesMarkdown"].as_str())?;
     if raw.len() > NOTES_MAX {
         return None;
     }
@@ -903,7 +904,14 @@ mod tests {
         );
         assert!(parse_notes(&json!({"notesMarkdown": " \n ", "tasks": []}), 1).is_none());
         assert!(parse_notes(&json!({"tasks": []}), 1).is_none());
-        assert!(parse_notes(&json!("notes"), 1).is_none());
+        // A plain string is a Markdown-only answer: notes, no tasks; an empty one is refused.
+        let plain = parse_notes(&json!("# Notes\n- one"), 1).unwrap();
+        assert_eq!(
+            (plain.notes_markdown.as_str(), plain.tasks.len()),
+            ("# Notes\n- one", 0)
+        );
+        assert!(parse_notes(&json!(" \n "), 1).is_none());
+        assert!(parse_notes(&json!(42), 1).is_none());
         assert!(parse_notes(
             &json!({"notesMarkdown": "x".repeat(NOTES_MAX + 1), "tasks": []}),
             1

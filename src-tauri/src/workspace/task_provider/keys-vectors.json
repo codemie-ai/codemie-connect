@@ -1,0 +1,86 @@
+[
+  {
+    "source": "meeting:m1:4",
+    "text": "I'll send you the names by Friday.",
+    "normalized": "i ll send you the names by friday",
+    "key": "a583e7292ee363c3"
+  },
+  {
+    "source": "meeting:m1:4",
+    "text": "  i'll SEND you the names, by friday ",
+    "normalized": "i ll send you the names by friday",
+    "key": "a583e7292ee363c3"
+  },
+  {
+    "source": "message:m-1",
+    "text": "well-known issue",
+    "normalized": "well known issue",
+    "key": "084b06a53d2fdc08"
+  },
+  {
+    "source": "message:m-1",
+    "text": "well known issue",
+    "normalized": "well known issue",
+    "key": "084b06a53d2fdc08"
+  },
+  {
+    "source": "message:m-1",
+    "text": "wellknown issue",
+    "normalized": "wellknown issue",
+    "key": "25cfd1e73507ee54"
+  },
+  {
+    "source": "meeting:m2:7",
+    "text": "end.of.sentence",
+    "normalized": "end of sentence",
+    "key": "391af80c8dade22e"
+  },
+  {
+    "source": "meeting:m2:7",
+    "text": "foo/bar",
+    "normalized": "foo bar",
+    "key": "4c3fad663a6ca126"
+  },
+  {
+    "source": "manual:t1",
+    "text": "Ёлка — #2!",
+    "normalized": "ёлка #2",
+    "key": "ad5fc3fab23f798d"
+  },
+  {
+    "source": "manual:t1",
+    "text": "  —-- leading and trailing marks!!  ",
+    "normalized": "leading and trailing marks",
+    "key": "54fc0cfdc7b4ffc8"
+  },
+  {
+    "source": "message:m-9",
+    "text": "Don't forget e.g. the report — ship it 🚀 today",
+    "normalized": "don t forget e g the report ship it today",
+    "key": "7420b9ddf853ee94"
+  },
+  {
+    "source": "message:m-9",
+    "text": "Привет, мир! Это тест №2.",
+    "normalized": "привет мир это тест no2",
+    "key": "71f4c6d8d340d887"
+  },
+  {
+    "source": "meeting:m3:1",
+    "text": "Multiple    spaces     and\ttabs\nand\nnewlines",
+    "normalized": "multiple spaces and tabs and newlines",
+    "key": "b393920e7e775664"
+  },
+  {
+    "source": "meeting:m3:2",
+    "text": "#2 duplicate task marker",
+    "normalized": "#2 duplicate task marker",
+    "key": "0ddae2420ee9cdaa"
+  },
+  {
+    "source": "manual:t2",
+    "text": "MIXED Case AND Trailing...",
+    "normalized": "mixed case and trailing",
+    "key": "41e4b414f34d09f6"
+  }
+]

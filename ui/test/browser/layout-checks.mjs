@@ -7,13 +7,14 @@
 // proves the window's side, not native storage.
 import { PRESETS, compact, todayOf } from '../../workspace/today-grid.js';
 import { SETTINGS_GROUPS } from '../../workspace/view-settings.js';
+import { askStates, askThread } from '../fixtures/workspace-fixture.mjs';
 
 // The Default layout as todayOf builds it for a workspace never customized.
 const DEFAULT_TODAY = todayOf({ widgetWidths: {} }, {});
 const GAP = 16;
 const ROW = 72;
 
-export async function layoutChecks({ open, check, assert, shot, settled, calls }) {
+export async function layoutChecks({ open, check, assert, shot, settled, calls, OUT }) {
   const saves = page => calls(page, 'layout_save');
   const lastSave = async page => (await saves(page)).at(-1);
   /** Waits until more than `n` layout saves have been recorded. */
@@ -56,11 +57,21 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     assert(over.main <= 0 && over.page <= 0, `${what} overflows sideways: ${JSON.stringify(over)}`);
   };
   const overlaps = items => items.some((a, i) => items.some((b, j) => i < j && a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y));
-  /** The layout in use: the checked one in the header's ⋯ menu (open or not). */
-  const layoutInUse = page => page.locator('.ws-today-actions [data-action="today-layout-use"][aria-checked="true"]').textContent();
+  const openTodayMenu = async page => {
+    await page.click('.ws-today-actions details[data-menu="today-more"] > summary');
+    await page.waitForSelector('.ws-today-actions details[data-menu="today-more"][open]');
+  };
   const layoutMenu = async (page, item) => {
-    await page.click('.ws-today-actions details[data-menu="today-layouts"] > summary');
-    await page.click(`.ws-today-actions details[data-menu="today-layouts"] ${item}`);
+    await openTodayMenu(page);
+    await page.click(`.ws-today-actions details[data-menu="today-more"] ${item}`);
+  };
+  /** The name of the layout in use, read from the ⋯ menu (opened, read, then closed again). */
+  const activeLayoutName = async page => {
+    await openTodayMenu(page);
+    const name = await page.locator('[data-menu="today-more"] [data-action="today-layout-use"][aria-checked="true"]').innerText();
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.ws-today-actions details[data-menu="today-more"]:not([open])');
+    return name;
   };
   /** The tiles drawn, as {id: {x, y, w, h}}. */
   const tilesNow = page => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-today-grid] > [data-tile]')].map(el => {
@@ -126,6 +137,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     await check('layout E1: the lowest widget dropped into the empty rows below is drawn back where it packs, nothing saved', async () => {
       const was = await placeOf(page, 'automations');
       const n = (await saves(page)).length;
+      await page.waitForSelector('[data-tile="automations"] .ws-tile-head h2');
       await intoView(page, '[data-tile="automations"]', 160);
       const head = await box(page, '[data-tile="automations"] .ws-tile-head h2');
       const from = { x: head.x + 30, y: head.y + head.height / 2 };
@@ -192,7 +204,8 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
   {
     const { page, context, errors } = await open({ width: 1440, height: 900, workspace: { today: DEFAULT_TODAY } });
     await check('layout E3: Customize: Focus timer dragged in from the gallery, a widget removed and back with Undo, Done', async () => {
-      await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+      await openTodayMenu(page);
+      await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-customize"]:has-text("Customize")');
       await page.waitForSelector('.ws-today-editbar:has-text("Customizing Today")');
       assert(await page.locator(`.ws-gallery-group:text-is("On Today · ${PRESETS.Default.length}")`).count() === 1, 'the gallery counts the Default widgets');
       await page.evaluate(() => { document.getElementById('workspace-main').scrollTop = 0; });
@@ -303,7 +316,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('[data-today-grid]');
       await settled(page);
       assert(sameAs(await tilesNow(page), PRESETS.Default), `tiles ${JSON.stringify(await tilesNow(page))}`);
-      assert((await layoutInUse(page)).includes('Default'), 'the layout in use is not Default');
+      assert((await activeLayoutName(page)).includes('Default'), 'the layout in use is not Default');
       assert((await saves(page)).length === 0, 'opening Today saved the layout');
       await shot(page, 'layout-e5-default');
       assert(errors.length === 0, errors.join(' | '));
@@ -320,7 +333,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       const mine = compact([{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'commitments', x: 0, y: 4, w: 8, h: 6 }, { id: 'notes', x: 8, y: 4, w: 4, h: 6 }, { id: 'inbox', x: 0, y: 10, w: 6, h: 7 }]);
       const opened = await tilesNow(page);
       assert(sameAs(opened, mine), `My layout drawn as ${JSON.stringify(opened)}`);
-      assert((await layoutInUse(page)).includes('My layout'), 'the layout in use is not My layout');
+      assert((await activeLayoutName(page)).includes('My layout'), 'the layout in use is not My layout');
       assert(await page.locator('[data-tile="meetings"]').count() === 0, 'From your meetings shows although it was hidden');
       assert((await saves(page)).length === 0, 'opening Today saved the layout');
       await shot(page, 'layout-e5-my-layout');
@@ -350,7 +363,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('[data-today-grid]:not(:has([data-tile="timer"]))');
       const back = await tilesNow(page);
       assert(JSON.stringify(back) === JSON.stringify(opened), `My layout came back as ${JSON.stringify(back)}, opened as ${JSON.stringify(opened)}`);
-      const pill = '.ws-today-actions details[data-menu="today-layouts"]';
+      const pill = '.ws-today-actions details[data-menu="today-more"]';
       await page.click(`${pill} > summary`);
       await page.waitForSelector(`${pill}[open]`);
       assert(await page.locator('[data-action="today-layout-use"][data-name="Focus"] .ws-today-changed').count() === 1, 'Focus is not marked changed');
@@ -379,8 +392,12 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     const { page, context, errors } = await open({ width: 1440, height: 900, workspace: { today: DEFAULT_TODAY } });
     await check('layout E6: locked nothing moves; keys move, resize, remove and undo, said aloud; a touch long press moves Notes', async () => {
       // Locked: dragging Up next by its header moves nothing and offers Unlock.
-      // Lock sits in the header's ⋯; while locked, a lock to undo it shows beside Customize.
-      await layoutMenu(page, '[data-action="today-lock"]');
+      await openTodayMenu(page);
+      await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-lock"]');
+      await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="true"]');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.ws-today-actions details[data-menu="today-more"]:not([open])');
+      // While locked, a lock to undo it shows beside the ⋯.
       await page.waitForSelector('.ws-today-actions > [data-action="today-lock"][aria-pressed="true"]');
       await page.evaluate(() => { document.getElementById('workspace-main').scrollTop = 0; });
       const head = await box(page, '[data-tile="brief"] .ws-tile-head h2');
@@ -453,40 +470,38 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
   // ---------------------------------------------------------------- E7
   {
     const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/meetings/mtg-philips/notes', meetings: true, workspace: { today: DEFAULT_TODAY } });
-    await check('layout E7: page sections: Transcript beside Notes, dividers, a rail, kept and Reset; Calendar and Inbox', async () => {
+    await check('layout E7: page sections: the meeting’s Notes pane, the list resizes and collapses, the strip stays in view, kept and Reset; Calendar and Inbox', async () => {
       const dock = '.ws-dock[data-page="meetings"]';
       await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="notes"] .ws-md h3`);
-      // Transcript dragged onto the right 30% of the Notes section opens beside it.
-      const tab = await box(page, '.ws-dock-tab[data-tab="mtg-transcript"]');
-      const notes = await box(page, `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-notes"]) > .ws-pane-body`);
-      await page.mouse.move(tab.x + tab.width / 2, tab.y + tab.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(notes.x + notes.width * 0.85, notes.y + notes.height / 2, { steps: 12 });
-      await page.waitForSelector(`${dock} .ws-dock-zone:not([hidden]):has-text("Open beside Notes")`);
-      await page.mouse.up();
-      await page.waitForSelector('.ws-toast:has-text("Transcript opened beside Notes")');
-      await page.waitForSelector('.ws-mtg-detail[data-panel="notes"] .ws-md h3');
-      await page.waitForSelector('.ws-mtg-detail[data-panel="transcript"] #meeting-line-3');
       const panes = () => page.evaluate(sel => [...document.querySelectorAll(`${sel} > .ws-pane`)].map(p => ({ tabs: [...p.querySelectorAll('.ws-dock-tab, .ws-pane-rail-tab')].map(t => t.dataset.tab), width: Math.round(p.getBoundingClientRect().width), collapsed: p.classList.contains('ws-pane-collapsed') })), dock);
       let row = await panes();
-      assert(row.length === 3 && row[1].tabs.includes('mtg-notes') && row[2].tabs.join() === 'mtg-transcript', `sections ${JSON.stringify(row)}`);
-      const header = await page.evaluate(sel => {
-        const heads = [...document.querySelectorAll(`${sel} .ws-mtg-head`)];
-        const pane = heads[0]?.closest('.ws-pane');
-        return { count: heads.length, onNotes: !!pane?.querySelector('.ws-dock-tab[data-tab="mtg-notes"]'), above: !!pane && heads[0].getBoundingClientRect().bottom <= pane.querySelector(':scope > .ws-pane-strip').getBoundingClientRect().top + 1 };
+      assert(row.length === 2 && row[0].tabs.join() === 'mtg-list' && row[1].tabs.join() === 'mtg-meeting', `sections ${JSON.stringify(row)}`);
+      // The header and the strip sit at the top of the meeting's section, above its pane.
+      const strip = () => page.evaluate(sel => {
+        const section = document.querySelector(`${sel} .ws-mtg-meeting-section`);
+        const pane = section.closest('.ws-pane').getBoundingClientRect();
+        const head = section.querySelector('.ws-mtg-head').getBoundingClientRect();
+        const bar = section.querySelector('.ws-mtg-strip').getBoundingClientRect();
+        const body = section.querySelector('.ws-mtg-pane').getBoundingClientRect();
+        return { top: Math.round(bar.top), inView: head.top >= pane.top && bar.bottom <= body.top + 1 && bar.bottom <= pane.bottom };
       }, dock);
-      assert(header.count === 1 && header.onNotes && header.above, `the meeting header: ${JSON.stringify(header)}`);
-      await shot(page, 'layout-e7-beside');
-      // The new divider pulled 120 px: Notes wider, Transcript narrower.
+      const before = await strip();
+      assert(before.inView, `the strip: ${JSON.stringify(before)}`);
+      await shot(page, 'layout-e7-notes-pane');
+      // The divider pulled 120 px: the list wider, the meeting narrower.
       const split = async i => { const b = await box(page, `${dock} > .ws-split[data-split="${i}"]`); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
-      let s = await split(1);
+      let s = await split(0);
       await page.mouse.move(s.x, s.y);
       await page.mouse.down();
       await page.mouse.move(s.x + 120, s.y, { steps: 12 });
       await page.mouse.up();
-      await page.waitForFunction(([sel, w]) => Math.round(document.querySelector(`${sel} > .ws-pane:nth-of-type(2)`).getBoundingClientRect().width) > w, [dock, row[1].width]);
+      await page.waitForFunction(([sel, w]) => Math.round(document.querySelector(`${sel} > .ws-pane`).getBoundingClientRect().width) > w, [dock, row[0].width]);
       const pulled = await panes();
-      assert(pulled[1].width > row[1].width && pulled[2].width < row[2].width && Math.abs(pulled[1].width + pulled[2].width - row[1].width - row[2].width) <= 2, `widths ${JSON.stringify(row)} → ${JSON.stringify(pulled)}`);
+      assert(pulled[0].width > row[0].width && pulled[1].width < row[1].width && Math.abs(pulled[0].width + pulled[1].width - row[0].width - row[1].width) <= 2, `widths ${JSON.stringify(row)} → ${JSON.stringify(pulled)}`);
+      // The notes scrolled to their end: the strip stays where it was.
+      await page.evaluate(sel => { const pane = document.querySelector(`${sel} .ws-mtg-pane`); pane.scrollTop = pane.scrollHeight; }, dock);
+      const scrolled = await strip();
+      assert(scrolled.inView && scrolled.top === before.top, `the strip after scrolling: ${JSON.stringify(scrolled)} (before ${JSON.stringify(before)})`);
       // The list's divider pulled far left: the list becomes a 42 px rail.
       s = await split(0);
       await page.mouse.move(s.x, s.y);
@@ -496,30 +511,22 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('.ws-toast:has-text("Meetings collapsed to a rail")');
       row = await panes();
       assert(row[0].collapsed && row[0].width === 42, `the list: ${JSON.stringify(row[0])}`);
-      // In the Transcript section, about 320 px now, the "speaker without a name" card keeps its
-      // name and "Who is it?" control inside it.
-      const speakers = await page.evaluate(sel => {
-        const pane = document.querySelector(`${sel} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-transcript"])`);
-        const card = pane.querySelector('.ws-mtg-speakers-banner').getBoundingClientRect();
-        const parts = [...pane.querySelectorAll('.ws-mtg-speakers-banner .ws-mtg-speaker-map :is(label, label > span, .ws-select-wrap)')];
-        const out = parts.map(el => [el.tagName, el.getBoundingClientRect()]).filter(([, r]) => r.left < card.left + 1 || r.right > card.right - 1).map(([tag, r]) => `${tag} ${Math.round(r.left)}–${Math.round(r.right)}`);
-        return { pane: Math.round(pane.getBoundingClientRect().width), card: `${Math.round(card.left)}–${Math.round(card.right)}`, parts: parts.length, out };
-      }, dock);
-      assert(speakers.pane <= 340 && speakers.parts > 0 && !speakers.out.length, `the speaker card in the Transcript section: ${JSON.stringify(speakers)}`);
+      assert((await strip()).inView, 'the strip with the list folded');
       await shot(page, 'layout-e7-rail');
-      const stored = await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1'));
+      const stored = await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v2'));
+      assert(stored && await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1')) === null, 'kept under v2 only');
       // Kept after a reload, then Reset brings the page back with a toast.
       await page.reload();
-      await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="transcript"] #meeting-line-3`);
+      await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="notes"] .ws-md h3`);
       const reloaded = await panes();
       assert(JSON.stringify(reloaded) === JSON.stringify(row), `after reload ${JSON.stringify(reloaded)} (before ${JSON.stringify(row)})`);
-      assert(await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1')) === stored, 'the stored layout changed on reload');
-      const menu = `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-notes"]) .ws-dock-menu`;
+      assert(await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v2')) === stored, 'the stored layout changed on reload');
+      const menu = `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-meeting"]) .ws-dock-menu`;
       await page.click(`${menu} > summary`);
       await page.click(`${menu} [data-action="dock-reset"]`);
       await page.waitForSelector('.ws-toast:has-text("Meetings is back to its original layout")');
       row = await panes();
-      assert(row.length === 2 && !row[0].collapsed && row[0].tabs.join() === 'mtg-list' && row[1].tabs.length === 4, `after Reset ${JSON.stringify(row)}`);
+      assert(row.length === 2 && !row[0].collapsed && row[0].tabs.join() === 'mtg-list' && row[1].tabs.join() === 'mtg-meeting', `after Reset ${JSON.stringify(row)}`);
       // Calendar at 1000 px: the Calendars section is at its 220 px minimum, and its ⋯ menu stays
       // inside it (the section clips what sticks out).
       await page.click('.ws-nav button[data-route=calendar]');
@@ -725,6 +732,457 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.click('.ws-sidebar .ws-nav button[data-route=settings]');
       await page.waitForSelector('.ws-settings-layout');
       assert(await page.locator('.ws-sidebar .ws-nav-gear[aria-current=page]').count() === 1, 'Settings is not current');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- E10: the Ask field (ask-capture § 2, § 11)
+  const withRecent = s => { s.ask = askStates().idle; };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const { page, context, errors } = await open({ theme, width: 1440, height: 900, hash: '#/today', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E10 (${theme} ${view}): the Ask field first in the menu, Recent on focus, the rail’s ✦ collapsed and at 1000 px`, async () => {
+        const place = await page.evaluate(() => {
+          const r = sel => document.querySelector(sel)?.getBoundingClientRect();
+          const field = r('.ws-ask-field');
+          return { field: field && { h: Math.round(field.height), w: Math.round(field.width) }, belowBrand: field.top >= r('.ws-brand').bottom, aboveToday: field.bottom <= r('.ws-nav-home').top, rail: !!document.querySelector('.ws-ask-rail')?.getClientRects().length, placeholder: document.getElementById('ask-input').placeholder, hint: document.querySelector('.ws-ask-hint')?.textContent };
+        });
+        assert(place.field && place.belowBrand && place.aboveToday && !place.rail && place.placeholder === 'Ask…' && place.hint === '⌘K', `the field: ${JSON.stringify(place)}`);
+        await shot(page, `layout-e10-${theme}-${view}-field`);
+        // ⌘K: the field focused, Recent under it with the seeded questions, the foot.
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.waitForSelector('.ws-ask-recent li');
+        assert(await page.evaluate(() => document.activeElement?.id) === 'ask-input', 'focus is not in the field');
+        const recent = await page.locator('.ws-ask-recent li').allInnerTexts();
+        assert(recent.join('|') === 'What did I promise Priya this week?|When is the QBR?|Who is Marek Novak?', `Recent: ${recent.join('|')}`);
+        assert(await page.locator('.ws-ask-foot:text-is("Enter to ask · Esc to close")').count() === 1, 'no foot');
+        await page.keyboard.press('ArrowDown');
+        await page.waitForSelector('#ask-recent-0[aria-selected=true]');
+        assert(await page.getAttribute('#ask-input', 'aria-activedescendant') === 'ask-recent-0', 'aria-activedescendant');
+        await noOverflow(page, `${theme} ${view} with Recent open`);
+        await shot(page, `layout-e10-${theme}-${view}-recent`);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('.ws-ask-recent', { state: 'detached' });
+        // Collapsed by hand: the ✦ button in the field's place, "Ask (⌘K)".
+        await page.keyboard.press('ControlOrMeta+Backslash');
+        await page.waitForSelector('.ws-sidebar.ws-sidebar-rail');
+        await page.waitForFunction(() => !!document.querySelector('.ws-ask-rail')?.getClientRects().length);
+        assert(!(await page.locator('.ws-ask-field').isVisible()), 'the field shows on the rail');
+        await page.hover('.ws-ask-rail');
+        await page.waitForSelector('.ws-tooltip:text-is("Ask (⌘K)")');
+        await shot(page, `layout-e10-${theme}-${view}-rail`);
+        await page.keyboard.press('ControlOrMeta+Backslash');
+        await page.waitForSelector('.ws-sidebar:not(.ws-sidebar-rail)');
+        // 1000 px: the menu is a rail by its width; the ✦ button, nothing sideways.
+        await page.setViewportSize({ width: 1000, height: 700 });
+        await page.waitForFunction(() => Math.round(document.querySelector('.ws-sidebar').getBoundingClientRect().width) === 64);
+        assert(await page.locator('.ws-ask-rail').isVisible(), 'no ✦ at 1000 px');
+        await noOverflow(page, `${theme} ${view} at 1000 px`);
+        await shot(page, `layout-e10-${theme}-${view}-1000`);
+        // ⌘K with the rail: the Ask page with its box focused.
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.waitForSelector('#ask-follow-up');
+        await page.waitForFunction(() => document.activeElement?.id === 'ask-follow-up');
+        assert(new URL(page.url()).hash === '#/ask', `the hash: ${new URL(page.url()).hash}`);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // Asking from the Inbox: the chip follows the selection, Enter sends one ask_start with the
+  // record chosen at Enter and the window's hidden calendars, and opens the thread. ⌘K does
+  // nothing with a dialog open; × drops the chip; Esc clears, then gives focus back.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/inbox', localPrefs: { 'codemie.calendar.hidden': JSON.stringify(['cal-team']) } });
+    await check('layout E10: the About chip follows the selection and is read at Enter; ask_start carries the hidden calendars', async () => {
+      await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('.ws-ask-chip:has-text("About: Priya Natarajan · mail ·")');
+      await page.keyboard.type('what did I promise?');
+      // Another row, chosen while the question waits: the chip follows.
+      await page.click('.ws-inbox-row[data-id="m-reply-2"]');
+      await page.waitForSelector('.ws-ask-chip:has-text("About: Elena Varga · mail ·")');
+      assert(await page.inputValue('#ask-input') === 'what did I promise?', 'the words went');
+      await shot(page, 'layout-e10-chip');
+      // A click back into the field selects its words, as ⌘K does (§ 2).
+      await page.click('#ask-input');
+      await page.waitForFunction(() => { const f = document.getElementById('ask-input'); return document.activeElement === f && f.selectionStart === 0 && f.selectionEnd === f.value.length; });
+      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => location.hash.startsWith('#/ask/ask-'));
+      const starts = await calls(page, 'ask_start');
+      assert(starts.length === 1, `${starts.length} ask_start`);
+      assert(starts[0].question === 'what did I promise?' && starts[0].about?.kind === 'message' && starts[0].about.recordId === 'm-reply-2', JSON.stringify(starts[0]));
+      assert(JSON.stringify(starts[0].hiddenCalendars) === '["cal-team"]', `hiddenCalendars: ${JSON.stringify(starts[0].hiddenCalendars)}`);
+      assert(await page.inputValue('#ask-input') === '', 'the field kept the question');
+      // Back on the Inbox: × drops the chip for this question; busy is said under the box.
+      await page.click('.ws-sidebar [data-route="inbox"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('.ws-ask-chip');
+      await page.keyboard.type('anything urgent?');
+      await page.click('[data-action="ask-about-drop"]');
+      await page.waitForSelector('.ws-ask-chip', { state: 'detached' });
+      await page.evaluate(() => { window.__askRefuse = { op: 'ask_start', code: 'busy', message: 'Connect is still answering. Stop it or wait.' }; });
+      await page.focus('#ask-input');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.ws-ask-error:text-is("Connect is still answering. Stop it or wait.")');
+      const refused = (await calls(page, 'ask_start')).at(-1);
+      assert(!('about' in refused), `× kept the About: ${JSON.stringify(refused)}`);
+      assert(new URL(page.url()).hash === '#/inbox', 'a refusal navigated');
+      await shot(page, 'layout-e10-busy');
+      // Esc clears the words, then puts focus back on the row it came from.
+      await page.keyboard.press('Escape');
+      assert(await page.inputValue('#ask-input') === '', 'Esc kept the words');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.activeElement?.id !== 'ask-input');
+      // ⌘K does nothing with a dialog open.
+      const opened = await page.evaluate(() => {
+        const d = document.createElement('dialog');
+        d.className = 'ws-modal';
+        document.body.append(d);
+        d.showModal();
+        return true;
+      });
+      assert(opened, 'no dialog');
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForTimeout(200);
+      assert(await page.evaluate(() => document.activeElement?.id) !== 'ask-input', '⌘K focused the field under a dialog');
+      await page.evaluate(() => document.querySelector('dialog.ws-modal')?.remove());
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- E11: the Ask page (ask-capture § 5, § 7)
+  // The thread ask-thread.json (done, failed, stopped), opened from the Inbox through Recent, in
+  // both themes and views at 1440, 1000 and 1680 px; then an answer running (Stop and ⌘. send one
+  // job_cancel), Back to the Inbox as it was; the empty page; Delete and Clear history.
+  const sizes = async (page, name, view) => {
+    for (const width of [1440, 1000, 1680]) {
+      await page.setViewportSize({ width, height: 900 });
+      const wide = view === 'default' && width >= 1440;
+      await page.waitForSelector(wide ? '.ws-ask-cols .ws-ask-history' : '.ws-ask-hmenu');
+      if (!wide) assert(await page.locator('[data-action="ask-new"]:text-is("New ask")').count() === 1, `${name} ${width}: no New ask`);
+      await noOverflow(page, `${name} at ${width}`);
+      await shot(page, `${name}-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const name = `layout-e11-${theme}-${view}`;
+      const { page, context, errors } = await open({ theme, width: 1440, height: 900, hash: '#/inbox', patch: withRecent, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E11 (${theme} ${view}): the Ask page's turns, states, history and Back`, async () => {
+        await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+        await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        // Priya's cite points at her seeded mail, so its mark and chip are live.
+        await page.evaluate(thread => {
+          const t = structuredClone(thread);
+          t.turns[0].cites[0].recordId = 'm-reply-1';
+          window.__askThreads = { 'ask-7f2c': t };
+        }, askThread());
+        const before = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id || document.activeElement?.tagName);
+        await page.keyboard.press('ControlOrMeta+KeyK');
+        await page.click('#ask-recent-0');
+        await page.waitForSelector('[data-ask-turn="turn-3"]');
+        assert(new URL(page.url()).hash === '#/ask/ask-7f2c', `hash ${new URL(page.url()).hash}`);
+        // Opening the page focuses the newest turn's heading.
+        await page.waitForFunction(() => document.activeElement?.matches('[data-ask-turn="turn-3"] .ws-ask-q'));
+        const seen = await page.evaluate(() => ({
+          back: document.querySelector('.ws-ask-back')?.textContent,
+          region: document.querySelector('section.ws-ask-page')?.getAttribute('aria-label'),
+          turns: document.querySelectorAll('article.ws-ask-turn').length,
+          failed: document.querySelector('.ws-ask-failed')?.textContent.trim(),
+          stopped: document.querySelector('.ws-ask-stopped')?.textContent,
+          meta: document.querySelector('.ws-ask-meta summary')?.textContent.trim(),
+          marks: document.querySelectorAll('[data-ask-turn="turn-1"] .ws-ask-mark').length,
+          privacy: document.querySelector('.ws-ask-privacy')?.textContent,
+          current: document.querySelector('.ws-ask-hrow[aria-current=page]')?.dataset.askThread,
+          answerWidth: Math.round(document.querySelector('.ws-ask-main')?.getBoundingClientRect().width || 0),
+        }));
+        assert(seen.back === '← Back to Inbox' && seen.region === 'Ask' && seen.turns === 3, JSON.stringify(seen));
+        assert(seen.failed === '✕ Couldn’t answer: CodeMie is not signed in.' && seen.stopped === 'Stopped.', JSON.stringify(seen));
+        assert(/^Claude Code · 14 s · from 12 tasks, 7 events, 9 messages, 2 meetings, 1 person, 1 fact · Shortened to fit\./.test(seen.meta), seen.meta);
+        assert(seen.marks === 7 && /^Answers use what Connect has on this Mac:/.test(seen.privacy) && seen.answerWidth <= 760, JSON.stringify(seen));
+        assert(await page.locator('[data-action="ask-settings"]:text-is("Check Settings › AI")').count() === 1, 'no Check Settings › AI');
+        // The history (the column, or History ▾'s list in Compact) marks the open thread.
+        assert(seen.current === 'ask-7f2c', `aria-current: ${seen.current}`);
+        assert((await calls(page, 'ask_read')).length >= 1 && (await calls(page, 'ask_start')).length === 0, 'opening sent a write');
+        await sizes(page, `${name}-thread`, view);
+        // M1: a mark is a button; Enter on it focuses its chip.
+        await page.focus('[data-ask-mark="ask-cite-turn-1-a1"]');
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(() => document.activeElement?.id === 'ask-cite-turn-1-a1');
+        // The meta line's ▾ shows the whole searched line.
+        await page.click('[data-ask-turn="turn-1"] .ws-ask-meta summary');
+        await page.waitForSelector('.ws-ask-searched:has-text("events 7, Thu 19 Nov – Thu 3 Dec")');
+        // An answer running: the turn says so with its seconds and Stop; the box waits.
+        await page.evaluate(({ thread, running }) => {
+          const t = structuredClone(thread);
+          t.turns = [{ ...t.turns[0], searched: `${t.turns[0].searched} · Microsoft 365 isn't connected` }, { ...t.turns[2], id: 'turn-2', state: 'running', jobId: 'job-9' }];
+          t.turns[0].cites[0].recordId = 'm-reply-1';
+          window.__askThreads = { 'ask-7f2c': t };
+          const startedAt = Math.floor(Date.now() / 1000) - 9;
+          window.__lastAsk = { ...running, running: { ...running.running, startedAt } };
+          window.__askSet(window.__lastAsk, [{ id: 'job-9', kind: 'ask', key: 'ask:ask-7f2c', state: 'running', dueAt: startedAt, attempts: 1, connectionId: null, policy: {}, payload: { threadId: 'ask-7f2c', turnId: 'turn-2', purpose: 'ask', profile: 'claude', startedAt }, result: null }]);
+        }, { thread: askThread(), running: askStates().running });
+        await page.waitForSelector('.ws-ask-stop[aria-keyshortcuts="Meta+Period"]');
+        // M3: one live status outside the page; a redraw keeps the node and its words.
+        await page.waitForFunction(() => /^Answering with Claude Code · \d+ s$/.test(document.getElementById('ask-live')?.textContent || ''));
+        const said = await page.evaluate(() => { const n = document.getElementById('ask-live'); n.__kept = true; return { role: n.getAttribute('role'), text: n.textContent, inPage: !!n.closest('#workspace-app') }; });
+        assert(said.role === 'status' && !said.inPage, JSON.stringify(said));
+        assert(await page.locator('#workspace-app [role=status]:has-text("Answering")').count() === 0, 'a status inside the page');
+        await page.evaluate(() => window.__askSet(window.__lastAsk));
+        await page.waitForTimeout(150);
+        const kept = await page.evaluate(() => { const n = document.getElementById('ask-live'); return { kept: n.__kept === true, text: n.textContent }; });
+        assert(kept.kept && kept.text === said.text, `the status changed on a redraw: ${JSON.stringify(kept)} vs ${said.text}`);
+        assert(await page.locator('#ask-follow-up').isDisabled(), 'the box asks while an answer runs');
+        assert(await page.locator('#ask-box-why:text-is("Connect is still answering. Stop it or wait.")').count() === 1, 'no reason');
+        assert(await page.locator('.ws-ask-note:has-text("Microsoft 365 isn’t connected, so this answer leaves out your mail, Teams and calendar.")').count() === 1, 'no Microsoft line');
+        // The seconds tick on screen.
+        const ticked = await page.locator('[data-ask-tick]').innerText();
+        await page.waitForFunction(was => document.querySelector('[data-ask-tick]')?.textContent !== was, ticked, { timeout: 3000 });
+        await page.setViewportSize({ width: 1000, height: 900 });
+        await noOverflow(page, `${name} running at 1000`);
+        await shot(page, `${name}-running-1000`);
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.click('.ws-ask-stop');
+        await page.waitForFunction(() => window.__bridgeCalls.filter(([op]) => op === 'job_cancel').length === 1);
+        // ⌘. on a run started again (native had settled the first): one more job_cancel.
+        await page.evaluate(() => {
+          const job = { id: 'job-9', kind: 'ask', key: 'ask:ask-7f2c', state: 'running', dueAt: 0, attempts: 1, connectionId: null, policy: {}, payload: { threadId: 'ask-7f2c', turnId: 'turn-2', purpose: 'ask', profile: 'claude', startedAt: Math.floor(Date.now() / 1000) } };
+          window.__askSet(JSON.parse(JSON.stringify(window.__lastAsk || {})), [job]);
+        });
+        await page.waitForSelector('.ws-ask-stop');
+        await page.keyboard.press('Meta+Period');
+        await page.waitForFunction(() => window.__bridgeCalls.filter(([op]) => op === 'job_cancel').length === 2);
+        const cancels = await calls(page, 'job_cancel');
+        assert(cancels.length === 2 && cancels.every(c => c.id === 'job-9'), JSON.stringify(cancels));
+        // Back: the Inbox as it was, Priya's row still selected.
+        await page.evaluate(ask => window.__askSet(ask), askStates().idle);
+        await page.click('.ws-ask-back');
+        await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        // I1: focus is back where it was before ⌘K.
+        const after = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id || document.activeElement?.tagName);
+        assert(before === 'm-reply-1' && after === before, `focus before ⌘K ${before}, after Back ${after}`);
+        assert(await page.evaluate(() => document.getElementById('ask-live')?.textContent) === '', 'the status still says Answering');
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // ---------------------------------------------------------------- E12: cites and actions (ask-capture § 8)
+  // The done turn's cites pointing at seeded records: the chips are buttons that open their record
+  // with "← Back to Ask" in a toast for 6 s; + Add as task opens quick capture filled in and saves
+  // nothing; Open goes as its cite does; ✦ Draft a reply opens the message and sends one ai_draft
+  // whose instructions are the hint. Both themes and views at 1000 px.
+  const actionThread = () => {
+    const t = structuredClone(askThread());
+    const at = { a1: 'm-reply-1', t2: 'task-soon', e3: 'ev-standup', m4: 'c-reply-1', n5: 'ev-standup' };
+    for (const c of t.turns[0].cites) if (at[c.id]) c.recordId = at[c.id];
+    t.turns[0].about.recordId = 'm-reply-1';
+    t.turns[0].actions[1].recordId = 'ev-standup';
+    t.turns[0].actions[2].recordId = 'c-reply-1';
+    return t;
+  };
+  // I1: a task due in 3 days sits in By date's closed "Next 7 days" fold; its cite opens it.
+  const withSoonTask = (s, now) => {
+    withRecent(s);
+    const base = s.records.find(r => r.id === 'commit-1');
+    const due = new Date(now + 3 * 86_400_000).toISOString().slice(0, 10);
+    s.records.push({ ...structuredClone(base), id: 'task-soon', revision: 'r-task-soon', data: { ...structuredClone(base.data), text: 'Send the Atlas budget', due, status: 'todo', done: false } });
+  };
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const name = `layout-e12-${theme}-${view}`;
+      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask/ask-7f2c', patch: withSoonTask, localPrefs: { 'codemie.tasks.view': 'dates' }, settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E12 (${theme} ${view}): cite chips open their record with "← Back to Ask"; Add as task, Open and Draft a reply run only on a click`, async () => {
+        // The thread's records are seeded ones: `ask_read` answers this copy once the page loads again.
+        await page.addInitScript(t => { window.__askThreads = { 'ask-7f2c': t }; }, actionThread());
+        await page.reload();
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        const seen = await page.evaluate(() => ({
+          cites: [...document.querySelectorAll('[data-ask-turn="turn-1"] button.ws-ask-cite[data-action="ask-cite"]')].map(b => b.dataset.askCite).join(','),
+          plain: [...document.querySelectorAll('[data-ask-turn="turn-1"] span.ws-ask-cite')].map(x => x.textContent).join('|'),
+          actions: [...document.querySelectorAll('[data-ask-turn="turn-1"] .ws-ask-actions button')].map(b => `${b.dataset.action}:${b.textContent}`).join('|'),
+        }));
+        assert(seen.cites === 'a1,t2,e3,m4,n5', JSON.stringify(seen));
+        assert(seen.plain === 'From Knowledge: Marek Novak|From Knowledge: Atlas rollout', JSON.stringify(seen));
+        assert(seen.actions === 'ask-task:+ Add as task|ask-go:Open Event · Fri 27 Nov 10:00 · QBR|ask-reply:✦ Draft a reply to Jordan Lee', JSON.stringify(seen));
+        await page.locator('[data-ask-turn="turn-1"] .ws-ask-actions').scrollIntoViewIfNeeded();
+        await noOverflow(page, `${name} at 1000`);
+        await shot(page, `${name}-actions-1000`);
+        const writesBefore = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => !['ask_read', 'capture_parse'].includes(op)).length);
+        // A cite chip: Priya's mail selected (open in Compact), and the way back for 6 s.
+        await page.click('[data-action="ask-cite"][data-ask-cite="a1"]');
+        await page.waitForSelector(view === 'compact' ? '.ws-inbox-row[data-id="m-reply-1"][aria-expanded="true"]' : '.ws-inbox-row.ws-selected[data-id="m-reply-1"]');
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        await page.waitForSelector('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        // `shot` drops toasts: this one is the point, so the window is taken as it is.
+        await page.screenshot({ path: `${OUT.replace(/\/$/, '')}/${name}-cite-toast-1000.png` });
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        assert(new URL(page.url()).hash === '#/ask/ask-7f2c', new URL(page.url()).hash);
+        // I1: the task cite on By date opens the task's fold and unfolds its row, on screen.
+        await page.click('[data-action="ask-cite"][data-ask-cite="t2"]');
+        await page.waitForSelector('.ws-tdate-row.ws-tdate-open[data-task="task-soon"]', { state: 'visible' });
+        assert(new URL(page.url()).hash.startsWith('#/tasks'), new URL(page.url()).hash);
+        assert(await page.locator('[data-fold="next7"][aria-expanded="true"]').count() === 1, 'Next 7 days stayed closed');
+        // Taken as it is: `shot` would drop the toast used next.
+        await page.screenshot({ path: `${OUT.replace(/\/$/, '')}/${name}-task-1000.png` });
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        // + Add as task: the bar filled in; nothing saved until Add.
+        await page.click('[data-action="ask-task"]');
+        await page.waitForSelector('.ws-capture');
+        const bar = await page.evaluate(() => ({
+          text: document.getElementById('capture-input')?.value,
+          due: document.querySelector('[data-capture-due]')?.textContent.replace('×', '').trim(),
+          source: document.querySelector('[data-capture-source]')?.textContent.replace('×', '').trim(),
+        }));
+        assert(bar.text === 'Send Priya the Atlas budget' && bar.due === 'Due Fri 27 Nov' && /^From: /.test(bar.source || ''), JSON.stringify(bar));
+        await shot(page, `${name}-add-task-1000`);
+        assert((await calls(page, 'task_save')).length === 0, 'Add as task saved a task');
+        // Esc clears the words, then closes the bar.
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.querySelector('.ws-capture'));
+        // Open: the calendar on the event's day with the event open.
+        await page.click('[data-action="ask-go"]');
+        await page.waitForSelector('dialog.ws-event-modal[open][data-event-id="ev-standup"]');
+        assert(new URL(page.url()).hash.startsWith('#/calendar'), new URL(page.url()).hash);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.querySelector('dialog.ws-event-modal[open]'));
+        await page.click('.ws-toast .ws-toast-action:text-is("← Back to Ask")');
+        await page.waitForSelector('[data-ask-turn="turn-1"] .ws-ask-actions');
+        // ✦ Draft a reply: Jordan's chat opened, then one ai_draft with the hint; nothing sent.
+        await page.click('[data-action="ask-reply"]');
+        await page.waitForFunction(() => window.__bridgeCalls.some(([op]) => op === 'ai_draft'));
+        assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+        const drafts = await calls(page, 'ai_draft');
+        assert(drafts.length === 1 && drafts[0].sourceId === 'c-reply-1' && drafts[0].instructions === 'Say the deck comes Thursday.', JSON.stringify(drafts));
+        const sent = await page.evaluate(n => window.__bridgeCalls.slice(n).map(([op]) => op).filter(op => !['ask_read', 'capture_parse', 'ai_draft', 'ai_status'].includes(op)), writesBefore);
+        assert(!sent.some(op => /send|task_save|reply|note_append|mail/.test(op)), `sent: ${sent.join(',')}`);
+        await shot(page, `${name}-draft-1000`);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // I1 and M5: from an Inbox row, ⌘K and Enter open the page; Esc on the page (focus on the
+  // newest heading, not in the box) goes Back, and focus returns to that row. With words in the
+  // box, Esc there clears them first and stays.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/inbox' });
+    await check('layout E11: ⌘K, Enter, then Esc on the page goes Back with focus on the row it came from', async () => {
+      await page.click('.ws-inbox-row[data-id="m-reply-2"]');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-2"]');
+      const before = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id);
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.keyboard.type('what did Elena ask?');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => location.hash.startsWith('#/ask/ask-'));
+      await page.waitForSelector('#ask-follow-up');
+      // Esc in the box with words: cleared, still on the page.
+      await page.fill('#ask-follow-up', 'and Jordan?');
+      await page.keyboard.press('Escape');
+      assert(await page.inputValue('#ask-follow-up') === '', 'Esc kept the words');
+      assert(new URL(page.url()).hash.startsWith('#/ask/'), 'Esc with words left the page');
+      // Esc outside the box: Back.
+      await page.evaluate(() => { const h = document.querySelector('.ws-ask-page h1'); h.setAttribute('tabindex', '-1'); h.focus(); });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.ws-inbox-row.ws-selected[data-id="m-reply-2"]');
+      assert(new URL(page.url()).hash === '#/inbox', new URL(page.url()).hash);
+      const after = await page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id);
+      assert(before === 'm-reply-2' && after === before, `focus before ⌘K ${before}, after Esc ${after}`);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+  // The empty page: the line and three examples that fill the box without asking.
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['default', 'compact']) {
+      const { page, context, errors } = await open({ theme, width: 1000, height: 900, hash: '#/ask', settings: view === 'compact' ? { view: 'compact' } : null });
+      await check(`layout E11 (${theme} ${view}): the empty Ask page`, async () => {
+        await page.waitForSelector('.ws-ask-empty-line:text-is("Ask about your mail, meetings, calendar and tasks.")');
+        const examples = await page.locator('[data-action="ask-example"]').allInnerTexts();
+        assert(examples.join('|') === 'What’s due this week?|What did I agree in my last meeting?|Who’s waiting on me?', examples.join('|'));
+        await page.click('[data-action="ask-example"] >> nth=1');
+        await page.waitForFunction(() => document.getElementById('ask-follow-up')?.value === 'What did I agree in my last meeting?' && document.activeElement?.id === 'ask-follow-up');
+        assert((await calls(page, 'ask_start')).length === 0, 'an example asked');
+        await noOverflow(page, `${theme} ${view} empty at 1000`);
+        await shot(page, `layout-e11-${theme}-${view}-empty-1000`);
+        assert(errors.length === 0, errors.join(' | '));
+      });
+      await context.close().catch(() => {});
+    }
+  }
+  // Delete is at once with no Undo; Clear history asks first, Return cancels.
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/ask/ask-7f2c', patch: withRecent });
+    await check('layout E11: ⋯ Delete sends one ask_delete at once; Clear history asks first and Return cancels', async () => {
+      await page.waitForSelector('[data-ask-turn="turn-3"]');
+      await page.click('[data-menu="ask-thread-ask-3a9e"] summary');
+      const del = page.locator('[data-action="ask-delete"][data-ask-thread="ask-3a9e"]');
+      assert(await del.getAttribute('aria-label') === 'Delete “When is the QBR?”', await del.getAttribute('aria-label'));
+      await del.click();
+      await page.waitForSelector('[data-ask-thread="ask-3a9e"]', { state: 'detached' });
+      assert(JSON.stringify(await calls(page, 'ask_delete')) === '[{"threadId":"ask-3a9e"}]', 'one ask_delete');
+      assert(await page.locator('dialog.ws-modal').count() === 0, 'Delete asked first');
+      await page.click('[data-action="ask-clear"]');
+      await page.waitForSelector('dialog.ws-modal h2:text-is("Clear Ask history?")');
+      assert(await page.locator('dialog.ws-modal .ws-modal-text:text-is("Connect deletes every question and answer kept on this Mac. Your mail, tasks and notes are not touched.")').count() === 1, 'the dialog body');
+      assert(await page.evaluate(() => document.activeElement?.textContent) === 'Cancel', 'Cancel is not focused');
+      await page.waitForTimeout(300);
+      await shot(page, 'layout-e11-clear-dialog');
+      await page.waitForTimeout(600);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('dialog.ws-modal', { state: 'detached' });
+      assert((await calls(page, 'ask_delete')).length === 1, 'Return cleared the history');
+      await page.click('[data-action="ask-clear"]');
+      await page.waitForSelector('dialog.ws-modal');
+      await page.waitForTimeout(600);
+      await page.click('dialog.ws-modal button[type=submit]:text-is("Clear history")');
+      await page.waitForFunction(() => location.hash === '#/ask');
+      assert(JSON.stringify((await calls(page, 'ask_delete')).at(-1)) === '{"all":true}', 'no ask_delete {all:true}');
+      await page.waitForSelector('.ws-ask-empty-line');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- E13: Settings › Layout's "Ask in the menu" switch (ask-capture § 2, § 6, § 11, ruling 26)
+  {
+    const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/settings/layout' });
+    await check('layout E13: "Ask in the menu" is on by default; turning it off sends one settings_update {askInMenu:false} and the field goes, leaving ⌘K', async () => {
+      await page.waitForSelector('.ws-settings-layout');
+      const input = page.locator('[data-setting="askInMenu"]');
+      const switchEl = page.locator('.ws-switch:has([data-setting="askInMenu"])');
+      assert(await input.isChecked(), 'the switch is not on by default');
+      assert(await page.locator('.ws-ask-field').isVisible(), 'the field is not in the menu to begin with');
+      await shot(page, 'layout-e13-on');
+      await switchEl.click();
+      await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'settings_update' && d.askInMenu === false));
+      const updates = await calls(page, 'settings_update');
+      assert(updates.filter(d => 'askInMenu' in d).length === 1, `one settings_update {askInMenu}: ${JSON.stringify(updates)}`);
+      await page.waitForSelector('.ws-ask-field', { state: 'detached' });
+      assert(!(await page.locator('.ws-ask-rail').count()), 'the rail stays once the field is off');
+      await shot(page, 'layout-e13-off');
+      // ⌘K still opens the Ask page with its box focused (Task 9 ruling 26).
+      await page.keyboard.press('ControlOrMeta+KeyK');
+      await page.waitForSelector('#ask-follow-up');
+      await page.waitForFunction(() => document.activeElement?.id === 'ask-follow-up');
+      assert(new URL(page.url()).hash === '#/ask', `the hash: ${new URL(page.url()).hash}`);
+      assert((await page.locator('.ws-ask-back').innerText()) === '← Back to Settings', 'Back names the page it came from');
+      await page.click('[data-action="ask-back"]');
+      await page.waitForSelector('.ws-settings-layout');
+      await switchEl.click();
+      await page.waitForFunction(() => window.__bridgeCalls.filter(([op, d]) => op === 'settings_update' && 'askInMenu' in d).length > 1);
+      await page.waitForSelector('.ws-ask-field');
       assert(errors.length === 0, errors.join(' | '));
     });
     await context.close().catch(() => {});

@@ -1,4 +1,78 @@
 {
+  "chosen": {
+    "ask": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": null,
+      "profile": "claude"
+    },
+    "automation": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": null,
+      "profile": "claude"
+    },
+    "briefing": {
+      "fallback": "codemie:prod",
+      "group": "automation",
+      "model": null,
+      "profile": "claude"
+    },
+    "chat_draft": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": null,
+      "profile": "claude"
+    },
+    "commitments": {
+      "fallback": "codemie:prod",
+      "group": "automation",
+      "model": null,
+      "profile": "claude"
+    },
+    "default": {
+      "fallback": "codemie:prod",
+      "group": null,
+      "model": null,
+      "profile": "claude"
+    },
+    "mail_draft": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": "sonnet",
+      "profile": "claude"
+    },
+    "meeting": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": null,
+      "profile": "claude"
+    },
+    "plugin": {
+      "fallback": "codemie:prod",
+      "group": "default",
+      "model": null,
+      "profile": "claude"
+    },
+    "plugin:knowledge": {
+      "fallback": "codemie:prod",
+      "group": "plugin",
+      "model": "qwen3:8b",
+      "profile": "codemie:local-ollama"
+    },
+    "summary": {
+      "fallback": null,
+      "group": "default",
+      "model": "claude-haiku-4-5",
+      "profile": "codemie:prod"
+    },
+    "triage": {
+      "fallback": "codemie:local-ollama",
+      "group": "automation",
+      "model": null,
+      "profile": "claude"
+    }
+  },
   "profiles": [
     {
       "account": {
@@ -13,6 +87,7 @@
         "type": "native"
       },
       "label": "Claude Code · your subscription",
+      "local": null,
       "message": null,
       "models": [
         {
@@ -32,6 +107,7 @@
           "label": "Opus"
         }
       ],
+      "provider": null,
       "state": "ready",
       "version": "2.1.150"
     },
@@ -44,6 +120,7 @@
         "type": "code_mie"
       },
       "label": "CodeMie · prod",
+      "local": null,
       "message": null,
       "models": [
         {
@@ -55,6 +132,7 @@
           "label": "claude-haiku-4-5"
         }
       ],
+      "provider": "ai-run-sso",
       "state": "ready",
       "version": null
     },
@@ -67,6 +145,7 @@
         "type": "code_mie"
       },
       "label": "CodeMie · staging",
+      "local": null,
       "message": "Sign in to this CodeMie profile.",
       "models": [
         {
@@ -78,20 +157,62 @@
           "label": "claude-haiku-4-5"
         }
       ],
+      "provider": "ai-run-sso",
       "state": "needs_login",
+      "version": null
+    },
+    {
+      "account": null,
+      "defaultModel": "qwen3:8b",
+      "id": "codemie:local-ollama",
+      "kind": {
+        "name": "local-ollama",
+        "type": "code_mie"
+      },
+      "label": "CodeMie · local-ollama",
+      "local": true,
+      "message": null,
+      "models": [
+        {
+          "id": "qwen3:8b",
+          "label": "qwen3:8b"
+        },
+        {
+          "id": "llama3.2:latest",
+          "label": "llama3.2:latest"
+        }
+      ],
+      "provider": "ollama",
+      "state": "ready",
       "version": null
     }
   ],
   "settings": {
+    "defaultFallback": "codemie:prod",
+    "defaultModel": null,
     "defaultProfile": "claude",
+    "plugins": {
+      "knowledge": {
+        "fallback": null,
+        "model": "qwen3:8b",
+        "profile": "codemie:local-ollama"
+      }
+    },
     "routes": {
       "mail_draft": {
+        "fallback": null,
         "model": "sonnet",
         "profile": null
       },
       "summary": {
+        "fallback": null,
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
+      },
+      "triage": {
+        "fallback": "codemie:local-ollama",
+        "model": null,
+        "profile": null
       }
     }
   }

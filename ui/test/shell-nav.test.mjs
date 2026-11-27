@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyOnboardingNav } from '../shell-nav.js';
-import { renderShell } from '../workspace/shell.js';
+import { renderShell, NAV, firstVisiblePage, toggleHiddenPage } from '../workspace/shell.js';
 import { buildSnapshot, withTasks, withMeetings } from './fixtures/workspace-fixture.mjs';
 
 // A root holding the four sidebar entries, queried the way the module does.
@@ -146,6 +146,40 @@ test('more than three plugins start folded, with their marks on the label line; 
   assert.deepEqual([...groupOf(shell({ route: 'plugin', plugins: { activities, current: { plugin: 'gamma', id: 'home' } } }), 'plugins').matchAll(/data-plugin-id="([a-z]+)"/g)].map(m => m[1]), ['gamma']);
 });
 
+// ---------------------------------------------------------------- hiding menu pages
+
+test('a hidden page leaves the menu, its count and its group’s roll-up', () => {
+  const s = withMeetings(withTasks(buildSnapshot(NOW, { photo: false }), NOW), NOW);
+  const open = renderShell({ snapshot: s, route: 'today', resolvedDark: true, now: NOW, hiddenPages: ['inbox'] });
+  assert.ok(!routes(open).includes('inbox'), 'inbox left the menu');
+  const count = id => Number(open.match(new RegExp(`data-route="${id}"[^>]*>[^]*?<small class="ws-count"[^>]*>(\\d+)</small>`))?.[1] || 0);
+  const expected = count('tasks') + count('meetings');
+  assert.ok(expected > 0, 'the fixture has tasks to review or meetings waiting');
+  const folded = renderShell({ snapshot: s, route: 'today', resolvedDark: true, now: NOW, sidebarFolded: { work: true }, hiddenPages: ['inbox'] });
+  assert.match(headOf(folded, 'work'), new RegExp(`<small class="ws-count">${expected}</small>`), 'the hidden page’s count is excluded from the roll-up');
+});
+
+test('a hidden page that is open shows greyed with no count', () => {
+  const s = withTasks(buildSnapshot(NOW, { photo: false }), NOW);
+  const html = renderShell({ snapshot: s, route: 'calendar', resolvedDark: true, now: NOW, hiddenPages: ['calendar'] });
+  assert.match(html, /class="ws-nav-hidden"[^>]*data-route="calendar"|data-route="calendar"[^>]*class="ws-nav-hidden"/);
+  assert.match(html, /data-route="calendar"[^>]*title="Hidden from the menu"/);
+});
+
+test('a group with every page hidden is not drawn, nor Today when hidden', () => {
+  const html = shell({ route: 'inbox', hiddenPages: ['automations', 'analytics', 'today'] });
+  assert.doesNotMatch(html, /data-group="ai"/);
+  assert.doesNotMatch(html, /data-route="today"/);
+});
+
+test('firstVisiblePage and toggleHiddenPage keep menu order', () => {
+  assert.equal(firstVisiblePage([]), 'today');
+  assert.equal(firstVisiblePage(['today']), 'inbox');
+  assert.equal(firstVisiblePage(NAV.map(([id]) => id)), 'today');
+  assert.deepEqual(toggleHiddenPage(['tasks'], 'calendar', false), ['calendar', 'tasks']);
+  assert.deepEqual(toggleHiddenPage(['calendar', 'tasks'], 'calendar', true), ['tasks']);
+});
+
 test('the collapsed menu draws the rail: dots for counts, tooltips, a folded group as one icon', () => {
   const full = shell();
   assert.doesNotMatch(full, /ws-sidebar-rail|ws-count-dot/);
@@ -159,4 +193,34 @@ test('the collapsed menu draws the rail: dots for counts, tooltips, a folded gro
   assert.match(rail, /<div class="ws-sidebar-edge"/);
   // The top bar has the same button at the left.
   assert.match(rail, /<header class="ws-topbar">\s*<button[^>]*data-action="sidebar-toggle"/);
+});
+
+// ---------------------------------------------------------------- Ask (ask-capture design § 1, § 2)
+
+test('the field is the first item of the menu with "Ask…" and "⌘K"; inMenu false draws no field', () => {
+  const html = shell();
+  const field = html.indexOf('<form class="ws-ask-field" role="search" aria-label="Ask"');
+  assert.ok(field > 0, 'no Ask field');
+  assert.ok(field > html.indexOf('class="ws-brand"'), 'the field sits below the brand');
+  assert.ok(field < html.indexOf('ws-nav-home'), 'the field sits above Today');
+  assert.match(html, /id="ask-input"[^>]*placeholder="Ask…"[^>]*aria-label="Ask Connect" aria-keyshortcuts="Meta\+K"/);
+  assert.match(html, />⌘K<\/kbd>/);
+  const s = buildSnapshot(NOW, { photo: false });
+  s.ask = { ...s.ask, inMenu: false };
+  const off = renderShell({ snapshot: s, route: 'today', resolvedDark: true });
+  assert.doesNotMatch(off, /ws-ask-field|data-action="ask-rail"/);
+});
+
+test('the rail shows a ✦ button "Ask (⌘K)" with aria-label "Ask" and aria-keyshortcuts "Meta+K" in the field\'s place', () => {
+  const rail = shell({ sidebarCollapsed: true });
+  const button = rail.indexOf('data-action="ask-rail"');
+  assert.ok(button > 0 && button < rail.indexOf('ws-nav-home'));
+  assert.match(rail, /<button type="button" class="ws-ask-rail" data-action="ask-rail" aria-label="Ask" aria-keyshortcuts="Meta\+K" title="Ask \(⌘K\)"/);
+});
+
+test('the field draws the window’s Ask state: its words and the About chip', () => {
+  const s = buildSnapshot(NOW, { photo: false });
+  const html = renderShell({ snapshot: s, route: 'inbox', resolvedDark: true, askState: { route: 'inbox', selectedMessage: 'm-reply-1', ask: { text: 'due?', open: true, active: -1 } } });
+  assert.match(html, /value="due\?"/);
+  assert.match(html, /About: Priya Natarajan · mail · /);
 });

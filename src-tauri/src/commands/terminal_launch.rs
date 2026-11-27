@@ -117,6 +117,8 @@ pub fn download_url(app_id: &str) -> Option<&'static str> {
 }
 
 fn spawn(program: &str, args: &[&str]) -> CmdResult<()> {
+    crate::commands::tour::opens_nothing("Terminal or app launch")
+        .map_err(|m| InstallerError::Other(m.into()))?;
     std::process::Command::new(program)
         .args(args)
         .spawn()

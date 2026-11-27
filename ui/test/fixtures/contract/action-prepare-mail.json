@@ -1,0 +1,48 @@
+{
+  "normal": {
+    "account": "taylor@example.test",
+    "actionId": "action-1",
+    "expiresAt": 0,
+    "nonce": "nonce-1",
+    "review": {
+      "body": "Sounds good.",
+      "newRecipients": [],
+      "providerRevision": "ck-1",
+      "recipients": [
+        {
+          "emailAddress": {
+            "address": "priya.n@example.test",
+            "name": "Priya Nair"
+          }
+        }
+      ],
+      "sourceId": "msg-1",
+      "title": "Project update"
+    },
+    "workspaceId": "personal"
+  },
+  "redirected": {
+    "account": "taylor@example.test",
+    "actionId": "action-1",
+    "expiresAt": 0,
+    "nonce": "nonce-1",
+    "review": {
+      "body": "Sounds good.",
+      "newRecipients": [
+        "assistant@example.test"
+      ],
+      "providerRevision": "ck-2",
+      "recipients": [
+        {
+          "emailAddress": {
+            "address": "assistant@example.test",
+            "name": "Priya's Assistant"
+          }
+        }
+      ],
+      "sourceId": "msg-2",
+      "title": "Project update"
+    },
+    "workspaceId": "personal"
+  }
+}

@@ -89,6 +89,16 @@ const MAX_RECORDS: usize = 2000;
 /// an ordinary record.
 const RESETTING: [&str; 1] = ["rule"];
 
+/// A workspace-less, account-less record the snapshot never shows (repository.rs
+/// `visible_where`): Ask threads, the voice copy, the menu bar's seen marks, the task keys. The
+/// window reads them through the snapshot's own parts (`ask`, `replyVoice`, `menuBar`,
+/// `taskProvider`), which every delta carries whole.
+fn never_shown(c: &ChangeRow) -> bool {
+    c.workspace_id.is_empty()
+        && c.connection_id.is_empty()
+        && !matches!(c.kind.as_str(), "plugin_item" | "plugin_widget")
+}
+
 fn key_of(c: &ChangeRow) -> RecordKey {
     RecordKey {
         kind: c.kind.clone(),
@@ -127,7 +137,8 @@ impl Core {
     /// or more than [`MAX_RECORDS`] records changed. Changed records come as the snapshot
     /// shows them; keys that went (or aren't shown) in `removed`; the automation runs whole
     /// (`replace`); changed jobs, and the whole list (`jobsAll`) when one went, so the window
-    /// keeps the newest 300 as native does.
+    /// keeps the newest 300 as native does. `taskProvider`, `replyVoice`, `ask` and `menuBar`
+    /// come whole, as the snapshot fills them.
     pub(super) async fn changes_since(&self, req: &Request) -> Result<Value> {
         let since = req.data["revision"].as_i64().ok_or_else(|| {
             WorkspaceError::new("validation", "Say which revision the window holds.")
@@ -160,7 +171,7 @@ impl Core {
             let runs = record_rows.iter().any(|c| c.kind == "automation_run");
             let keys: Vec<RecordKey> = record_rows
                 .iter()
-                .filter(|c| c.kind != "automation_run")
+                .filter(|c| c.kind != "automation_run" && !never_shown(c))
                 .map(|c| key_of(c))
                 .collect();
             // Messages and summaries come projected with their conversations, below.
@@ -262,6 +273,11 @@ impl Core {
         };
         let settings = self.repo()?.settings()?;
         delta["meetingsRoot"] = json!(self.shown_meetings_root(&settings.meetings));
+        // The parts the snapshot fills from their own stores (mod.rs `Operation::Snapshot`).
+        delta["taskProvider"] = self.task_provider_snapshot(&settings);
+        delta["replyVoice"] = self.voice_snapshot(&settings);
+        delta["ask"] = self.ask_snapshot(&settings);
+        delta["menuBar"] = self.menu_bar_for_delta();
         delta["authPending"] = self.auth_attempt.lock().await.is_some().into();
         delta["authError"] = json!(self.auth_error.lock().await.clone());
         Ok(delta)
@@ -418,6 +434,10 @@ mod tests {
             "noteTemplates",
             "authPending",
             "scope",
+            "taskProvider",
+            "menuBar",
+            "replyVoice",
+            "ask",
         ] {
             assert!(delta.get(field).is_some(), "{field} missing");
         }
@@ -929,6 +949,10 @@ mod tests {
             "available",
             "meetingsRoot",
             "noteTemplates",
+            "taskProvider",
+            "menuBar",
+            "replyVoice",
+            "ask",
         ] {
             snap[field] = delta[field].clone();
         }
@@ -1135,6 +1159,135 @@ mod tests {
         }
     }
 
+    // ---------------------------------------------------------------- the window's other parts
+
+    /// The delta after `before`, checked to bring `before` to the snapshot read now, `taskProvider`,
+    /// `menuBar`, `replyVoice` and `ask` included.
+    async fn delta_to_next(core: &Arc<Core>, before: &Value) -> Value {
+        let delta = since(core, before).await;
+        let applied = apply(before, &delta).unwrap_or_else(|| panic!("reset: {delta}"));
+        let next = snapshot(core).await;
+        for part in ["taskProvider", "menuBar", "replyVoice", "ask"] {
+            assert!(delta.get(part).is_some(), "{part} missing: {delta}");
+            assert_eq!(applied["snapshot"][part], next["snapshot"][part], "{part}");
+        }
+        assert_eq!(sorted(&applied), sorted(&next));
+        delta
+    }
+
+    #[tokio::test]
+    async fn ask_start_comes_in_the_delta_with_its_thread_and_job() {
+        let (_dir, core) = core();
+        connect(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_profile = Some("claude".into());
+            r.settings_update(&s).unwrap();
+        }
+        let before = snapshot(&core).await;
+        let asked = write(
+            &core,
+            Operation::AskStart,
+            json!({"question": "When is the QBR?"}),
+        )
+        .await;
+        let delta = delta_to_next(&core, &before).await;
+        assert_eq!(
+            delta["ask"]["threads"][0]["id"], asked["threadId"],
+            "{delta}"
+        );
+        assert_eq!(delta["ask"]["running"]["threadId"], asked["threadId"]);
+        assert!(ids(&delta, "jobs").contains(&asked["jobId"].as_str().unwrap().to_string()));
+        // The thread is a global record the snapshot never shows: it comes only through `ask`.
+        assert!(delta["removed"].as_array().unwrap().is_empty(), "{delta}");
+    }
+
+    #[tokio::test]
+    async fn note_append_comes_in_the_delta() {
+        let (_dir, core) = core();
+        connect(&core);
+        let before = snapshot(&core).await;
+        let appended = write(
+            &core,
+            Operation::NoteAppend,
+            json!({"text": "Ask Marek about the Q1 headcount"}),
+        )
+        .await;
+        let delta = delta_to_next(&core, &before).await;
+        assert_eq!(ids(&delta, "records"), [appended["id"].as_str().unwrap()]);
+        assert_eq!(delta["records"][0]["kind"], "note");
+    }
+
+    #[tokio::test]
+    async fn a_voice_save_comes_in_the_delta() {
+        use crate::workspace::voice::ops::tests::env;
+        let e = env();
+        e.choose_with_copy().await;
+        let before = snapshot(&e.core).await;
+        e.fake.answer(
+            "save",
+            json!({"text": "Terse.", "updatedAt": "2026-11-25T10:00:00Z", "source": "Voice/style.md",
+                   "basedOn": null}),
+        );
+        e.op(
+            Operation::VoiceSave,
+            json!({"kind": "style", "text": "Terse."}),
+        )
+        .await
+        .unwrap();
+        let delta = delta_to_next(&e.core, &before).await;
+        assert_ne!(
+            delta["replyVoice"], before["snapshot"]["replyVoice"],
+            "the copy's style changed"
+        );
+        // The refresh it queues comes as a job.
+        assert!(delta["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"] == "voice_refresh"));
+    }
+
+    #[tokio::test]
+    async fn a_task_sync_comes_in_the_delta() {
+        use crate::workspace::task_provider::{fake::FakeProvider, sync};
+        const P: &str = "plugin:todoist";
+        let (_dir, core) = core();
+        connect(&core);
+        let fake = Arc::new(FakeProvider::new());
+        core.set_task_providers(fake.clone());
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = P.into();
+            r.settings_update(&s).unwrap();
+        }
+        let before = snapshot(&core).await;
+        fake.put_remote(
+            json!({"id": "9001", "text": "Check the pilot list", "labels": [], "done": false}),
+        );
+        sync::run(&core, P, now()).await.unwrap();
+        let delta = delta_to_next(&core, &before).await;
+        assert!(
+            ids(&delta, "records").contains(&"todoist-9001".to_string()),
+            "{delta}"
+        );
+        assert_ne!(
+            delta["taskProvider"]["lastSync"], before["snapshot"]["taskProvider"]["lastSync"],
+            "the provider's state moved"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_menu_bar_seen_mark_comes_in_the_delta() {
+        let (_dir, core) = core();
+        connect(&core);
+        let before = snapshot(&core).await;
+        write(&core, Operation::MenuBarSeen, json!({"automations": true})).await;
+        delta_to_next(&core, &before).await;
+    }
+
     #[tokio::test]
     async fn contract_fixture_changes_since() {
         let (_dir, core) = core();
@@ -1191,6 +1344,12 @@ mod tests {
             if let Some(records) = s.get_mut("records").and_then(Value::as_array_mut) {
                 for r in records.iter_mut().filter(|r| r["kind"] == "commitment") {
                     r["revision"] = json!(format!("rev-{}", r["id"].as_str().unwrap()));
+                }
+                // The menu bar's seen marks start at the moment the test first counts.
+                for r in records.iter_mut().filter(|r| r["kind"] == "menu_bar_seen") {
+                    r["revision"] = json!("rev-seen");
+                    r["updatedAt"] = json!(1_795_000_000);
+                    r["data"]["since"] = json!(1_795_000_000);
                 }
             }
             if s.get("settings").is_some() {

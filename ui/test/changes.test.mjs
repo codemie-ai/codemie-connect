@@ -53,3 +53,13 @@ test('a job written in the same second as older ones comes before them, as the n
   const next = applyChanges(before, { ...fixture.delta, jobs: [job('new', 'blocked')], removedJobs: [], jobsAll: false });
   assert.deepEqual(next.snapshot.jobs.map(j => j.id), ['new', 'older', 'oldest']);
 });
+
+test('the task provider, the menu bar, the reply voice and Ask come whole with every delta', () => {
+  const parts = { taskProvider: { active: 'plugin:todoist', state: 'syncing' }, menuBar: { count: 3 }, replyVoice: { state: 'ready' }, ask: { threads: [{ id: 'ask-1' }], running: null, inMenu: true } };
+  const next = applyChanges(fixture.before, { ...fixture.delta, ...parts });
+  for (const [part, value] of Object.entries(parts)) assert.deepEqual(next.snapshot[part], value, part);
+  // A delta without one keeps what the snapshot had.
+  const { ask: _ask, ...withoutAsk } = fixture.delta;
+  const kept = applyChanges({ ...fixture.before, snapshot: { ...fixture.before.snapshot, ask: parts.ask } }, withoutAsk);
+  assert.deepEqual(kept.snapshot.ask, parts.ask);
+});

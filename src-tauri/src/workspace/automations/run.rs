@@ -3,21 +3,23 @@
 //! notification or a reply draft. Automations never send and never create actions.
 use super::context::{self, Source};
 use super::engine::stored;
-use super::rules::Automation;
+use super::rules::{purpose_of, Automation, Pin, SUMMARY_RUN_NOW};
 use crate::ai::command::RunSpec;
-use crate::ai::profiles::AiProfile;
 use crate::ai::stream::{AiError, ErrorClass};
 use crate::workspace::{
-    ai::{resolve_route, wire_name},
+    ai::{resolve, wire_name, Resolved, RouteKey},
     ai_jobs::{
         ai_draft_record, provenance, still_readable, stored_job, DraftOf, MAIL_READ_DEADLINE,
     },
+    meetings::{model::MeAlias, templates as meeting_templates},
     models::*,
     new_job,
-    prompts::{self, FullTexts, Reading},
+    prompts::{self, AutomationTask, FullTexts, Reading},
     repository::{record_selected, source_available, source_permitted, Repository},
-    Core,
+    task_provider::{handled, keys},
+    tasks, Core,
 };
+use chrono::{Datelike, NaiveDate};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -42,6 +44,13 @@ struct RunLog {
     /// What Claude reported the run cost, even when its answer could not be used.
     cost_usd: Option<f64>,
     sources: Vec<Value>,
+    /// The row's own profile, set once the run fell back to a second one (DESIGN §3
+    /// "Automations").
+    fallback_from: Option<String>,
+    /// The fixed class code of why that profile didn't run this time (its own readiness, or
+    /// why its attempt failed); `None` when there was no fallback. Never a message: the Run
+    /// log maps the code to its own copy.
+    fallback_reason: Option<ErrorClass>,
 }
 
 impl RunLog {
@@ -58,6 +67,8 @@ impl RunLog {
             model: None,
             cost_usd: None,
             sources: Vec::new(),
+            fallback_from: None,
+            fallback_reason: None,
         }
     }
 
@@ -76,6 +87,8 @@ impl RunLog {
             "sources": self.sources,
             "delivered": [],
             "connectionId": self.connection_id,
+            "fallbackFrom": self.fallback_from,
+            "fallbackReason": self.fallback_reason.map(wire_name),
         });
         if let Some(fields) = fields.as_object() {
             for (key, value) in fields {
@@ -95,15 +108,23 @@ impl RunLog {
     }
 }
 
-/// The automation's own profile and model when it pins them, else the `automation` route.
-fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
+/// The automation's own profile and model when it pins them, else its row's (DESIGN §3
+/// "Automations"). The row's own fallback applies either way: the pin has none of its own.
+fn pinned(mut ai: AiSettings, pin: &Pin, row: Purpose) -> AiSettings {
     let profile = pin.profile.clone().filter(|p| !p.is_empty());
     let model = pin.model.clone().filter(|m| !m.is_empty());
     if profile.is_some() {
-        ai.routes
-            .insert(Purpose::Automation, Route { profile, model });
+        let fallback = ai.routes.get(&row).and_then(|r| r.fallback.clone());
+        ai.routes.insert(
+            row,
+            Route {
+                profile,
+                model,
+                fallback,
+            },
+        );
     } else if model.is_some() {
-        ai.routes.entry(Purpose::Automation).or_default().model = model;
+        ai.routes.entry(row).or_default().model = model;
     }
     ai
 }
@@ -113,6 +134,7 @@ fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
 fn reads_microsoft(a: &Automation, trigger: &Value) -> bool {
     a.read.calendar_today
         || a.read.needs_reply
+        || a.read.recent_messages
         || a.read.mail_from_sender_days > 0
         || trigger["sourceId"].is_string()
 }
@@ -153,6 +175,153 @@ fn trigger_source(
         .filter(|s| source_available(s) && record_selected(s, w) && source_permitted(s, c))
 }
 
+/// The body of a task an automation makes from `message` (DESIGN step 5 §2 "Making"). The
+/// owner, due date and notes come from Connect's record of the message, never from Claude, except
+/// Claude's date (which wins) and the name it gives for a promise in the user's own message.
+/// `log` becomes the task's first history line.
+pub(crate) fn task_body(
+    t: &AutomationTask,
+    message: &Record,
+    me: &MeAlias,
+    automation_name: &str,
+    run_day: NaiveDate,
+    zone: &str,
+) -> Value {
+    let zone: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
+    let line = |v: &Value| {
+        v.as_str()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|s| !s.is_empty())
+    };
+    let name = line(&message.data["from"]);
+    let address = line(&message.data["fromAddress"]);
+    let mine = message.data["isMine"] == true
+        || me
+            .address
+            .as_deref()
+            .zip(address.as_deref())
+            .is_some_and(|(me, from)| me.eq_ignore_ascii_case(from));
+    // The message's own day, where the user is.
+    let sent = message.data["at"]
+        .as_i64()
+        .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
+        .map(|at| at.with_timezone(&zone).date_naive());
+    let sender = (!mine).then(|| address.clone().or(name.clone())).flatten();
+    let (owner, owner_name) = match (t.kind.as_str(), sender, &t.owner) {
+        ("waiting", Some(sender), _) => (sender, name.clone()),
+        ("waiting", None, Some(named)) => (named.clone(), Some(named.clone())),
+        _ => ("You".to_string(), None),
+    };
+    let due = t.due.clone().or_else(|| {
+        match t.kind.as_str() {
+            "reply" | "budget" => Some(run_day),
+            "waiting" => sent.map(|day| working_days_after(day, 2)),
+            _ => None,
+        }
+        .map(|day| day.format("%Y-%m-%d").to_string())
+    });
+    let notes = [
+        name.or(address).map(|who| format!("From {who}")),
+        line(&message.data["title"]),
+        sent.map(|day| day.format("%-d %b %Y").to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let mut body = json!({"text": t.text, "kind": t.kind, "status": "todo",
+        "sourceId": message.id, "sourceRevision": message.revision, "owner": owner,
+        "notes": notes, "log": format!("Made by {automation_name}")});
+    if let Some(owner_name) = owner_name {
+        body["ownerName"] = owner_name.into();
+    }
+    if let Some(due) = due {
+        body["due"] = due.into();
+    }
+    body
+}
+
+/// Where "Messages since the last run" begins (DESIGN step 5 §3): when the last `ok` run started,
+/// or a day back on the first run; never more than three days back.
+fn recent_since(last_ok: Option<i64>, now: i64) -> i64 {
+    last_ok
+        .unwrap_or(now - 86_400)
+        .max(now - context::RECENT_FLOOR_SECS)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the next run commit fail once, after the run made its tasks, which leaves the same
+    /// state as a crash between the two. Thread-local is enough: `#[tokio::test]` runs the job
+    /// on the test's own thread.
+    static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The day `n` working days (Mon–Fri) after `day`.
+pub(crate) fn working_days_after(day: NaiveDate, n: u32) -> NaiveDate {
+    let (mut day, mut left) = (day, n);
+    while left > 0 {
+        let Some(next) = day.succ_opt() else { break };
+        day = next;
+        if day.weekday().number_from_monday() <= 5 {
+            left -= 1;
+        }
+    }
+    day
+}
+
+/// What the create-tasks delivery did, for the run record.
+#[derive(Default)]
+struct TasksMade {
+    made: Vec<Value>,
+    existing: usize,
+    dropped: usize,
+    handled: usize,
+}
+
+/// Flags each checked `handled` entry's task as looking handled (never completes it); a task the
+/// user kept open is flagged again only after a newer message. Callers hold the meeting-folder
+/// lock. Returns how many tasks it flagged.
+fn flag_handled(r: &mut Repository, entries: &[prompts::HandledEntry]) -> Result<usize> {
+    let mut flagged = 0;
+    for h in entries {
+        let task = match r.record(tasks::KIND, &h.task_id, None, Some(PERSONAL)) {
+            Ok(task) => task,
+            Err(e) if e.code == "not_found" => continue,
+            Err(e) => return Err(e),
+        };
+        if handled::flag_by_automation(r, PERSONAL, &task, &h.evidence, now())? {
+            flagged += 1;
+        }
+    }
+    Ok(flagged)
+}
+
+/// Whether the run may still store what it made: its claim holds, its access did not change and
+/// the account it read is still the one signed in.
+fn still_current(
+    r: &Repository,
+    job: &Job,
+    w: &Workspace,
+    account: Option<&Connection>,
+) -> Result<()> {
+    r.check_claim(&job.id, job.attempts)?;
+    r.check_policy(
+        job.workspace_id.as_deref(),
+        job.connection_id.as_deref(),
+        &job.policy,
+    )?;
+    if let Some(c) = account {
+        if !signed_in(r, w).is_ok_and(|current| current.id == c.id) {
+            return Err(WorkspaceError::new(
+                "cancelled",
+                "The Microsoft account changed while the automation ran.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Core {
     /// Executes a claimed `automation_run` job. Every run that is not stopped leaves a run
     /// record: `ok` with its output and deliveries, `skipped` with the reason, or `failed`
@@ -170,13 +339,106 @@ impl Core {
             })?
         };
         let mut log = RunLog::new(job, &a);
-        match self.attempt(job, &a, &mut log).await {
+        let result = if a.is_summary() {
+            self.run_summary(job, &a, &mut log)
+        } else {
+            self.attempt(job, &a, &mut log).await
+        };
+        match result {
             Err(e) if e.code != "cancelled" => {
                 self.record_failure(&log, &e);
                 Err(e)
             }
             result => result,
         }
+    }
+
+    /// A Formal-summary-style automation's run (DESIGN step 5 §6): no read set, no Claude.
+    /// Queues the meeting's `meeting_notes` job for the automation's template under the fixed
+    /// key `meeting_notes:auto:<meetingId>:<templateId>`, finding tasks only when the meeting
+    /// has no document yet (then the summary becomes its first document). Skipped when the
+    /// meeting is no longer available, its template is gone, or it already has a document of
+    /// that template.
+    fn run_summary(&self, job: &Job, a: &Automation, log: &mut RunLog) -> Result<String> {
+        if log.trigger["kind"] == "manual" {
+            return self.commit_skipped(job, log, SUMMARY_RUN_NOW);
+        }
+        if !a.enabled {
+            return self.commit_skipped(job, log, "The automation was turned off before it ran.");
+        }
+        let meeting_id = log.trigger["sourceId"].as_str().unwrap_or("").to_string();
+        let Some(template_id) = a.deliver.meeting_summary.clone() else {
+            return self.commit_skipped(job, log, "Choose the template to make.");
+        };
+        let mut r = self.repo()?;
+        r.check_claim(&job.id, job.attempts)?;
+        let w = r.workspace(PERSONAL)?;
+        let Ok(c) = signed_in(&r, &w) else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "Sign in to Microsoft 365 in Settings. This automation reads a meeting’s transcript.",
+            );
+        };
+        log.connection_id = Some(c.id.clone());
+        let meeting = r
+            .record("meeting", &meeting_id, Some(&c.id), None)
+            .ok()
+            .filter(|rec| {
+                source_available(rec) && record_selected(rec, &w) && source_permitted(rec, &c)
+            });
+        let Some(meeting) = meeting else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "The meeting that started this run is no longer available.",
+            );
+        };
+        let title = meeting.data["title"].as_str().unwrap_or("").to_string();
+        let all = meeting_templates::all(&r.local_records(PERSONAL, meeting_templates::KIND)?);
+        let Some(template) = meeting_templates::find(&all, &template_id).cloned() else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "This note template no longer exists. Choose another one.",
+            );
+        };
+        let docs = meeting.data["docs"].as_array().cloned().unwrap_or_default();
+        if docs
+            .iter()
+            .any(|d| d["id"].as_str() == Some(template.id.as_str()))
+        {
+            let reason = format!("{title} already has a {}.", template.name);
+            drop(r);
+            return self.commit_skipped(job, log, &reason);
+        }
+        let find_tasks = template.extract_tasks && docs.is_empty();
+        let policy = r.policy(Some(PERSONAL), Some(&c.id))?;
+        r.enqueue(&new_job(
+            "meeting_notes",
+            format!("meeting_notes:auto:{meeting_id}:{}", template.id),
+            Some(PERSONAL.into()),
+            Some(c.id.clone()),
+            now(),
+            policy,
+            json!({"meetingId": meeting_id, "title": title, "templateId": template.id,
+                "notesKey": format!("{meeting_id}:{}", template.id), "wishes": a.prompt,
+                "findTasks": find_tasks, "auto": true, "step": null, "steps": []}),
+        ))?;
+        let record = log.record(
+            "ok",
+            json!({
+                "output": {"title": format!("{} queued for {title}", template.name)},
+                "delivered": ["meeting_summary"],
+                "meetingId": meeting_id,
+            }),
+        );
+        let current = stored_job(&r, job)?;
+        r.commit_automation_run(&current, &record, None, None, DONE)?;
+        Ok(DONE.into())
     }
 
     async fn attempt(&self, job: &Job, a: &Automation, log: &mut RunLog) -> Result<String> {
@@ -213,10 +475,10 @@ impl Core {
             };
             return self.commit_skipped(job, log, reason);
         }
-        let (profile, model) = self.automation_route(a).await?;
-        log.profile = Some(profile.id.clone());
-        log.model = model.clone();
-        let started = self.start_run(job, &profile, &model)?;
+        let resolved = self.automation_route(a).await?;
+        log.profile = Some(resolved.profile.id.clone());
+        log.model = resolved.model.clone();
+        let started = self.start_run(job, &resolved.profile, &resolved.model)?;
 
         let message = source.as_ref().filter(|s| s.kind == "message");
         let wants_draft = a.deliver.draft_reply && a.replies_to_message() && message.is_some();
@@ -228,7 +490,10 @@ impl Core {
             }
             _ => FullTexts::new(),
         };
-        let zone = self.repo()?.settings()?.time_zone;
+        let (zone, last_ok) = {
+            let r = self.repo()?;
+            (r.settings()?.time_zone, r.last_ok_started(&a.id, &log.id)?)
+        };
         let reading = Reading {
             now: now(),
             zone: &zone,
@@ -242,48 +507,82 @@ impl Core {
             source: source.as_ref(),
             draft: wants_draft,
             me: &me,
+            since: Some(recent_since(last_ok, reading.now)),
+            // A message synced after the last run started is read though it arrived earlier.
+            seen_since: last_ok.map(|_| recent_since(last_ok, reading.now)),
         };
-        let built = context::build(&*self.repo()?, &run, &reading)?;
+        let mut built = context::build(&*self.repo()?, &run, &reading)?;
+        // A reply draft carries the user's voice and facts like a manual one (reply voice design
+        // §4, ruling 5); nothing else an automation writes does. Its examples never repeat a
+        // record the run already shows.
+        let voice = match (&account, message) {
+            (Some(c), Some(s)) if wants_draft => {
+                let shown: Vec<String> =
+                    built.sources.iter().map(|s| s.record_id.clone()).collect();
+                self.voice_for_draft_beside(&w, c, s, &shown, &started.cancel)
+                    .await
+            }
+            _ => Default::default(),
+        };
+        context::add_voice(
+            &mut built.input,
+            voice.voice.as_deref(),
+            voice.facts.as_deref(),
+        );
         log.sources = built.sources.iter().map(Source::to_json).collect();
-        let handles = built.handles();
+        let mut system = prompts::AUTOMATION_SYSTEM.to_string();
+        if a.deliver.create_tasks {
+            system.push_str(prompts::AUTOMATION_TASK_RULES);
+        }
         let spec = RunSpec {
             purpose: wire_name(Purpose::Automation),
-            profile_id: profile.id.clone(),
-            model: model.clone(),
-            system: prompts::AUTOMATION_SYSTEM.into(),
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
+            system,
             input: built.input.clone(),
-            schema: Some(prompts::schema(prompts::AUTOMATION_SCHEMA)),
+            schema: Some(prompts::automation_schema(a.deliver.create_tasks)),
             timeout: AUTOMATION_TIMEOUT,
             cap_usd: a.cap_usd,
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let (reported, answer) = self
-            .run_claude_reported(&started, spec, &profile, &log.id, |answer| {
-                prompts::parse_automation(answer, &handles, wants_draft)
+        let (reported, answer, used, fallback_reason) = self
+            .run_claude_reported(&started, spec, &resolved, &log.id, |answer| {
+                prompts::parse_automation(
+                    answer,
+                    &built.sources,
+                    wants_draft,
+                    a.deliver.create_tasks,
+                )
             })
             .await;
+        log.fallback_from = resolved.fallback_from(&used);
+        log.fallback_reason = fallback_reason;
+        let ran_on = resolved.profile_of(&used).clone();
+        log.profile = Some(ran_on.id.clone());
         if let Some(o) = &reported {
             log.cost_usd = o.cost_usd;
-            log.model = o.model.clone().or(model.clone());
+            log.model = o.model.clone().or(used.model.clone());
         }
         let output = answer?;
         let outcome = reported.ok_or_else(|| AiError::new(ErrorClass::Failed))?;
-        log.model = log.model.take().or_else(|| profile.default_model.clone());
+        log.model = log.model.take().or_else(|| ran_on.default_model.clone());
 
+        // Tasks are made before the run is stored; a retried job finds them by their keys.
+        let mut made = if a.deliver.create_tasks {
+            let at = reading.now;
+            Some(self.make_tasks(job, a, &w, account.as_ref(), &output, &me, &zone, at)?)
+        } else {
+            None
+        };
+
+        // Same order as every task writer: the meeting-folder lock, then the repository.
+        let _folders = made.is_some().then(|| self.meeting_lock());
         let mut r = self.repo()?;
-        r.check_policy(
-            job.workspace_id.as_deref(),
-            job.connection_id.as_deref(),
-            &job.policy,
-        )?;
-        if let Some(c) = &account {
-            if !signed_in(&r, &w).is_ok_and(|current| current.id == c.id) {
-                return Err(WorkspaceError::new(
-                    "cancelled",
-                    "The Microsoft account changed while the automation ran.",
-                ));
-            }
+        still_current(&r, job, &w, account.as_ref())?;
+        if let Some(m) = &mut made {
+            // Only once the run may still be stored: a run cancelled here leaves no flag.
+            m.handled = flag_handled(&mut r, &output.handled)?;
         }
         let draft = match (&output.draft, &account, message, &built.conversation) {
             (Some(text), Some(account), Some(source), Some(conversation)) => {
@@ -295,7 +594,13 @@ impl Core {
                 };
                 // A conversation that changed (or went away) while Claude worked gets no draft.
                 if still_readable(&r, &of)? {
-                    let mut made = provenance(&profile, &outcome, model, conversation);
+                    let mut made = provenance(
+                        &ran_on,
+                        &outcome,
+                        used.model,
+                        conversation,
+                        voice.provenance.as_ref(),
+                    );
                     made["automationId"] = log.automation_id.clone().into();
                     made["runId"] = log.id.clone().into();
                     Some(ai_draft_record(&of, text, &[], Value::Null, made))
@@ -324,6 +629,7 @@ impl Core {
             // Only queued here: what became of it is noted on the run as `notification`.
             (notification.is_some(), "notification_queued"),
             (draft.is_some(), "draft"),
+            (made.is_some(), "tasks"),
         ]
         .into_iter()
         .filter_map(|(done, what)| done.then_some(what))
@@ -341,6 +647,18 @@ impl Core {
         if let Some(d) = &draft {
             record.data["draftId"] = d.id.clone().into();
         }
+        if let Some(m) = &made {
+            record.data["tasks"] =
+                json!({"made": m.made, "existing": m.existing, "dropped": m.dropped});
+            record.data["handled"] = m.handled.into();
+        }
+        #[cfg(test)]
+        if FAIL_COMMIT.with(|f| f.replace(false)) {
+            return Err(WorkspaceError::new(
+                "storage",
+                "The run could not be stored.",
+            ));
+        }
         let current = stored_job(&r, job)?;
         r.commit_automation_run(
             &current,
@@ -352,15 +670,74 @@ impl Core {
         Ok(DONE.into())
     }
 
-    /// The profile and model for this automation. A storage problem reading the settings keeps
-    /// its own code; only a Claude problem is reported as one.
-    async fn automation_route(&self, a: &Automation) -> Result<(AiProfile, Option<String>)> {
+    /// The create-tasks delivery (DESIGN step 5 §2 "Making"): each checked task is made in the
+    /// active provider under its message-and-kind key (the `handled` flags wait for the commit,
+    /// see [`flag_handled`]). No repository guard is held across `create_by_key`, which
+    /// takes the meeting-folder lock and the repository itself. A message gone while Claude
+    /// worked, or a task the board refuses, is dropped; the run goes on.
+    #[allow(clippy::too_many_arguments)]
+    fn make_tasks(
+        &self,
+        job: &Job,
+        a: &Automation,
+        w: &Workspace,
+        account: Option<&Connection>,
+        output: &prompts::AutomationOutput,
+        me: &MeAlias,
+        zone: &str,
+        at: i64,
+    ) -> Result<TasksMade> {
+        still_current(&*self.repo()?, job, w, account)?;
+        let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
+        let run_day = chrono::DateTime::from_timestamp(at, 0)
+            .unwrap_or_default()
+            .with_timezone(&tz)
+            .date_naive();
+        let mut out = TasksMade {
+            dropped: output.dropped,
+            ..TasksMade::default()
+        };
+        for t in &output.tasks {
+            let message = match account {
+                Some(c) => self
+                    .repo()?
+                    .record("message", &t.source_id, Some(&c.id), None)
+                    .ok()
+                    .filter(|m| {
+                        source_available(m) && record_selected(m, w) && source_permitted(m, c)
+                    }),
+                None => None,
+            };
+            let Some(message) = message else {
+                out.dropped += 1;
+                continue;
+            };
+            let body = task_body(t, &message, me, &a.name, run_day, zone);
+            let key = keys::task_key(&format!("message:{}", message.id), &t.kind);
+            match tasks::create_by_key(self, PERSONAL, &body, &key) {
+                Ok((id, true)) => out
+                    .made
+                    .push(json!({"id": id, "text": t.text, "kind": t.kind})),
+                Ok((_, false)) => out.existing += 1,
+                Err(e) if e.code == "validation" => out.dropped += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// The profile, model and fallback for this automation's row (DESIGN §3 "Automations"):
+    /// its own pin wins over the row, and the row's own fallback applies either way. A storage
+    /// problem reading the settings keeps its own code; only a Claude problem is reported as
+    /// one.
+    async fn automation_route(&self, a: &Automation) -> Result<Resolved> {
         let settings = self.repo()?.settings()?;
-        let ai = pinned(settings.ai, &a.ai);
-        Ok(resolve_route(
+        let purpose = purpose_of(a);
+        let ai = pinned(settings.ai, &a.ai, purpose);
+        Ok(resolve(
             &ai,
             &self.profiles.profiles().await,
-            Purpose::Automation,
+            &RouteKey::Purpose(purpose),
         )?)
     }
 
@@ -422,16 +799,92 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
+    use super::{Pin, SUMMARY_RUN_NOW};
     use crate::ai::command::RunSpec;
     use crate::ai::fake::{FakeRunner, Gate};
+    use crate::ai::profiles::ProfileState;
     use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
     use crate::workspace::ai::tests::{mutation, ready};
     use crate::workspace::ai_jobs::FakeGraph;
+    use crate::workspace::meetings::model::MeAlias;
+    use crate::workspace::prompts::AutomationTask;
     use crate::workspace::prompts::{self, AUTOMATION_SCHEMA, AUTOMATION_SYSTEM};
-    use crate::workspace::{models::*, test_core, test_core_with_graph, Core};
+    use crate::workspace::task_provider::{fake::FakeProvider, keys, sync};
+    use crate::workspace::{models::*, tasks, test_core, test_core_with_graph, Core};
+    use chrono::NaiveDate;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// Settings saved before step 7 resolve to the same profile and model as they did then,
+    /// through `choose`/`resolve` and the automation's own pin (`pinned`); an automation with
+    /// no `template` keeps the Automations row (DESIGN ruling 12).
+    #[test]
+    fn todays_settings_and_pins_run_where_they_did_before_step_7() {
+        use crate::workspace::ai::{resolve, RouteKey};
+        let s = |v: Value| -> AiSettings { serde_json::from_value(v).unwrap() };
+        let pin = |v: Value| -> Pin { serde_json::from_value(v).unwrap() };
+        let today = s(json!({"defaultProfile": "claude", "routes": {
+            "summary": {"profile": "codemie:prod", "model": "haiku"},
+            "chat_draft": {"model": "haiku"},
+            "meeting": {"profile": "codemie:prod"},
+            "automation": {"profile": "codemie:prod", "model": "sonnet"},
+            "plugin": {"profile": "codemie:prod", "model": "haiku"}}}));
+        let at = |ai: &AiSettings, p: Purpose| {
+            let r = resolve(ai, &ready(), &RouteKey::Purpose(p)).unwrap();
+            (r.profile.id, r.model)
+        };
+        let want = |p: &str, m: Option<&str>| (p.to_string(), m.map(str::to_string));
+        assert_eq!(at(&today, Purpose::MailDraft), want("claude", None));
+        assert_eq!(
+            at(&today, Purpose::Summary),
+            want("codemie:prod", Some("haiku"))
+        );
+        assert_eq!(
+            at(&today, Purpose::ChatDraft),
+            want("claude", Some("haiku"))
+        );
+        assert_eq!(at(&today, Purpose::Meeting), want("codemie:prod", None));
+        assert_eq!(
+            at(&today, Purpose::Plugin),
+            want("codemie:prod", Some("haiku"))
+        );
+        // No pin: the automation's own row (no template → Automations).
+        let ai = super::pinned(today.clone(), &Pin::default(), Purpose::Automation);
+        assert_eq!(
+            at(&ai, Purpose::Automation),
+            want("codemie:prod", Some("sonnet"))
+        );
+        // A profile pin replaces the row's profile and model.
+        let ai = super::pinned(
+            today.clone(),
+            &pin(json!({"profile": "claude"})),
+            Purpose::Automation,
+        );
+        assert_eq!(at(&ai, Purpose::Automation), want("claude", None));
+        // A model-only pin keeps the row's profile.
+        let ai = super::pinned(
+            today.clone(),
+            &pin(json!({"model": "haiku"})),
+            Purpose::Automation,
+        );
+        assert_eq!(
+            at(&ai, Purpose::Automation),
+            want("codemie:prod", Some("haiku"))
+        );
+        // A model-only pin with no automation route runs on the default profile.
+        let bare = s(json!({"defaultProfile": "claude"}));
+        let ai = super::pinned(bare, &pin(json!({"model": "sonnet"})), Purpose::Automation);
+        assert_eq!(at(&ai, Purpose::Automation), want("claude", Some("sonnet")));
+        // Nothing chosen still asks the user.
+        let none = super::pinned(AiSettings::default(), &Pin::default(), Purpose::Automation);
+        assert_eq!(
+            resolve(&none, &ready(), &RouteKey::Purpose(Purpose::Automation))
+                .unwrap_err()
+                .class,
+            ErrorClass::NeedsChoice
+        );
+    }
 
     const ACCT: &str = "acct";
     const BASE: i64 = 1_795_000_000;
@@ -740,7 +1193,7 @@ mod tests {
             ),
         );
         let mut automation = morning_brief(json!({"needsReply": true}));
-        automation["ai"] = json!({"profile": "codemie:prod", "model": "claude-haiku-4-5"});
+        automation["ai"] = json!({"profile": "codemie:prod", "model": "haiku"});
         automation["capUsd"] = json!(0.5);
         save(&core, automation).await;
         let jid = run_now(&core, "auto-brief").await;
@@ -751,7 +1204,7 @@ mod tests {
 
         let spec = &fake.calls()[0];
         assert_eq!(spec.profile_id, "codemie:prod", "the pinned profile");
-        assert_eq!(spec.model.as_deref(), Some("claude-haiku-4-5"));
+        assert_eq!(spec.model.as_deref(), Some("haiku"));
         assert_eq!(spec.cap_usd, Some(0.5));
 
         let all = runs(&core);
@@ -860,6 +1313,152 @@ mod tests {
         assert!(runs(&core).is_empty());
     }
 
+    fn failure(class: ErrorClass, message: &str) -> std::result::Result<RunOutcome, AiError> {
+        let mut e = AiError::new(class);
+        e.message = message.into();
+        Err(e)
+    }
+
+    /// An automation made from the Inbox triage template runs on the Triage row, not
+    /// Automations; its own pin still wins over the row (DESIGN §3 "Automations").
+    #[tokio::test]
+    async fn triage_runs_on_its_row_and_the_pin_still_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.routes.insert(
+                Purpose::Triage,
+                Route {
+                    profile: Some("codemie:prod".into()),
+                    ..Route::default()
+                },
+            );
+            r.settings_update(&s).unwrap();
+        }
+        let mut triage = morning_brief(json!({"needsReply": true}));
+        triage["id"] = json!("auto-triage");
+        triage["name"] = json!("Inbox triage");
+        triage["template"] = json!("inbox-triage");
+        save(&core, triage.clone()).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(
+            fake.calls()[0].profile_id,
+            "codemie:prod",
+            "the triage row, no pin"
+        );
+
+        // The automation's own pin still wins over its row.
+        triage["ai"] = json!({"profile": "claude"});
+        save(&core, triage).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(
+            fake.calls()[1].profile_id,
+            "claude",
+            "the pin wins over the row"
+        );
+    }
+
+    /// A run whose chosen profile fails for a reason that says it can't run falls back once,
+    /// and the run record says so (DESIGN §3 "Automations").
+    #[tokio::test]
+    async fn a_fallback_run_says_so_in_the_run_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::NeedsLogin, "Claude Code is not signed in."),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_fallback = Some("codemie:prod".into());
+            r.settings_update(&s).unwrap();
+        }
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Ann Lee",
+                "ann@example.test",
+                "Can you send the Q3 numbers?",
+            ),
+        );
+        save(&core, morning_brief(json!({"needsReply": true}))).await;
+        let jid = run_now(&core, "auto-brief").await;
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "one extra attempt, never a loop");
+        assert_eq!(calls[0].profile_id, "claude");
+        assert_eq!(calls[1].profile_id, "codemie:prod");
+
+        let all = runs(&core);
+        assert_eq!(all.len(), 1);
+        let run = &all[0];
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["profile"], "codemie:prod", "the fallback that ran");
+        assert_eq!(run.data["fallbackFrom"], "claude");
+        assert_eq!(
+            run.data["fallbackReason"], "needs_login",
+            "the class the first attempt failed with, not a message"
+        );
+    }
+
+    /// The chosen profile isn't ready before the run even starts: the fallback runs once, and
+    /// the run record says why in the same fixed-code shape as a post-run fallback (DESIGN §3
+    /// "Automations").
+    #[tokio::test]
+    async fn a_pre_run_fallback_says_so_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(brief_answer())]));
+        let mut profiles = ready();
+        profiles[0].state = ProfileState::NeedsLogin; // "claude" is not signed in
+        let core = test_core(dir.path(), fake.clone(), profiles);
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_fallback = Some("codemie:prod".into());
+            r.settings_update(&s).unwrap();
+        }
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Ann Lee",
+                "ann@example.test",
+                "Can you send the Q3 numbers?",
+            ),
+        );
+        save(&core, morning_brief(json!({"needsReply": true}))).await;
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "no attempt on the unready profile at all");
+        assert_eq!(calls[0].profile_id, "codemie:prod");
+
+        let run = &runs(&core)[0];
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["profile"], "codemie:prod");
+        assert_eq!(run.data["fallbackFrom"], "claude");
+        assert_eq!(run.data["fallbackReason"], "needs_login");
+    }
+
     fn reply_automation() -> Value {
         json!({"id": "auto-reply", "name": "Draft replies to Ann", "enabled": true,
             "trigger": {"kind": "event", "event": "mail_from", "senders": ["ann@example.test"]},
@@ -883,7 +1482,12 @@ mod tests {
 
     /// Ann's mail arrives after the baseline sync and starts the reply automation.
     async fn ann_writes(core: &Arc<Core>, graph: &FakeGraph) {
-        save(core, reply_automation()).await;
+        ann_writes_to(core, graph, reply_automation()).await;
+    }
+
+    /// Ann's mail arrives after the baseline sync and starts `automation`.
+    async fn ann_writes_to(core: &Arc<Core>, graph: &FakeGraph, automation: Value) {
+        save(core, automation).await;
         let before = jobs_of(core, "automation_run").len();
         core.automations_after_sync().unwrap();
         put(
@@ -1550,13 +2154,1281 @@ mod tests {
             .is_err());
     }
 
+    const TODOIST: &str = "plugin:todoist";
+
+    fn day(text: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
+    }
+
+    fn at_utc(text: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .timestamp()
+    }
+
+    fn me() -> MeAlias {
+        MeAlias {
+            name: "Taylor Reed".into(),
+            aliases: Vec::new(),
+            address: Some("taylor@example.test".into()),
+        }
+    }
+
+    fn asked(kind: &str, due: Option<&str>, owner: Option<&str>) -> AutomationTask {
+        AutomationTask {
+            text: "Reply to Olga about SOW section 4".into(),
+            kind: kind.into(),
+            source_id: "m1".into(),
+            due: due.map(String::from),
+            owner: owner.map(String::from),
+        }
+    }
+
+    #[test]
+    fn task_body_follows_the_kind() {
+        let tue = day("2026-11-24");
+        let mut olga = mail(
+            "m1",
+            at_utc("2026-11-24T07:30:00Z"),
+            "Olga Petrova",
+            "olga@example.test",
+            "Can you confirm SOW section 4?",
+        );
+        olga.data["title"] = "SOW section 4".into();
+        let body = |t: &AutomationTask, m: &Record| {
+            super::task_body(t, m, &me(), "Inbox triage", tue, "UTC")
+        };
+
+        let reply = body(&asked("reply", None, None), &olga);
+        assert_eq!(reply["text"], "Reply to Olga about SOW section 4");
+        assert_eq!(reply["kind"], "reply");
+        assert_eq!(reply["status"], "todo");
+        assert_eq!(reply["owner"], "You");
+        assert!(reply["ownerName"].is_null());
+        assert_eq!(reply["due"], "2026-11-24", "the run's day");
+        assert_eq!(reply["sourceId"], "m1");
+        assert_eq!(reply["sourceRevision"], "v1");
+        assert_eq!(
+            reply["notes"],
+            "From Olga Petrova · SOW section 4 · 24 Nov 2026"
+        );
+        // The first history line, written by `task_save` when the task is made.
+        assert_eq!(reply["log"], "Made by Inbox triage");
+        let budget = body(&asked("budget", None, None), &olga);
+        assert_eq!(
+            (budget["owner"].as_str(), budget["due"].as_str()),
+            (Some("You"), Some("2026-11-24"))
+        );
+        let task = body(&asked("task", None, None), &olga);
+        assert_eq!(task["owner"], "You");
+        assert!(
+            task["due"].is_null(),
+            "the user's own task is due only when a date was said"
+        );
+        // Claude's date wins.
+        let dated = body(&asked("reply", Some("2026-11-27"), None), &olga);
+        assert_eq!(dated["due"], "2026-11-27");
+
+        // Waiting on Marek's mail of Friday: his task, due two working days later.
+        let marek = mail(
+            "m2",
+            at_utc("2026-11-20T09:00:00Z"),
+            "Marek Novak",
+            "marek@example.test",
+            "I'll send the pilot list next week.",
+        );
+        let waiting = body(&asked("waiting", None, Some("Somebody Else")), &marek);
+        assert_eq!(waiting["owner"], "marek@example.test");
+        assert_eq!(waiting["ownerName"], "Marek Novak");
+        assert_eq!(waiting["due"], "2026-11-24");
+        // On the user's own mail, the person Claude names, as a name only.
+        let mut mine = mail(
+            "m3",
+            at_utc("2026-11-20T09:00:00Z"),
+            "Taylor Reed",
+            "taylor@example.test",
+            "Ann, please send the deck.",
+        );
+        mine.data["isMine"] = true.into();
+        let theirs = body(&asked("waiting", None, Some("Ann")), &mine);
+        assert_eq!(theirs["owner"], "Ann");
+        assert_eq!(theirs["ownerName"], "Ann");
+        let nobody = body(&asked("waiting", None, None), &mine);
+        assert_eq!(
+            nobody["owner"], "You",
+            "nobody named goes as the user's own"
+        );
+        // The message's own day is read in the user's zone: Thursday 23:30 UTC is Friday in Kyiv.
+        let late = mail(
+            "m4",
+            at_utc("2026-11-19T23:30:00Z"),
+            "Marek Novak",
+            "marek@example.test",
+            "I'll send it.",
+        );
+        let kyiv = super::task_body(
+            &asked("waiting", None, None),
+            &late,
+            &me(),
+            "Inbox triage",
+            tue,
+            "Europe/Kyiv",
+        );
+        assert_eq!(kyiv["due"], "2026-11-24");
+        assert_eq!(
+            body(&asked("waiting", None, None), &late)["due"],
+            "2026-11-23"
+        );
+    }
+
+    #[test]
+    fn working_days_skip_the_weekend() {
+        assert_eq!(
+            super::working_days_after(day("2026-11-20"), 2),
+            day("2026-11-24")
+        );
+        assert_eq!(
+            super::working_days_after(day("2026-11-18"), 2),
+            day("2026-11-20")
+        );
+        assert_eq!(
+            super::working_days_after(day("2026-11-21"), 1),
+            day("2026-11-23")
+        );
+        assert_eq!(
+            super::working_days_after(day("2026-11-22"), 2),
+            day("2026-11-24")
+        );
+        assert_eq!(
+            super::working_days_after(day("2026-11-20"), 0),
+            day("2026-11-20")
+        );
+    }
+
+    #[test]
+    fn messages_since_the_last_run_reach_back_at_most_three_days() {
+        let now = 1_795_000_000;
+        assert_eq!(
+            super::recent_since(None, now),
+            now - 86_400,
+            "a first run: 24 hours"
+        );
+        assert_eq!(super::recent_since(Some(now - 3600), now), now - 3600);
+        assert_eq!(
+            super::recent_since(Some(now - 10 * 86_400), now),
+            now - 3 * 86_400
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_messages_start_where_the_last_ok_run_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        put(
+            &core,
+            mail(
+                "old",
+                now() - 2 * 86_400,
+                "Ann Lee",
+                "ann@example.test",
+                "two days old",
+            ),
+        );
+        put(
+            &core,
+            mail(
+                "recent",
+                now() - 7200,
+                "Ann Lee",
+                "ann@example.test",
+                "two hours old",
+            ),
+        );
+        save(&core, morning_brief(json!({"recentMessages": true}))).await;
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let first = fake.calls()[0].input["recentMessages"].to_string();
+        assert!(first.contains("two hours old"));
+        assert!(
+            !first.contains("two days old"),
+            "a first run reads 24 hours"
+        );
+        // The next run reads only what came since the first one started.
+        put(
+            &core,
+            mail("new", now(), "Ann Lee", "ann@example.test", "just now"),
+        );
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let second = fake.calls()[1].input["recentMessages"].to_string();
+        assert!(second.contains("just now"));
+        assert!(!second.contains("two hours old"));
+    }
+
+    #[tokio::test]
+    async fn a_message_synced_after_the_last_run_is_read_though_it_arrived_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"recentMessages": true}))).await;
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        // Olga's mail arrived four minutes before that run but was synced only after it.
+        let mut late = mail(
+            "late",
+            now() - 240,
+            "Olga Petrova",
+            "olga@example.test",
+            "I'll send the signed SOW by Thursday",
+        );
+        late.updated_at = now();
+        put(&core, late);
+        // Synced late too, but four days old: past the three-day floor.
+        let mut stale = mail(
+            "stale",
+            now() - 4 * 86_400,
+            "Olga Petrova",
+            "olga@example.test",
+            "an old thread",
+        );
+        stale.updated_at = now();
+        put(&core, stale);
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let second = fake.calls()[1].input["recentMessages"].to_string();
+        assert!(
+            second.contains("signed SOW"),
+            "a late-synced message is read by the next run: {second}"
+        );
+        assert!(!second.contains("an old thread"), "never past three days");
+    }
+
+    fn triage() -> Value {
+        json!({"id": "auto-triage", "name": "Inbox triage", "enabled": true,
+            "trigger": {"kind": "schedule", "days": [1, 2, 3, 4, 5], "time": "08:00"},
+            "read": {"needsReply": true},
+            "prompt": "Make a reply task for each message that needs my answer.",
+            "ai": {}, "deliver": {"today": true, "createTasks": true}})
+    }
+
+    fn triage_answer() -> RunOutcome {
+        answer(
+            json!({"title": "2 replies owed", "summary_markdown": "Olga and Marek wait for answers.",
+                "items": [],
+                "tasks": [{"text": "Reply to Olga about SOW section 4", "kind": "reply", "sourceId": "s1"},
+                          {"text": "Reply to Marek about the pilot", "kind": "reply", "sourceId": "s2"}]}),
+            "claude-haiku-4-5",
+            2000,
+            0.01,
+        )
+    }
+
+    /// Olga's and Marek's mails, each in its own conversation, both waiting for the user.
+    fn two_mails(core: &Core) {
+        let mut olga = mail(
+            "m1",
+            BASE + 60,
+            "Olga Petrova",
+            "olga@example.test",
+            "Can you confirm SOW section 4?",
+        );
+        olga.data["title"] = "SOW section 4".into();
+        put(core, olga);
+        let mut marek = mail(
+            "m2",
+            BASE,
+            "Marek Novak",
+            "marek@example.test",
+            "Can we start the pilot?",
+        );
+        marek.data["conversationId"] = "conv-2".into();
+        marek.data["title"] = "Pilot".into();
+        put(core, marek);
+    }
+
+    fn all_tasks(core: &Core) -> Vec<Record> {
+        let mut all = core.repo().unwrap().records_of_kind(tasks::KIND).unwrap();
+        all.sort_by(|a, b| {
+            a.data["sourceId"]
+                .as_str()
+                .cmp(&b.data["sourceId"].as_str())
+        });
+        all
+    }
+
+    /// Todoist (the fake) plugged in and active.
+    fn with_todoist(core: &Core) -> Arc<FakeProvider> {
+        let fake = Arc::new(FakeProvider::new());
+        core.set_task_providers(fake.clone());
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.tasks.provider = TODOIST.into();
+        r.settings_update(&s).unwrap();
+        fake
+    }
+
+    fn creates(fake: &FakeProvider) -> usize {
+        fake.calls().iter().filter(|(op, _)| op == "create").count()
+    }
+
+    fn reply_key(message: &str) -> String {
+        keys::task_key(&format!("message:{message}"), "reply")
+    }
+
+    fn run_of(core: &Core, id: &str) -> Record {
+        core.repo()
+            .unwrap()
+            .record("automation_run", id, None, Some("personal"))
+            .unwrap()
+    }
+
+    fn today_utc() -> String {
+        chrono::DateTime::from_timestamp(now(), 0)
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    /// `due` is the run's day: the UTC day when the run was queued (`before`) or now, so a run
+    /// that straddles midnight passes either way.
+    fn on_run_day(due: &Value, before: &str) {
+        let due = due.as_str().unwrap();
+        assert!(
+            due == before || due == today_utc(),
+            "{due} is not the run's day"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_triage_run_makes_reply_tasks_in_the_active_provider() {
+        for todoist in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(FakeRunner::new(vec![Ok(triage_answer())]));
+            let core = test_core(dir.path(), fake.clone(), ready());
+            seed(&core);
+            let provider = todoist.then(|| with_todoist(&core));
+            two_mails(&core);
+            save(&core, triage()).await;
+            let before = today_utc();
+            let jid = run_now(&core, "auto-triage").await;
+            let done = run_next(&core).await;
+            assert_eq!(done.state, "succeeded", "{:?}", done.result);
+            let spec = &fake.calls()[0];
+            assert_eq!(spec.input["createTasks"], true);
+            assert!(spec.system.ends_with(prompts::AUTOMATION_TASK_RULES));
+
+            let made = all_tasks(&core);
+            assert_eq!(made.len(), 2);
+            for (t, source) in made.iter().zip(["m1", "m2"]) {
+                let b = &t.data;
+                assert_eq!(b["sourceId"], source);
+                assert_eq!(b["kind"], "reply");
+                assert_eq!(b["status"], "todo");
+                assert_eq!(b["owner"], "You");
+                on_run_day(&b["due"], &before);
+                assert_eq!(b["key"], reply_key(source).as_str());
+                assert_eq!(b["history"][0]["text"], "Made by Inbox triage");
+                if todoist {
+                    assert_eq!(b["provider"], TODOIST);
+                    assert_eq!(b["pending"], true);
+                } else {
+                    assert!(b.get("provider").is_none(), "a Local task is not stamped");
+                }
+            }
+            assert_eq!(
+                made[0].data["notes"],
+                "From Olga Petrova · SOW section 4 · 18 Nov 2026"
+            );
+            let run = run_of(&core, &jid);
+            assert_eq!(run.data["delivered"], json!(["today", "tasks"]));
+            let listed = run.data["tasks"]["made"].as_array().unwrap();
+            assert_eq!(listed.len(), 2);
+            for entry in listed {
+                assert!(made.iter().any(|t| entry["id"] == t.id.as_str()
+                    && entry["text"] == t.data["text"]
+                    && entry["kind"] == "reply"));
+            }
+            assert_eq!(run.data["tasks"]["existing"], 0);
+            assert_eq!(run.data["tasks"]["dropped"], 0);
+            assert_eq!(run.data["handled"], 0);
+            if let Some(provider) = provider {
+                assert_eq!(
+                    jobs_of(&core, "task_sync").len(),
+                    1,
+                    "pushed by the task_sync job"
+                );
+                assert!(
+                    provider.calls().is_empty(),
+                    "nothing reached Todoist during the run"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rerun_and_a_retry_make_no_second_task() {
+        for todoist in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(FakeRunner::new(vec![
+                Ok(triage_answer()),
+                Ok(triage_answer()),
+                Ok(triage_answer()),
+            ]));
+            let core = test_core(dir.path(), fake, ready());
+            seed(&core);
+            let provider = todoist.then(|| with_todoist(&core));
+            two_mails(&core);
+            save(&core, triage()).await;
+            // The run made its tasks, then could not be stored (a crash between the two).
+            super::FAIL_COMMIT.with(|f| f.set(true));
+            let jid = run_now(&core, "auto-triage").await;
+            let failed = run_next(&core).await;
+            assert_eq!(failed.state, "failed");
+            assert_eq!(all_tasks(&core).len(), 2, "made before the commit");
+            // The job runs again: the keys find the tasks.
+            core.request(mutation(&core, Operation::JobRetry, json!({"id": jid})))
+                .await
+                .unwrap();
+            assert_eq!(run_next(&core).await.state, "succeeded");
+            assert_eq!(all_tasks(&core).len(), 2);
+            let run = run_of(&core, &jid);
+            assert_eq!(run.data["status"], "ok");
+            assert_eq!(run.data["tasks"]["made"], json!([]));
+            assert_eq!(run.data["tasks"]["existing"], 2);
+            // The same morning run once more (a catch-up after Run now).
+            let again = run_now(&core, "auto-triage").await;
+            run_next(&core).await;
+            assert_eq!(all_tasks(&core).len(), 2);
+            assert_eq!(run_of(&core, &again).data["tasks"]["existing"], 2);
+            if let Some(provider) = provider {
+                sync::run(&core, TODOIST, now()).await.unwrap();
+                assert_eq!(creates(&provider), 2, "one create per key");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_or_done_keys_are_never_made_again() {
+        // Local: the user deleted one reply task and finished the other.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(triage_answer()),
+            Ok(triage_answer()),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        two_mails(&core);
+        save(&core, triage()).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        let made = all_tasks(&core);
+        core.request(mutation(
+            &core,
+            Operation::TaskDelete,
+            json!({"id": made[0].id}),
+        ))
+        .await
+        .unwrap();
+        core.request(mutation(
+            &core,
+            Operation::TaskSave,
+            json!({"id": made[1].id, "status": "done"}),
+        ))
+        .await
+        .unwrap();
+        let rerun = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        let left = all_tasks(&core);
+        assert_eq!(left.len(), 1, "the deleted one is not made again");
+        assert_eq!(left[0].data["status"], "done");
+        let run = run_of(&core, &rerun);
+        assert_eq!(run.data["tasks"]["made"], json!([]));
+        assert_eq!(run.data["tasks"]["existing"], 2);
+
+        // Todoist: one removed there, one completed there.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(triage_answer())]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        let provider = with_todoist(&core);
+        two_mails(&core);
+        {
+            let mut r = core.repo().unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m1"),
+                Some("9001"),
+                "removed",
+                now(),
+            )
+            .unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m2"),
+                Some("9002"),
+                "done",
+                now(),
+            )
+            .unwrap();
+        }
+        save(&core, triage()).await;
+        let jid = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(all_tasks(&core).is_empty());
+        assert_eq!(run_of(&core, &jid).data["tasks"]["existing"], 2);
+        assert!(jobs_of(&core, "task_sync").is_empty());
+        assert_eq!(creates(&provider), 0);
+    }
+
+    #[tokio::test]
+    async fn a_key_removed_or_done_in_one_provider_is_not_made_in_another() {
+        // Local: the user deleted the reply to Olga, then turns Todoist on.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(triage_answer()),
+            Ok(triage_answer()),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        two_mails(&core);
+        save(&core, triage()).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        let made = all_tasks(&core);
+        assert_eq!(made[0].data["key"], reply_key("m1"));
+        core.request(mutation(
+            &core,
+            Operation::TaskDelete,
+            json!({"id": made[0].id}),
+        ))
+        .await
+        .unwrap();
+        let provider = with_todoist(&core);
+        let rerun = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(
+            !all_tasks(&core)
+                .iter()
+                .any(|t| t.data["key"] == reply_key("m1")),
+            "the task deleted in Local is not made again in Todoist"
+        );
+        assert_eq!(creates(&provider), 0);
+        assert_eq!(run_of(&core, &rerun).data["tasks"]["made"], json!([]));
+
+        // Todoist: one done and one removed there, then back to Local.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(triage_answer())]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        with_todoist(&core);
+        two_mails(&core);
+        {
+            let mut r = core.repo().unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m1"),
+                Some("9001"),
+                "done",
+                now(),
+            )
+            .unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m2"),
+                Some("9002"),
+                "removed",
+                now(),
+            )
+            .unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "local".into();
+            r.settings_update(&s).unwrap();
+        }
+        save(&core, triage()).await;
+        let jid = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(all_tasks(&core).is_empty(), "nothing comes back in Local");
+        assert_eq!(run_of(&core, &jid).data["tasks"]["existing"], 2);
+    }
+
+    #[tokio::test]
+    async fn a_message_gone_while_claude_worked_gets_no_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![Ok(triage_answer())]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        two_mails(&core);
+        save(&core, triage()).await;
+        let jid = run_now(&core, "auto-triage").await;
+        let done = run_with(&core, &gate, || {
+            let mut gone = mail("m2", BASE, "Marek Novak", "marek@example.test", "x");
+            gone.data["deleted"] = true.into();
+            put(&core, gone);
+        })
+        .await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let made = all_tasks(&core);
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].data["sourceId"], "m1");
+        let run = run_of(&core, &jid);
+        assert_eq!(run.data["tasks"]["made"].as_array().unwrap().len(), 1);
+        assert_eq!(run.data["tasks"]["dropped"], 1);
+    }
+
+    #[tokio::test]
+    async fn handled_evidence_flags_and_never_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let handled = || {
+            answer(
+                json!({"title": "Nothing new", "summary_markdown": "Olga has her answer.", "items": [],
+                    "handled": [{"sourceId": "s1", "evidence": "Olga got the signed SOW at 14:10"},
+                                {"sourceId": "s1", "evidence": "Olga said thanks"}]}),
+                "claude-haiku-4-5",
+                900,
+                0.002,
+            )
+        };
+        let fake = Arc::new(FakeRunner::new(vec![Ok(handled()), Ok(handled())]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        put(
+            &core,
+            local(
+                "c1",
+                "commitment",
+                json!({"text": "Reply to Olga", "kind": "reply", "status": "todo", "done": false, "owner": "You"}),
+            ),
+        );
+        let mut automation = triage();
+        automation["read"] = json!({"needsReply": true, "commitmentsNotes": true});
+        save(&core, automation).await;
+        let jid = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        let task = core
+            .repo()
+            .unwrap()
+            .record(tasks::KIND, "c1", None, Some("personal"))
+            .unwrap();
+        assert_eq!(
+            task.data["handled"]["evidence"],
+            "Olga got the signed SOW at 14:10"
+        );
+        assert_eq!(task.data["status"], "todo", "flagged, never closed");
+        assert_eq!(task.data["done"], false);
+        assert_eq!(run_of(&core, &jid).data["handled"], 1, "one entry per task");
+        // The next run with the same evidence flags nothing new.
+        let again = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(run_of(&core, &again).data["handled"], 0);
+    }
+
+    /// Review fix: Keep open survives the daily run. Claude words its evidence anew each morning;
+    /// a kept task is flagged again only after a newer message in its source conversation, and
+    /// one with no source message never is.
+    #[tokio::test]
+    async fn a_kept_task_is_flagged_again_only_after_a_newer_message() {
+        let dir = tempfile::tempdir().unwrap();
+        // Every block cited: parse keeps only the commitments, whatever their handles are.
+        let reworded = |evidence: &str| {
+            let cited: Vec<Value> = (1..=4)
+                .map(|i| json!({"sourceId": format!("s{i}"), "evidence": evidence}))
+                .collect();
+            answer(
+                json!({"title": "Checked", "summary_markdown": "Checked the replies.", "items": [],
+                    "handled": cited}),
+                "claude-haiku-4-5",
+                900,
+                0.002,
+            )
+        };
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(reworded("Olga confirmed the SOW is signed")),
+            Ok(reworded("Olga wrote back again")),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Olga Petrova",
+                "olga@example.test",
+                "Here is the SOW.",
+            ),
+        );
+        let flagged = json!({"evidence": "Olga got the SOW", "at": BASE, "auto": false});
+        for (id, source) in [("c1", json!("m1")), ("c2", Value::Null)] {
+            put(
+                &core,
+                local(
+                    id,
+                    "commitment",
+                    json!({"text": format!("Reply to Olga {id}"), "kind": "reply", "status": "todo",
+                        "done": false, "owner": "You", "sourceId": source, "handled": flagged}),
+                ),
+            );
+            core.request(mutation(
+                &core,
+                Operation::TaskHandled,
+                json!({"id": id, "action": "keep"}),
+            ))
+            .await
+            .unwrap();
+        }
+        let task = |id: &str| {
+            core.repo()
+                .unwrap()
+                .record(tasks::KIND, id, None, Some("personal"))
+                .unwrap()
+                .data
+        };
+        assert!(task("c1")["keptAt"].is_i64(), "Keep open says when");
+        let mut automation = triage();
+        automation["read"] = json!({"recentMessages": true, "commitmentsNotes": true});
+        save(&core, automation).await;
+
+        // Reworded evidence, nothing new in the conversation: no flag.
+        let first = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(fake.calls()[0].input["commitments"]
+            .to_string()
+            .contains("kept=\\\"true\\\""));
+        assert_eq!(run_of(&core, &first).data["handled"], 0);
+        assert!(task("c1")["handled"].is_null());
+
+        // Olga writes again in the same conversation: c1 is flagged; c2 has no source, never.
+        let mut newer = mail(
+            "m2",
+            now() + 1,
+            "Olga Petrova",
+            "olga@example.test",
+            "Signed, thanks.",
+        );
+        newer.data["conversationId"] = "conv-1".into();
+        put(&core, newer);
+        let second = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(run_of(&core, &second).data["handled"], 1);
+        assert_eq!(task("c1")["handled"]["evidence"], "Olga wrote back again");
+        assert_eq!(task("c1")["status"], "todo", "flagged, never closed");
+        assert!(task("c2")["handled"].is_null());
+    }
+
+    /// Review fixes: an account switch while Claude worked makes no task and leaves no flag.
+    #[tokio::test]
+    async fn an_account_switch_mid_run_makes_no_task_and_no_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut both = triage_answer();
+        both.structured.as_mut().unwrap()["handled"] = json!([
+            {"sourceId": "s1", "evidence": "Olga got the SOW"},
+            {"sourceId": "s2", "evidence": "Olga got the SOW"},
+            {"sourceId": "s3", "evidence": "Olga got the SOW"},
+        ]);
+        let (fake, gate) = FakeRunner::gated(vec![Ok(both)]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        two_mails(&core);
+        put(
+            &core,
+            local(
+                "c1",
+                "commitment",
+                json!({"text": "Reply to Olga", "kind": "reply", "status": "todo", "done": false, "owner": "You"}),
+            ),
+        );
+        let mut automation = triage();
+        automation["read"] = json!({"needsReply": true, "commitmentsNotes": true});
+        save(&core, automation).await;
+        let jid = run_now(&core, "auto-triage").await;
+        let done = run_with(&core, &gate, || {
+            let mut r = core.repo().unwrap();
+            let mut other = r.connection(ACCT).unwrap();
+            other.id = "acct-2".into();
+            other.account_key = "acct-2".into();
+            r.save_connection(&other).unwrap();
+            let mut s = r.settings().unwrap();
+            s.active_connection = Some("acct-2".into());
+            r.settings_update(&s).unwrap();
+        })
+        .await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "cancelled");
+        assert_eq!(all_tasks(&core).len(), 1, "only c1: no task was made");
+        assert!(all_tasks(&core)[0].data["handled"].is_null(), "and no flag");
+        assert!(runs(&core).is_empty());
+    }
+
+    // ---------------------------------------------------------- Formal summary (DESIGN step 5 §6)
+
+    fn summary_automation(id: &str, template: &str) -> Value {
+        json!({"id": id, "name": "Formal summary", "enabled": true,
+            "trigger": {"kind": "event", "event": "meeting_ready"},
+            "prompt": "",
+            "deliver": {"meetingSummary": template}})
+    }
+
+    /// A meeting record (kind `meeting`) with a saved transcript, for Formal-summary tests.
+    fn meeting_record(id: &str, end: i64, docs: Value, folder: Option<&std::path::Path>) -> Record {
+        Record {
+            id: id.into(),
+            kind: "meeting".into(),
+            connection_id: Some(ACCT.into()),
+            workspace_id: None,
+            source: "calendar:cal1".into(),
+            revision: "v1".into(),
+            updated_at: 1,
+            data: json!({"eventId": id, "title": "Weekly sync", "start": rfc(end - 1800),
+                "end": rfc(end), "state": "downloaded", "docs": docs,
+                "folder": folder.map(|p| p.to_string_lossy().to_string())}),
+        }
+    }
+
+    /// Queues a run of `id` the way an event match does for a meeting (DESIGN step 5 §6).
+    fn queue_meeting_ready(core: &Core, id: &str, meeting_id: &str) -> String {
+        let mut r = core.repo().unwrap();
+        let policy = r.policy(Some("personal"), None).unwrap();
+        let job = crate::workspace::new_job(
+            "automation_run",
+            format!("automation:{id}:event:{meeting_id}"),
+            Some("personal".into()),
+            None,
+            now(),
+            policy,
+            json!({"automationId": id, "title": "Formal summary",
+                "trigger": {"kind": "event", "event": "meeting_ready", "sourceId": meeting_id}}),
+        );
+        r.enqueue(&job).unwrap();
+        job.id
+    }
+
+    /// Claims and runs exactly one due job, whatever its kind.
+    async fn run_one(core: &Arc<Core>) -> Job {
+        let claimed = core
+            .repo()
+            .unwrap()
+            .claim(now())
+            .unwrap()
+            .expect("a due job");
+        let id = claimed.id.clone();
+        core.clone().run_claimed_job(claimed).await;
+        job(core, &id)
+    }
+
+    #[tokio::test]
+    async fn run_now_on_a_summary_automation_is_refused_with_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        let err = core
+            .request(mutation(
+                &core,
+                Operation::AutomationRunNow,
+                json!({"id": "auto-summary"}),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, SUMMARY_RUN_NOW);
+        assert!(jobs_of(&core, "automation_run").is_empty());
+        // A manual run queued before this check is skipped with the same sentence.
+        {
+            let mut r = core.repo().unwrap();
+            let policy = r.policy(Some("personal"), None).unwrap();
+            r.enqueue(&crate::workspace::new_job(
+                "automation_run",
+                "automation:auto-summary:manual:old".into(),
+                Some("personal".into()),
+                None,
+                now(),
+                policy,
+                json!({"automationId": "auto-summary", "title": "Formal summary",
+                    "trigger": {"kind": "manual"}}),
+            ))
+            .unwrap();
+        }
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        assert_eq!(run_of(&core, &done.id).data["reason"], SUMMARY_RUN_NOW);
+        assert!(
+            fake.calls().is_empty(),
+            "a manual run with no meeting must never call Claude"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_turned_off_before_it_ran_queues_no_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        put(&core, meeting_record("m1", BASE, json!([]), None));
+        queue_meeting_ready(&core, "auto-summary", "m1");
+        core.request(mutation(
+            &core,
+            Operation::AutomationToggle,
+            json!({"id": "auto-summary", "enabled": false}),
+        ))
+        .await
+        .unwrap();
+        let done = run_next(&core).await;
+        assert_eq!(
+            done.result.as_deref(),
+            Some("Skipped: The automation was turned off before it ran.")
+        );
+        assert!(jobs_of(&core, "meeting_notes").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_meeting_without_notes_gets_its_summary_as_first_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = Ok(RunOutcome {
+            structured: Some(
+                json!({"notesMarkdown": "# Weekly sync\n\nDiscussed the plan.", "tasks": []}),
+            ),
+            text: String::new(),
+            usage: Usage::default(),
+            cost_usd: Some(0.01),
+            duration_ms: 900,
+            model: Some("claude-sonnet-4-5".into()),
+        });
+        let fake = Arc::new(FakeRunner::new(vec![notes]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        let folder = dir.path().join("meeting-m1");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("segments.json"),
+            r#"[{"voice":"Jeroen","speaker":"remote","name":"Jeroen","address":null,"start":0.0,"end":5.0,"text":"Hello."}]"#,
+        )
+        .unwrap();
+        put(&core, meeting_record("m1", BASE, json!([]), Some(&folder)));
+        let jid = queue_meeting_ready(&core, "auto-summary", "m1");
+
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let run = run_of(&core, &done.id);
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["delivered"], json!(["meeting_summary"]));
+        assert_eq!(
+            run.data["output"]["title"],
+            "Formal summary queued for Weekly sync"
+        );
+        assert_eq!(run.data["meetingId"], "m1");
+
+        // The meeting's own automatic-notes key is untouched, and findTasks is true: the
+        // summary is this meeting's first document.
+        let queued = jobs_of(&core, "meeting_notes");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].key, "meeting_notes:auto:m1:formal-summary");
+        assert_eq!(queued[0].payload["findTasks"], true);
+        assert_eq!(queued[0].payload["auto"], true);
+        assert_eq!(queued[0].payload["templateId"], "formal-summary");
+
+        // Running it is the unchanged notes job: the summary becomes the main document.
+        let notes_job = run_one(&core).await;
+        assert_eq!(notes_job.kind, "meeting_notes");
+        assert_eq!(notes_job.state, "succeeded", "{:?}", notes_job.result);
+        let m = core
+            .repo()
+            .unwrap()
+            .record("meeting", "m1", Some(ACCT), None)
+            .unwrap();
+        assert_eq!(m.data["main"], "formal-summary");
+        assert_eq!(fake.calls().len(), 1, "Claude ran once, for the notes job");
+    }
+
+    #[tokio::test]
+    async fn a_meeting_runs_once_and_never_waits_for_a_cooldown() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        // Saving just armed the automation; the meetings must end after that moment.
+        let armed = now();
+        let end = armed + 1800;
+        put(&core, meeting_record("m1", end, json!([]), None));
+        put(&core, meeting_record("m2", end, json!([]), None));
+        // Already has the template's document: its run is skipped with the sentence.
+        put(
+            &core,
+            meeting_record(
+                "m3",
+                end,
+                json!([{"id": "formal-summary", "template": "formal-summary"}]),
+                None,
+            ),
+        );
+        core.automations_round_at(armed + 3600, armed).unwrap();
+        let queued = jobs_of(&core, "automation_run");
+        assert_eq!(queued.len(), 3, "{queued:?}");
+        for _ in &queued {
+            run_one(&core).await;
+        }
+        let m3_run = queued
+            .iter()
+            .find(|j| j.payload["trigger"]["sourceId"] == "m3")
+            .unwrap();
+        assert_eq!(run_of(&core, &m3_run.id).data["status"], "skipped");
+        assert_eq!(
+            run_of(&core, &m3_run.id).data.get("reason").cloned(),
+            Some(json!("Weekly sync already has a Formal summary."))
+        );
+        let ok_runs = queued
+            .iter()
+            .filter(|j| j.payload["trigger"]["sourceId"] != "m3")
+            .count();
+        assert_eq!(ok_runs, 2);
+
+        // A third round: fired_sources holds every meeting back, even the skipped one.
+        core.automations_round_at(armed + 7200, armed).unwrap();
+        assert_eq!(jobs_of(&core, "automation_run").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn contract_fixtures_summary_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        put(&core, meeting_record("m1", BASE, json!([]), None));
+        let jid = queue_meeting_ready(&core, "auto-summary", "m1");
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let mut value = serde_json::to_value(run_of(&core, &done.id)).unwrap();
+        value["id"] = "run-1".into();
+        value["revision"] = "rev-1".into();
+        value["updatedAt"] = 1_795_000_500.into();
+        value["data"]["startedAt"] = 1_795_000_480.into();
+        value["data"]["durationMs"] = 0.into();
+
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+        let path = dir.join("automation-run-summary.json");
+        let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
+        if std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        } else {
+            let saved = std::fs::read_to_string(&path).unwrap_or_default();
+            assert_eq!(
+                saved, text,
+                "automation-run-summary.json is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+            );
+        }
+    }
+
+    /// Reply voice design §4, ruling 5: an automation's reply draft (here the Budget request
+    /// reply) gets the same `voice` and `facts` as a manual one, and its draft record's
+    /// provenance says so.
+    #[tokio::test]
+    async fn an_automation_draft_carries_the_voice() {
+        use crate::workspace::voice::draft::tests::{atlas_facts, calls_of, ready_voice};
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let voice = ready_voice(&core, "");
+        voice.answer(
+            "context",
+            json!({"style": null, "person": null, "rules": []}),
+        );
+        voice.answer("facts", atlas_facts(""));
+        let mut automation = reply_automation();
+        automation["name"] = "Budget request reply".into();
+        ann_writes_to(&core, &graph, automation).await;
+        let mut m1 = core
+            .repo()
+            .unwrap()
+            .record("message", "m1", Some(ACCT), None)
+            .unwrap();
+        m1.data["title"] = "Q3 budget for Atlas Rollout".into();
+        put(&core, m1);
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let input = &fake.calls()[0].input;
+        let block = input["voice"].as_str().expect("a voice field");
+        assert!(
+            block.contains("<rule applies=\"everyone\">Never promise a date.</rule>"),
+            "{block}"
+        );
+        assert!(input["facts"]
+            .as_str()
+            .unwrap()
+            .contains("projects/atlas-rollout.md"));
+        let ask = &calls_of(&voice, "context")[0];
+        assert_eq!(ask["person"]["address"], "ann@example.test");
+        assert!(!ask.to_string().contains("Q3 numbers"), "no message text");
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .unwrap();
+        let p = &draft.data["provenance"];
+        assert_eq!(p["automationId"], "auto-reply");
+        assert_eq!(p["voice"]["from"], "provider");
+        assert_eq!(p["voice"]["facts"].as_array().unwrap().len(), 2);
+        // The run record itself carries no voice or fact text.
+        let run = run_of(&core, &done.id);
+        assert!(!run.data.to_string().contains("Never promise a date."));
+        assert!(!run.data.to_string().contains("Go-live"));
+    }
+
+    /// The examples never repeat a sent message the run already shows (review minor 3): one of
+    /// the user's mails to Ann is in `recentMessages`, so only the older one is an example.
+    #[tokio::test]
+    async fn an_automation_draft_leaves_out_examples_the_run_already_reads() {
+        use crate::workspace::voice::draft::tests::ready_voice;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let _voice = ready_voice(&core, "");
+        let mut automation = reply_automation();
+        automation["read"] = json!({"triggerConversation": true, "recentMessages": true});
+        ann_writes_to(&core, &graph, automation).await;
+        for (id, ago, text) in [
+            ("e-new", 3_600, "Sent an hour ago."),
+            ("e-old", 5 * 86_400, "Sent last week."),
+        ] {
+            let mut m = mail(id, now() - ago, "Taylor Reed", "taylor@example.test", text);
+            m.source = "mail:sentitems".into();
+            m.data["isMine"] = true.into();
+            m.data["conversationId"] = format!("conv-{id}").into();
+            m.data["to"] =
+                json!([{"emailAddress": {"name": "Ann Lee", "address": "ann@example.test"}}]);
+            put(&core, m);
+        }
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let input = &fake.calls()[0].input;
+        let recent = input["recentMessages"].to_string();
+        assert!(recent.contains("Sent an hour ago."), "{recent}");
+        let block = input["voice"].as_str().expect("a voice field");
+        assert!(block.contains("Sent last week."), "{block}");
+        assert!(
+            !block.contains("Sent an hour ago."),
+            "already in recentMessages: {block}"
+        );
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .unwrap();
+        assert_eq!(draft.data["provenance"]["voice"]["examples"], 1);
+    }
+
+    /// Nothing but a reply draft carries the voice (ruling 5): a triage run asks the provider
+    /// nothing and its input has no `voice` or `facts`.
+    #[tokio::test]
+    async fn a_triage_run_without_a_draft_gets_no_voice() {
+        use crate::workspace::voice::draft::tests::ready_voice;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(reply_answer())]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        let voice = ready_voice(&core, "");
+        let mut automation = reply_automation();
+        automation["deliver"] = json!({"today": true, "createTasks": true});
+        ann_writes_to(&core, &graph, automation).await;
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let input = &fake.calls()[0].input;
+        assert!(input.get("voice").is_none());
+        assert!(input.get("facts").is_none());
+        assert!(voice.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_budget_run_makes_a_budget_task_and_a_draft_and_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut budget = reply_answer();
+        let draft_text = budget.structured.as_ref().unwrap()["draft"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        budget.structured.as_mut().unwrap()["tasks"] =
+            json!([{"text": "Approve the Q3 budget", "kind": "budget", "sourceId": "s1"}]);
+        let fake = Arc::new(FakeRunner::new(vec![Ok(budget)]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake, ready(), graph.clone());
+        seed(&core);
+        let mut automation = reply_automation();
+        automation["name"] = "Budget request reply".into();
+        automation["deliver"]["createTasks"] = true.into();
+        let before = today_utc();
+        ann_writes_to(&core, &graph, automation).await;
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let made = all_tasks(&core);
+        assert_eq!(made.len(), 1);
+        let b = &made[0].data;
+        assert_eq!(b["kind"], "budget");
+        assert_eq!(b["owner"], "You");
+        assert_eq!(b["sourceId"], "m1");
+        on_run_day(&b["due"], &before);
+        assert_eq!(b["history"][0]["text"], "Made by Budget request reply");
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .expect("a reply draft on the conversation");
+        assert_eq!(draft.data["text"], draft_text.as_str());
+        let run = run_of(&core, &done.id);
+        assert_eq!(run.data["delivered"], json!(["today", "draft", "tasks"]));
+        // The draft's words are only in the draft.
+        assert!(!b.to_string().contains("Unfortunately"));
+        assert!(!run.data.to_string().contains("Unfortunately"));
+        // Nothing is sent: no action record, no action or send job.
+        assert!(core
+            .repo()
+            .unwrap()
+            .records_of_kind("action")
+            .unwrap()
+            .is_empty());
+        assert!(core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .iter()
+            .all(|j| !j.kind.starts_with("action") && !j.kind.starts_with("send")));
+    }
+
     /// The run and draft shapes the UI (Task 16) builds against.
     /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
     #[tokio::test]
     async fn contract_fixtures_match_the_real_automation_runs() {
         let dir = tempfile::tempdir().unwrap();
+        // The ok run creates tasks too, so its record carries `tasks` and `handled`.
+        let mut with_task = brief_answer();
+        with_task.structured.as_mut().unwrap()["tasks"] =
+            json!([{"text": "Reply to Ann about the plan", "kind": "reply", "sourceId": "s1"}]);
         let fake = Arc::new(FakeRunner::new(vec![
-            Ok(brief_answer()),
+            Ok(with_task),
             Err(AiError::new(ErrorClass::NeedsLogin)),
             Ok(reply_answer()),
         ]));
@@ -1581,11 +3453,9 @@ mod tests {
                 json!({"text": "Send the roadmap", "done": false, "due": "2026-11-20"}),
             ),
         );
-        save(
-            &core,
-            morning_brief(json!({"needsReply": true, "commitmentsNotes": true})),
-        )
-        .await;
+        let mut brief = morning_brief(json!({"needsReply": true, "commitmentsNotes": true}));
+        brief["deliver"]["createTasks"] = true.into();
+        save(&core, brief).await;
         let record = |id: &str| {
             core.repo()
                 .unwrap()
@@ -1602,6 +3472,15 @@ mod tests {
             if v["data"]["status"] == "failed" {
                 v["data"]["durationMs"] = 900.into();
             }
+            let made = v["data"]
+                .get_mut("tasks")
+                .and_then(|t| t.get_mut("made"))
+                .and_then(Value::as_array_mut);
+            if let Some(made) = made {
+                for (i, task) in made.iter_mut().enumerate() {
+                    task["id"] = format!("task-{}", i + 1).into();
+                }
+            }
             v
         };
         let ok = run_now(&core, "auto-brief").await;
@@ -1609,6 +3488,13 @@ mod tests {
         // Read before the next round delivers its notification, whose outcome depends on the
         // time of day (quiet hours).
         let ok_run = record(&ok);
+        // The task it made (a random id, made now) is put aside, so the next runs read as before.
+        for task in all_tasks(&core).iter().filter(|t| t.id != "c1") {
+            core.repo()
+                .unwrap()
+                .delete_local(tasks::KIND, &task.id, "personal")
+                .unwrap();
+        }
         let failed = run_now(&core, "auto-brief").await;
         run_next(&core).await;
         ann_writes(&core, &graph).await;

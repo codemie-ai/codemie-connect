@@ -40,6 +40,17 @@ test('escapes HTML in every construct', () => {
   assert.equal(renderMarkdown(null), '');
 });
 
+test('bold formatting stays linear time on a long unclosed ** run (a plugin or note can hand it 20,000 characters)', () => {
+  // '**a ' never closes (every '**' is preceded by a space, so none can be a valid closing
+  // marker): the previous lazy-quantifier regex was quadratic here, costing ~500ms at this size.
+  const text = '**a '.repeat(20000); // 80,000 characters
+  const start = Date.now();
+  const html = renderMarkdown(text);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 150, `took ${elapsed}ms (expected well under 150ms; the old regex took ~500ms here)`);
+  assert.doesNotMatch(html, /<strong>/, 'no valid close exists anywhere, so nothing is bold');
+});
+
 test('renders front matter, tables, checkboxes and [mm:ss] buttons', () => {
   const md = [
     '---',
@@ -123,4 +134,20 @@ test('the default still draws the whole front matter', () => {
   const html = renderMarkdown(NOTE);
   assert.match(html, /<dl class="ws-md-front">[^]*?<dt>summary<\/dt><dd>Agreed the export\.<\/dd>/);
   assert.match(html, /<h2>Philips sync<\/h2>/);
+});
+
+// Ask mode (ask-capture design § 7): an answer is plain reading text with bullets. No transcript
+// buttons for `[10:00]`, no front matter, no headings or tables; `[m3]` marks become what `cite`
+// returns (unknown ids go). The other callers are unchanged.
+test('ask mode: no time buttons, front matter, headings or tables; cite marks through `cite`', () => {
+  const md = ['---', 'title: x', '---', '# Summary', 'At [10:00] you agreed [m3] and [e9] **this**.', '| A | B |', '|---|---|', '| 1 | 2 |', `- a [t2] ${EVIL}`, '`[m3]` stays code'].join('\n');
+  const html = renderMarkdown(md, { mode: 'ask', cite: id => (id === 'm3' ? '<sup>M3</sup>' : id === 't2' ? '<sup>T2</sup>' : '') });
+  assert.doesNotMatch(html, /ws-md-ts|<dl|<h\d|<table/);
+  assert.match(html, /At \[10:00\] you agreed <sup>M3<\/sup> and  <strong>this<\/strong>\./);
+  assert.match(html, /<p>title: x<\/p>|title: x/);
+  assert.match(html, /<p>Summary<\/p>/);
+  assert.match(html, /<li>a <sup>T2<\/sup> &lt;script&gt;/);
+  assert.match(html, /<code>\[m3\]<\/code>/);
+  // Without the mode, the same text keeps its notes rendering.
+  assert.match(renderMarkdown('At [10:00]'), /ws-md-ts/);
 });

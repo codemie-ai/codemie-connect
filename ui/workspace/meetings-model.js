@@ -3,18 +3,21 @@
 // counts, the job running for a meeting (`runOf`), the badges' legend, and the JS mirrors of
 // native's template choice (`resolveTemplate`, src-tauri/src/workspace/meetings/templates.rs) and
 // glossary reading (`parseGlossary`, `parseTags`, meetings/glossary.rs), which must give the same
-// answers as the contract fixtures native writes. Also the page's hash, `#/meetings/<id>/<tab>`.
+// answers as the contract fixtures native writes. Also the page's hash, `#/meetings/<id>/<pane>`.
 import { can } from './selectors.js';
 import { dayKey } from './format.js';
 
-export const TABS = ['notes', 'transcript', 'tasks', 'files'];
+/** The meeting section's panes (spec "Deep links and opening"): the summary (the strip's tabs),
+ *  then the ones behind ⋯. */
+export const PANES = ['summary', 'transcript', 'notes', 'files', 'tasks'];
 
-/** A meeting's tabs: all four once it has a transcript (saved, being saved, or found in Teams),
- *  none before (its explainer card says why and what to do). Who was there is the header's popover. */
-export function tabsOf(m) {
-  if (!m) return [];
+/** Whether a meeting has a transcript yet (saved, being saved, or found in Teams): the strip
+ *  shows the summary tabs and ⋯ the panes only then; before it, the explainer card says why and
+ *  what to do. Who was there is the header's popover. */
+export function hasTranscript(m) {
+  if (!m) return false;
   const saving = m.run?.kind === 'transcript_download' || m.run?.kind === 'meeting_notes';
-  return saving || ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? TABS : [];
+  return saving || ['available', 'downloaded', 'ready', 'failed'].includes(m.state);
 }
 
 /** Every state a meeting shows, with the label and tone of its status text. `downloading` and
@@ -78,7 +81,7 @@ export function isHidden(m, hidden) {
 
 /** The Meetings page's view state (only view state lives in the window: meetings are native's). */
 export const newMeetingsView = ({ hidden = null } = {}) => ({
-  filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, compare: false, focusLine: null,
+  filter: 'all', q: '', selected: null, pane: null, showNone: false, compare: false, focusLine: null, focusColumn: false, tasksLink: false,
   // Hidden meetings (a preference) and whether they show greyed; the search field; folded days
   // (day key → true) and the folded Needs you card, for the session; the row's right-click menu.
   hidden: readHidden(hidden), showHidden: false, searchOpen: false, folded: {}, needsFolded: false, rowMenu: null,
@@ -89,6 +92,11 @@ export const newMeetingsView = ({ hidden = null } = {}) => ({
   // The Notes tab's Make notes form by meeting id ({templateId, wishes, findTasks, remember}, each
   // only once changed), so a background render shows what was chosen and typed.
   makeForm: {},
+  // The summary tab chosen per meeting this session (meeting id → tab key), the action items
+  // ticked per meeting (meeting id → task ids) and which row is open, and the last "Add N to
+  // Tasks" ({meetingId, ids}), its error and whether the add-a-task form is open; the summary tab
+  // whose Copy reads "Copied" for a moment ("<meeting id>:<tab key>").
+  summaryTab: {}, ticked: {}, itemOpen: null, added: null, addError: null, addOpen: false, copied: null,
 });
 
 const dataOf = x => (x && typeof x === 'object' && 'data' in x ? x.data : x) || null;
@@ -635,24 +643,28 @@ export function lineAt(segments, ref) {
 
 // ---------------------------------------------------------------- hash (R6)
 
-/** The app's routes, as hashes name them. */
-export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics', 'settings'];
+/** The app's routes, as hashes name them. `ask` (`#/ask`, `#/ask/<thread>`) is a route like
+ *  `settings`, not a menu page: hiding pages never hides it. */
+export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics', 'settings', 'ask'];
 
-/** `#/route/tab`, and `#/meetings/<encoded id>/<tab>` for a meeting: `{route, meetingId, tab}`;
- *  an unknown route is Today, an empty hash `route: null`. */
+/** `#/route/tab`, and `#/meetings/<encoded id>/<pane>` for a meeting: `{route, meetingId, pane}`;
+ *  an unknown route is Today, an empty hash `route: null`. `pane` is null when the hash has none,
+ *  or one unknown to `PANES` (an old `/people` link included): the "Open a meeting on" setting
+ *  decides then. */
 export function parseHash(hash) {
   const raw = String(hash ?? '').replace(/^#\/?/, '');
-  if (!raw) return { route: null, meetingId: null, tab: null };
+  if (!raw) return { route: null, meetingId: null, pane: null };
   const [head, a, b] = raw.split('/');
   const route = HASH_ROUTES.includes(head) ? head : 'today';
-  if (route !== 'meetings') return { route, meetingId: null, tab: a || null };
+  if (route !== 'meetings') return { route, meetingId: null, pane: a || null };
   let meetingId = null;
   try {
     meetingId = a ? decodeURIComponent(a) : null;
   } catch {
     meetingId = null;
   }
-  return { route, meetingId, tab: TABS.includes(b) ? b : null };
+  return { route, meetingId, pane: PANES.includes(b) ? b : null };
 }
 
-export const meetingHash = (id, tab) => (id ? `#/meetings/${encodeURIComponent(id)}/${TABS.includes(tab) ? tab : 'notes'}` : '#/meetings');
+/** The hash for a meeting on `pane` (`summary` by default, for an unknown one). */
+export const meetingHash = (id, pane) => (id ? `#/meetings/${encodeURIComponent(id)}/${PANES.includes(pane) ? pane : 'summary'}` : '#/meetings');

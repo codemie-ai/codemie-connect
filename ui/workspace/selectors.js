@@ -60,7 +60,7 @@ export function collapseChats(messages) {
  */
 export function attentionMessages(s) {
   const all = visibleMessages(s);
-  const critical = collapseChats(all.filter(m => m.data.lane === 'critical' && !m.data.acknowledgedAt)).items;
+  const critical = collapseChats(all.filter(m => m.data.lane === 'critical' && m.data.acknowledgedAt == null)).items;
   const taken = new Set(critical.map(messageKey));
   const replies = collapseChats(all.filter(m => m.data.lane === 'reply' && !taken.has(messageKey(m)))).items;
   return [...critical, ...replies];

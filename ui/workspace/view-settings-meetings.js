@@ -9,7 +9,8 @@ import { badge, button, card, checkbox, emptyState, field, select, settingRow, s
 import { zonedParts } from './format.js';
 import { COLUMNS, COLUMN_NAMES, columnName } from './tasks-model.js';
 import { RULE_FIELDS, meetingItems, ruleMatches, ruleText, templatesOf, transcriptsAllowed, firstRule } from './meetings-model.js';
-import { dotsSummary, menu, plural, tplColor } from './view-meeting-tabs.js';
+import { pinsOf } from './meeting-view-model.js';
+import { dotsSummary, menu, menuItems, plural, tplColor } from './view-meeting-tabs.js';
 import {
   SECTION_LABELS, fieldError, mdEditor, ruleTestResult, sortedRules, subCard, templateEditor, tplIcon,
 } from './settings-meetings-editors.js';
@@ -36,7 +37,7 @@ export const TAB_TEXT = {
   'meetings-templates': 'A template tells the AI what to write from a transcript. Two are built in; add your own or a skill for the meetings that need something else.',
   'meetings-rules': 'Pick a template automatically by meeting title, organizer, company or size, and decide what happens without you.',
   'meetings-glossary': 'Two plain Markdown documents the AI reads before every run: how names and terms are spelled, and which tags notes may use.',
-  'meetings-tasks': 'How tasks found in notes reach your board.',
+  'meetings-tasks': 'Where your tasks live, and how tasks found in notes reach your board.',
 };
 
 const set = (key, checked, label) => toggle({ action: 'meetings-settings-set', checked: !!checked, attrs: { 'data-key': key, 'aria-label': label } });
@@ -181,12 +182,14 @@ function usage(s, t, rules) {
   return [notes ? `${plural(notes, 'note')} written` : '', by.length ? `rule: ${by.map(ruleText).join(', ')}` : ''].filter(Boolean).join(' · ');
 }
 
-function templateCard(s, t, { def, rules }) {
+function templateCard(s, t, { def, rules, pins = [] }) {
   const ids = { 'data-id': t.id };
+  const pinned = pins.includes(t.id);
   const items = [
     ['Edit', 'meetings-settings-tpl-edit', ids, 'edit'],
     ['Duplicate', 'meetings-settings-tpl-dup', ids, 'copy'],
     t.id !== def ? ['Make default', 'meetings-settings-tpl-default', ids, 'check'] : null,
+    [pinned ? 'Unpin from summary tabs' : 'Pin as a summary tab', pinned ? 'meetings-settings-unpin' : 'meetings-settings-pin', { 'data-pin': t.id }, 'pin'],
     t.kind === 'builtin' && t.edited ? ['Reset to built-in', 'meetings-settings-tpl-reset', ids, 'undo'] : null,
     t.kind !== 'builtin' ? '-' : null,
     t.kind !== 'builtin' ? [t.kind === 'skill' ? 'Remove skill' : 'Delete', 'meetings-settings-tpl-delete', ids, 'trash', true] : null,
@@ -204,18 +207,85 @@ function templateCard(s, t, { def, rules }) {
   </article>`;
 }
 
+// ---------------------------------------------------------------- "When you open a meeting"
+
+const OPEN_ON = [['summary', 'Summary'], ['transcript', 'Transcript'], ['notes', 'Notes']];
+
+/** A pin's label and icon (spec "Pins"): a template's own, or a plugin's name and the plugin
+ *  icon. `pin` is one of `summaryTabs`'s ids, as `pinsOf` kept it (a template's id, or
+ *  `plugin:<id>`). */
+function pinInfo(s, pin, plugins) {
+  if (pin.startsWith('plugin:')) {
+    const p = plugins.find(x => `plugin:${x.id}` === pin);
+    return { label: p?.name || pin.slice('plugin:'.length), iconName: 'puzzle' };
+  }
+  const t = templatesOf(s).find(x => x.id === pin);
+  return { label: t?.name || pin, iconName: tplIcon(t) };
+}
+
+function pinRow(s, pin, i, total, plugins) {
+  const { label, iconName } = pinInfo(s, pin, plugins);
+  const ids = { 'data-pin': pin };
+  return `<li data-pin="${e(pin)}"><span class="ws-tpl-icon">${icon(iconName)}</span><span class="ws-ms-pin-name">${e(label)}</span>
+    <div class="ws-actions">
+      ${button('', { action: 'meetings-settings-pin-move', iconName: 'chevron-up', variant: 'ghost', size: 'sm', title: 'Move up', disabled: i === 0, attrs: { ...ids, 'data-d': '-1' } })}
+      ${button('', { action: 'meetings-settings-pin-move', iconName: 'chevron-down', variant: 'ghost', size: 'sm', title: 'Move down', disabled: i === total - 1, attrs: { ...ids, 'data-d': '1' } })}
+      ${button('Unpin', { action: 'meetings-settings-unpin', variant: 'ghost', size: 'sm', attrs: ids })}
+    </div></li>`;
+}
+
+/** The "When you open a meeting" card (spec "Settings › Meetings › Note templates"): the pane a
+ *  meeting opens on, the action items switch, and up to four pinned summary tabs with Move
+ *  up / Move down / Unpin and a menu to pin a template or a plugin's summary. `plugins`:
+ *  `[{id, name}]`, the summary plugins installed and on. */
+export function meetingViewCard(s, { v, plugins = [] } = {}) {
+  const m = s.settings.meetings || {};
+  const openOn = OPEN_ON.some(([val]) => val === m.openOn) ? m.openOn : 'summary';
+  const openOnControl = `<div class="ws-segmented" role="group" aria-label="Open a meeting on">${OPEN_ON.map(([val, label]) => `<button type="button" data-action="meetings-settings-open-on" data-v="${val}" aria-pressed="${val === openOn}">${e(label)}</button>`).join('')}</div>`;
+  const pins = pinsOf(s, plugins);
+  const full = pins.length >= 4;
+  const rows = pins.map((pin, i) => pinRow(s, pin, i, pins.length, plugins)).join('');
+  const addItems = [
+    ...templatesOf(s).filter(t => !pins.includes(t.id)).map(t => [t.name, 'meetings-settings-pin', { 'data-pin': t.id }, tplIcon(t)]),
+    ...(() => {
+      const left = plugins.filter(p => !pins.includes(`plugin:${p.id}`));
+      return left.length ? ['-', ['#', 'Plugins'], ...left.map(p => [p.name, 'meetings-settings-pin', { 'data-pin': `plugin:${p.id}` }, 'puzzle'])] : [];
+    })(),
+  ];
+  // Disabled at four: blocked for a mouse (`.ws-btn[aria-disabled=true]` is `pointer-events:none`)
+  // and, since a `<details>` has no native `disabled`, kept out of keyboard Tab order too
+  // (`tabindex="-1"`) so Enter/Space can't reach it either.
+  const addMenu = `<details class="ws-menu" data-menu="ms-pin-add"${full ? ' title="Pin up to 4 summaries."' : ''}><summary class="ws-btn ws-btn-secondary"${full ? ' aria-disabled="true" tabindex="-1" title="Pin up to 4 summaries."' : ''}><span>Pin a summary</span>${icon('chevron-down')}</summary><div class="ws-menu-panel">${menuItems(addItems)}</div></details>`;
+  const actionItemsText = m.actionItems !== false ? '' : 'Off: they move to ⋯ › Action items.';
+  return card({
+    title: 'When you open a meeting', iconName: 'eye',
+    body: `${row(v, 'openOn', { title: 'Open a meeting on', text: 'Which pane a meeting’s own page opens on.', control: openOnControl })}
+      ${row(v, 'actionItems', { title: 'Show action items beside the summary', text: actionItemsText, control: set('actionItems', m.actionItems !== false, 'Show action items beside the summary') })}
+      <div class="ws-ms-pins-block">
+        <span class="ws-field-label">Summary tabs</span>
+        <p class="ws-field-hint">The first one that has a summary opens. With none pinned, a meeting shows its own documents.</p>
+        <ol class="ws-ms-pins">${rows}</ol>
+        ${addMenu}
+      </div>
+      ${fieldError(v, 'meetings.summaryTabs')}`,
+  });
+}
+
 function templatesPanel(s, ctx) {
   const { v } = ctx;
   if (v.edit) return templateEditor(s, v, { ...ctx, tryable: tryableMeetings(s, ctx.now).length });
   const all = templatesOf(s);
   const def = (s.settings.meetings || {}).defaultTemplate || 'meeting-notes';
   const rules = sortedRules(s);
+  const plugins = ctx.plugins || [];
+  const pins = pinsOf(s, plugins);
   const groups = [['builtin', 'Built-in'], ['custom', 'Yours'], ['skill', 'Skills']].map(([kind, label]) => {
     const list = all.filter(t => t.kind === kind);
     if (!list.length) return '';
-    return `<h3 class="ws-ms-group-title">${e(label)}<small>${list.length}</small></h3><div class="ws-ms-tpl-grid">${list.map(t => templateCard(s, t, { def, rules })).join('')}</div>`;
+    return `<h3 class="ws-ms-group-title">${e(label)}<small>${list.length}</small></h3><div class="ws-ms-tpl-grid">${list.map(t => templateCard(s, t, { def, rules, pins })).join('')}</div>`;
   }).join('');
   return `<div class="ws-ms-naming">${icon('info', 'ws-ms-naming-icon')}<div><strong>What’s a note template?</strong><p>The instructions the AI follows to turn a transcript into a document. <em>Meeting notes</em> is your reference format and runs by default; <em>Short summary</em> is the quick version. Add <em>your own</em> or a <em>skill</em> for anything else. One transcript can have several documents — the automatic meeting notes plus any summary you make on demand.</p></div></div>
+    ${meetingViewCard(s, { v, plugins })}
     ${card({ body: row(v, 'defaultTemplate', { title: 'Default template', text: 'Used when you haven’t picked one for a meeting and no rule matches.', control: defaultSelect(s, 'Default template') }) })}
     ${groups}`;
 }
@@ -342,10 +412,11 @@ function tasksPanel(s, { v }) {
 
 const PANELS = { 'meetings-transcripts': transcriptsPanel, 'meetings-templates': templatesPanel, 'meetings-rules': rulesPanel, 'meetings-glossary': glossaryPanel, 'meetings-tasks': tasksPanel };
 
-/** One Settings › Meetings tab. `ctx`: `{v, auth, now}`. */
+/** One Settings › Meetings tab. `ctx`: `{v, auth, now, plugins}` (`plugins` the summary plugins
+ *  installed and on, `[{id, name}]`, for the "When you open a meeting" card). */
 export function meetingsSettingsPanel(tab, s, ctx = {}) {
   const panel = PANELS[tab] || transcriptsPanel;
-  return panel(s, { v: ctx.v || newMeetingsSettingsView(), auth: ctx.auth || {}, now: ctx.now ?? Date.now() });
+  return panel(s, { v: ctx.v || newMeetingsSettingsView(), auth: ctx.auth || {}, now: ctx.now ?? Date.now(), plugins: ctx.plugins || [] });
 }
 
 /** The header of a Meetings tab: its actions, or, in the template editor, the way back and the

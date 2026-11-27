@@ -66,7 +66,7 @@ impl From<std::io::Error> for WorkspaceError {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub op: Operation,
@@ -80,7 +80,7 @@ fn empty_object() -> Value {
     json!({})
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Snapshot,
@@ -146,6 +146,13 @@ pub enum Operation {
     MeetingRuleOrder,
     TaskSave,
     TaskDelete,
+    TaskSyncNow,
+    TaskProviderCheck,
+    TaskProviderSet,
+    TaskWithdraw,
+    TaskBulk,
+    TaskHandled,
+    TaskParked,
     AnalyticsStatus,
     AnalyticsRefresh,
     AnalyticsRetry,
@@ -153,6 +160,21 @@ pub enum Operation {
     AnalyticsSession,
     AnalyticsReport,
     AnalyticsApp,
+    MenuBarSeen,
+    VoiceSet,
+    VoiceSave,
+    VoiceDelete,
+    VoiceForget,
+    VoiceRefresh,
+    VoiceRead,
+    VoiceImportScan,
+    VoiceImportDistil,
+    VoiceImport,
+    CaptureParse,
+    NoteAppend,
+    AskStart,
+    AskRead,
+    AskDelete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +241,10 @@ pub struct Connection {
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    /// Settings › Appearance › View: "default" or "compact" (app-wide, like theme).
+    pub view: String,
+    /// Main-menu pages left out of the menu (ids from NAV, in menu order).
+    pub hidden_pages: Vec<String>,
     pub time_zone: String,
     pub background: bool,
     pub launch_at_login: bool,
@@ -239,11 +265,24 @@ pub struct Settings {
     pub ai: AiSettings,
     /// Settings › Meetings.
     pub meetings: super::meetings::model::MeetingSettings,
+    /// Settings › Tasks: the active task provider (design §2 of the task-provider spec).
+    pub tasks: super::task_provider::TaskSettings,
+    /// Settings › Notifications › Menu bar: which of the four sources are counted (menu-bar
+    /// count design §1).
+    pub menu_bar: super::menu_bar::MenuBarSettings,
+    /// Settings › Your voice: the active reply-context provider (reply-voice design §7). Old
+    /// settings without `voice` read as Off (this struct's container-level `#[serde(default)]`).
+    pub voice: super::voice::VoiceSettings,
+    /// Settings › Layout › "Ask in the menu" (ask-capture design § 6, ruling 26). Old settings
+    /// without `askInMenu` read as shown (`Settings`'s container-level `#[serde(default)]`).
+    pub ask_in_menu: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
+            view: "default".into(),
+            hidden_pages: Vec::new(),
             time_zone: "UTC".into(),
             background: false,
             launch_at_login: false,
@@ -262,6 +301,10 @@ impl Default for Settings {
             focus_until: None,
             ai: AiSettings::default(),
             meetings: Default::default(),
+            tasks: Default::default(),
+            menu_bar: Default::default(),
+            voice: Default::default(),
+            ask_in_menu: true,
         }
     }
 }
@@ -277,13 +320,39 @@ pub enum Purpose {
     Plugin,
     /// Notes and summaries from meeting transcripts.
     Meeting,
+    /// Automations made from the Morning briefing template.
+    Briefing,
+    /// Automations made from the Inbox triage template.
+    Triage,
+    /// Automations made from the Commitments template.
+    Commitments,
+    /// Questions typed in the ⌘K box.
+    Ask,
 }
-/// An empty route uses the default profile.
+
+impl Purpose {
+    pub const ALL: [Purpose; 10] = [
+        Purpose::MailDraft,
+        Purpose::ChatDraft,
+        Purpose::Summary,
+        Purpose::Automation,
+        Purpose::Plugin,
+        Purpose::Meeting,
+        Purpose::Briefing,
+        Purpose::Triage,
+        Purpose::Commitments,
+        Purpose::Ask,
+    ];
+}
+
+/// An empty route uses its group's choice (see `workspace::ai::choose`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Route {
     pub profile: Option<String>,
     pub model: Option<String>,
+    /// The profile used when `profile` can't run; inherited on its own.
+    pub fallback: Option<String>,
 }
 
 /// `settings.ai`. `default_profile` stays `None` until the user chooses one, so no
@@ -292,7 +361,11 @@ pub struct Route {
 #[serde(rename_all = "camelCase", default)]
 pub struct AiSettings {
     pub default_profile: Option<String>,
+    pub default_model: Option<String>,
+    pub default_fallback: Option<String>,
     pub routes: std::collections::BTreeMap<Purpose, Route>,
+    /// Rows of single plugins, keyed by plugin id.
+    pub plugins: std::collections::BTreeMap<String, Route>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,6 +420,21 @@ pub struct Snapshot {
     /// Every note template: the built-ins (with the person's changes) and the person's own and
     /// skills. Filled by `Core` for the window's snapshot; empty elsewhere.
     pub note_templates: Vec<super::meetings::templates::Template>,
+    /// `taskProvider` (task-provider design §2): the active provider, every available one, its
+    /// state and the outbox counts. Filled by `Core` for the window's snapshot; `Value::Null`
+    /// elsewhere.
+    pub task_provider: Value,
+    /// `menuBar` (menu-bar design §5): the count, what it is made of and what needs fixing.
+    /// Filled by `Core` for the window's snapshot; `Value::Null` elsewhere.
+    pub menu_bar: Value,
+    /// `replyVoice` (reply-voice design §7): the active provider, its state and the copy's
+    /// style, rules and people index — never a person's profile text. Filled by `Core` for the
+    /// window's snapshot; `Value::Null` elsewhere.
+    pub reply_voice: Value,
+    /// `ask` (ask-capture design § 6): thread titles, counts and states, what runs now and
+    /// `inMenu` — never answer text. Filled by `Core` for the window's snapshot; `Value::Null`
+    /// elsewhere.
+    pub ask: Value,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

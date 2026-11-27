@@ -104,10 +104,14 @@ function stateBadges(p, status) {
   return out.join('');
 }
 
-function installedRow(p, status, busy) {
+/** "Provides tasks · Settings › Tasks" appended to a task provider's summary (plain text in the
+ *  list row, which is itself one button; a real link in its own detail page). */
+const TASKS_NOTE = ' · Provides tasks · Settings › Tasks';
+
+function installedRow(p, status, busy, providesTasks) {
   return `<div class="ws-row ws-plugin-row" data-plugin-id="${e(p.id)}">
     <span class="ws-plugin-icon" aria-hidden="true">${icon('puzzle')}</span>
-    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || (p.enabled && p.loadError) || hostWords(p.summary || ''))}</span></button>
+    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || (p.enabled && p.loadError) || hostWords(p.summary || ''))}${providesTasks ? TASKS_NOTE : ''}</span></button>
     <div class="ws-actions">
       ${p.update ? button(busy[`update:${p.id}`] ? 'Updating…' : 'Update', { action: 'plugin-update', iconName: 'update', disabled: !!busy[`update:${p.id}`], attrs: { 'data-plugin-id': p.id } }) : ''}
       ${toggle({ action: 'plugin-enable', checked: p.enabled, attrs: { 'data-plugin-id': p.id, 'aria-label': `${p.name} on`, disabled: !!p.problem || !!busy[`enable:${p.id}`] } })}
@@ -163,8 +167,9 @@ function resetCard(reset) {
   });
 }
 
-/** Settings → Plugins: what is installed, what the marketplaces offer, and the marketplaces. */
-export function pluginsPanel(ui, { status = () => null } = {}) {
+/** Settings → Plugins: what is installed, what the marketplaces offer, and the marketplaces.
+ *  `providesTasks(id)` names a plugin that is a task provider (Settings › Tasks's radio group). */
+export function pluginsPanel(ui, { status = () => null, providesTasks = () => false } = {}) {
   if (ui.unreadable) return unreadableCard(ui);
   if (ui.offer) return offerDetail(ui);
   const loading = ui.status !== 'ready';
@@ -172,7 +177,7 @@ export function pluginsPanel(ui, { status = () => null } = {}) {
   const installed = card({
     title: 'Installed', iconName: 'puzzle',
     body: loading ? `<div class="ws-catalog-loading">${spinner('Loading plugins')}<span class="ws-muted">Loading plugins…</span></div>`
-      : ui.installed.length ? `<div class="ws-rows">${ui.installed.map(p => installedRow(p, status(p.id), ui.busy)).join('')}</div>`
+      : ui.installed.length ? `<div class="ws-rows">${ui.installed.map(p => installedRow(p, status(p.id), ui.busy, providesTasks(p.id))).join('')}</div>`
         : emptyState({ iconName: 'puzzle', title: 'No plugins yet', text: 'Plugins add pages, Today widgets and routines. Install one from a marketplace below.' }),
   });
   const available = ui.markets.length ? card({
@@ -223,8 +228,9 @@ export function offerDetail(ui) {
 
 /** An installed plugin: turning it on or off, its update, sign-ins, the addresses only the user
  *  gives it, its own Settings card (drawn in its frame), its sections and palette actions, and
- *  Remove. `status` is what its frame reported (`host.status`). */
-export function installedDetail(ui, id, status) {
+ *  Remove. `status` is what its frame reported (`host.status`); `providesTasks` names it as a
+ *  task provider, with a real link to Settings › Tasks. */
+export function installedDetail(ui, id, status, providesTasks = false) {
   const p = ui.installed.find(x => x.id === id);
   if (!p) {
     return `${backButton()}${emptyState({ iconName: 'puzzle', title: 'This plugin isn’t installed', text: 'It may have been removed. Find it again in a marketplace.' })}`;
@@ -261,9 +267,10 @@ export function installedDetail(ui, id, status) {
     title: 'Access', iconName: 'shield',
     body: `${unverified()}${signins}${addresses}${p.agreed?.length ? `<p class="ws-muted ws-hint">You agreed to: ${p.agreed.map(k => `<code>${e(k)}</code>`).join(' ')}</p>` : '<p class="ws-muted ws-hint">It has no permissions agreed yet.</p>'}`,
   });
+  const tasksNote = providesTasks ? `<p class="ws-plugin-summary ws-muted">Provides tasks · ${button('Settings › Tasks', { action: 'settings-tab', variant: 'ghost', size: 'sm', attrs: { 'data-tab': 'meetings-tasks' } })}</p>` : '';
   return `${backButton()}
     <section class="ws-card ws-plugin-detail" data-plugin-id="${e(p.id)}">${head}<div class="ws-card-body">
-      ${p.summary ? `<p class="ws-plugin-summary">${e(hostWords(p.summary))}</p>` : ''}${notes}
+      ${p.summary ? `<p class="ws-plugin-summary">${e(hostWords(p.summary))}</p>` : ''}${tasksNote}${notes}
       ${own}
       ${sections || actions ? `<div class="ws-plugin-links">${sections}${actions}</div>` : ''}
     </div></section>
@@ -276,8 +283,9 @@ export function sectionPage(id) {
   return `<div class="ws-plugin-slot-fill" data-plugin-slot="${e(id)}"></div>`;
 }
 
-/** The Settings page for a plugin path: {label, description, content}. */
-export function pluginsPage(ui, path, { status = () => null, sections = [] } = {}) {
+/** The Settings page for a plugin path: {label, description, content}. `providesTasks(id)` names
+ *  a plugin as a task provider (Settings › Tasks's radio group). */
+export function pluginsPage(ui, path, { status = () => null, sections = [], providesTasks = () => false } = {}) {
   if (path?.id && path.section) {
     const s = sections.find(x => x.plugin === path.id && x.id === path.section);
     const p = ui.installed.find(x => x.id === path.id);
@@ -286,8 +294,8 @@ export function pluginsPage(ui, path, { status = () => null, sections = [] } = {
     }
     return { label: s.label, description: `From ${p?.name || s.pluginName}, drawn by the plugin`, content: sectionPage(path.id), fill: true };
   }
-  if (path?.id) return { label: 'Plugins', description: '', content: installedDetail(ui, path.id, status(path.id)) };
-  return { label: 'Plugins', description: 'Echo-compatible plugins: pages, Today widgets and routines from marketplaces you add.', content: pluginsPanel(ui, { status }) };
+  if (path?.id) return { label: 'Plugins', description: '', content: installedDetail(ui, path.id, status(path.id), providesTasks(path.id)) };
+  return { label: 'Plugins', description: 'Echo-compatible plugins: pages, Today widgets and routines from marketplaces you add.', content: pluginsPanel(ui, { status, providesTasks }) };
 }
 
 // ---------------------------------------------------------------- controller

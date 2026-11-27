@@ -17,8 +17,10 @@
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
 //                                       the user, and opens https: and obsidian: addresses only
 //                 {type: 'height', px} {type: 'ready'} {type: 'error', message}
-//                 {type: 'slots', call, header, menu, minutes}   the text of its `call.*` slots for the
-//                                       meeting the window shows (`call`: its folder; '' when none)
+//                 {type: 'slots', call, header, menu, minutes, minutesSlot}   the text of its
+//                                       `call.*` slots for the meeting the window shows (`call`: its
+//                                       folder; '' when none); `minutesSlot`: it declared `call.minutes`
+//                                       (regardless of `call`), for the meetings page's pinned tabs
 //                 {type: 'sheet', open}   its sheet opened or closed (the window lays the frame over
 //                                       itself while a page that isn't on screen shows one)
 //   contribution  {activities: [{id, label, badge}], sections: [{id, label, badge}], card,
@@ -57,6 +59,8 @@ const fileHandle = f => isObject(f) && exactly(f, ['file', 'name', 'size']) && t
 /** A slot's text (a chip, a menu item, a line), and how many a plugin gives one slot. */
 const SLOT_TEXT = 300;
 const MAX_SLOT_ITEMS = 8;
+/** A `call.minutes` item's text: longer, since it keeps its lines. */
+const MINUTES_TEXT = 20000;
 /** Ids of activities, sections, panels and widgets. */
 const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 
@@ -123,9 +127,9 @@ export function checkFromFrame(m) {
         case 'ready': return exactly(m, ['v', 'id', 'kind', 'type']) ? m : null;
         case 'error': return exactly(m, ['v', 'id', 'kind', 'type', 'message']) && text(m.message, TEXT) ? m : null;
         case 'slots': {
-          const texts = v => Array.isArray(v) && v.length <= MAX_SLOT_ITEMS && v.every(x => text(x, SLOT_TEXT) && x.trim() !== '');
-          return exactly(m, ['v', 'id', 'kind', 'type', 'call', 'header', 'menu', 'minutes']) && text(m.call, HASH)
-            && texts(m.header) && texts(m.menu) && texts(m.minutes) ? m : null;
+          const texts = (v, max = SLOT_TEXT) => Array.isArray(v) && v.length <= MAX_SLOT_ITEMS && v.every(x => text(x, max) && x.trim() !== '');
+          return exactly(m, ['v', 'id', 'kind', 'type', 'call', 'header', 'menu', 'minutes', 'minutesSlot']) && text(m.call, HASH)
+            && texts(m.header) && texts(m.menu) && texts(m.minutes, MINUTES_TEXT) && typeof m.minutesSlot === 'boolean' ? m : null;
         }
         case 'sheet': return exactly(m, ['v', 'id', 'kind', 'type', 'open']) && typeof m.open === 'boolean' ? m : null;
         default: return null;

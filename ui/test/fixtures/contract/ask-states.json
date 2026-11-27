@@ -1,0 +1,120 @@
+{
+  "empty": {
+    "inMenu": true,
+    "running": null,
+    "threads": []
+  },
+  "failedLast": {
+    "inMenu": true,
+    "running": null,
+    "threads": [
+      {
+        "id": "ask-7f2c",
+        "last": "failed",
+        "title": "What did I promise Priya this week?",
+        "turns": 2,
+        "updatedAt": 1795000400
+      },
+      {
+        "id": "ask-3a9e",
+        "last": "done",
+        "title": "When is the QBR?",
+        "turns": 1,
+        "updatedAt": 1794996800
+      },
+      {
+        "id": "ask-51bd",
+        "last": "done",
+        "title": "Who is Marek Novak?",
+        "turns": 1,
+        "updatedAt": 1794914000
+      }
+    ]
+  },
+  "idle": {
+    "inMenu": true,
+    "running": null,
+    "threads": [
+      {
+        "id": "ask-7f2c",
+        "last": "done",
+        "title": "What did I promise Priya this week?",
+        "turns": 2,
+        "updatedAt": 1795000400
+      },
+      {
+        "id": "ask-3a9e",
+        "last": "done",
+        "title": "When is the QBR?",
+        "turns": 1,
+        "updatedAt": 1794996800
+      },
+      {
+        "id": "ask-51bd",
+        "last": "done",
+        "title": "Who is Marek Novak?",
+        "turns": 1,
+        "updatedAt": 1794914000
+      }
+    ]
+  },
+  "running": {
+    "inMenu": true,
+    "running": {
+      "jobId": "job-9",
+      "startedAt": 1795000401,
+      "threadId": "ask-7f2c",
+      "turnId": "turn-2"
+    },
+    "threads": [
+      {
+        "id": "ask-7f2c",
+        "last": "running",
+        "title": "What did I promise Priya this week?",
+        "turns": 2,
+        "updatedAt": 1795000401
+      },
+      {
+        "id": "ask-3a9e",
+        "last": "done",
+        "title": "When is the QBR?",
+        "turns": 1,
+        "updatedAt": 1794996800
+      },
+      {
+        "id": "ask-51bd",
+        "last": "done",
+        "title": "Who is Marek Novak?",
+        "turns": 1,
+        "updatedAt": 1794914000
+      }
+    ]
+  },
+  "stoppedLast": {
+    "inMenu": true,
+    "running": null,
+    "threads": [
+      {
+        "id": "ask-7f2c",
+        "last": "stopped",
+        "title": "What did I promise Priya this week?",
+        "turns": 2,
+        "updatedAt": 1795000400
+      },
+      {
+        "id": "ask-3a9e",
+        "last": "done",
+        "title": "When is the QBR?",
+        "turns": 1,
+        "updatedAt": 1794996800
+      },
+      {
+        "id": "ask-51bd",
+        "last": "done",
+        "title": "Who is Marek Novak?",
+        "turns": 1,
+        "updatedAt": 1794914000
+      }
+    ]
+  }
+}

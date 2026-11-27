@@ -1,0 +1,211 @@
+{
+  "failed": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": false
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "failed"
+  },
+  "loading": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": false
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "loading"
+  },
+  "local": {
+    "active": "local",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Connect",
+    "parked": 0,
+    "pending": 0,
+    "retryAt": null,
+    "state": "local"
+  },
+  "needs_token": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": true
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "needs_token"
+  },
+  "off": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": false,
+        "pending": 1,
+        "ready": false
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "off"
+  },
+  "offline": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": true
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": 1795003230,
+    "state": "offline"
+  },
+  "rate_limited": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": true
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": 1795003320,
+    "state": "rate_limited"
+  },
+  "ready": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 0,
+        "ready": true
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": 1795003200,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 0,
+    "retryAt": null,
+    "state": "ready"
+  },
+  "syncing": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": true
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": 1795003200,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "syncing"
+  }
+}

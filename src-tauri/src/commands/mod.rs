@@ -17,4 +17,5 @@ pub mod smoke;
 pub mod status_smoke;
 pub mod terminal;
 pub mod terminal_launch;
+pub mod tour;
 pub mod window;

@@ -1,6 +1,8 @@
-// The Meetings controller (spec "Meetings page"): opening a meeting from anywhere (`open`), the
-// list (filters, search, folding days, hiding meetings, the row menu), selection and ↑/↓, the four tabs (page sections,
-// which can sit side by side; the list's section collapses), Make notes (one meeting, for all, Try again),
+// The Meetings controller (spec "Meetings page", 2026-11-23-meetings-view-design.md): opening a
+// meeting from anywhere (`open`), the list (filters, search, folding days, hiding meetings, the row
+// menu), selection and ↑/↓, the meeting's panes (the summary and its tabs, Copy and Make in the
+// strip; Transcript, Notes, Files and Action items behind ⋯; Back and Esc; the list's section
+// collapses), Make notes (one meeting, for all, Try again),
 // Check now, Download again, Import, speakers, the template and automatic notes, documents (view,
 // Side by side, versions, main, delete, edit against the version it was opened on), files, and
 // the right next step for every error. It keeps a per-meeting cache of `meeting_read` answers
@@ -8,18 +10,21 @@
 // `doc-*` actions here; everything it touches is injected, so node:test drives it without a
 // browser. No optimistic updates: every change is an operation and the snapshot after it.
 import { escapeHtml } from './store.js';
-import { DEFAULT_FILTERS } from './tasks-model.js';
+import { DEFAULT_FILTERS, meOf } from './tasks-model.js';
 import { quoted } from './tasks-controller.js';
 import { formatDate, formatTime } from './format.js';
 import {
-  TABS, failedNotesJob, isHidden, laneFor, lineAt, listModel, listOrder, meetingItems, meetingTasks, parseGlossary, readHidden, resolveTemplate, rulesOf, seriesOf,
+  PANES, failedNotesJob, isHidden, laneFor, lineAt, listModel, listOrder, meetingItems, meetingTasks, parseGlossary, readHidden, resolveTemplate, rulesOf, seriesOf,
 } from './meetings-model.js';
 import { paneOf } from './dock-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
-import { plural } from './view-meeting-tabs.js';
+import { meetingContext, plural, ticksOf, undoableOf } from './view-meeting-tabs.js';
+import { shownTab, summaryTabs } from './meeting-view-model.js';
 
 const IMPORT_MAX = 5 * 1024 * 1024;
 const GLOSSARY_FOR_MS = 60_000;
+/** How long Copy reads "Copied". */
+const COPIED_MS = 1500;
 /** A friendly error that keeps the code the next step depends on. */
 const problemOf = (code, message) => Object.assign(new Error(message), { code });
 /** Problems of one meeting, which a batch goes on past, and how a summary says them. Any other
@@ -38,19 +43,23 @@ const ONE_MEETING = {
  * re-renders; `render()` a re-render; `route(name, tab)` navigation (it writes the hash); the
  * dialogs and `toast(message, tone, {label, run})`; `writeText` the clipboard; `downloadText(name,
  * text)` a file in Downloads; `focus(selectors)` focus after a render; `syncHash()` writes
- * `#/meetings/<id>/<tab>` after a selection or tab change; `ensureClaudeChoice()` asks which
+ * `#/meetings/<id>/<pane>` after a selection or pane change; `ensureClaudeChoice()` asks which
  * Claude writes (null when cancelled); `moveTask(id, status, {log})` the Tasks board's move;
  * `connect(capabilities)` a Microsoft sign-in for more access; `showEvent(id)` the calendar's
- * event card; `canRender()` whether a read may re-render now. `dock` is the page's sections:
- * `layout()`, `collapse(id, on)` (a section, or the one holding tab `id`; it re-renders),
- * `visible()` the tabs in view, and `show(id)` brings tab `id` into view in the section that
- * holds it (the caller re-renders).
+ * event card; `canRender()` whether a read may re-render now; `summaryInputs()` the plugins'
+ * call slots and the plugins installed and on, for the summary tabs; `timer(fn, ms)` a delay.
+ * `dock` is the page's sections: `layout()` and `collapse(id, on)` (a section, or the one holding
+ * tab `id`; it re-renders).
  */
 export function createMeetingsController({
   state, store, snap, mutate, render, route = async () => {}, openModal = () => null, confirmModal = () => {}, toast = () => {},
   writeText = async () => {}, downloadText = () => {}, focus = () => {}, setPref = () => {}, syncHash = () => {}, now = () => Date.now(),
   ensureClaudeChoice = async () => null, moveTask = null, connect = null, showEvent = null, canRender = () => true,
-  dock = { layout: () => null, collapse: async () => false, visible: () => [], show: () => {} },
+  summaryInputs = () => ({ slots: [], plugins: [] }), timer = (fn, ms) => setTimeout(fn, ms),
+  dock = { layout: () => null, collapse: async () => false },
+  // The action items column's "Add N to Tasks" and Undo (spec "The task target"): Connect's own
+  // board by default; app.js passes `activeTaskTarget`, the active provider's.
+  taskTarget = { label: 'Tasks', add: async () => ({ done: [], failed: [] }), undo: async () => ({ done: [], failed: [] }) },
 }) {
   const v = () => state.meetings;
   const items = () => meetingItems(snap(), now());
@@ -121,32 +130,79 @@ export function createMeetingsController({
     }
   }
 
-  /** The selected meeting, or the first in the list when there is none (or it is gone). */
+  /** The pane a meeting opens on: the "Open a meeting on" setting (Summary by default). */
+  const openOn = () => {
+    const pane = snap().settings?.meetings?.openOn;
+    return PANES.includes(pane) ? pane : 'summary';
+  };
+
+  /** The selected meeting, or the first in the list when there is none (or it is gone); a pane
+   *  not chosen yet (a link without one) is the setting's. The Tasks tab is gone (spec ruling 9):
+   *  with the column on, an old `/tasks` link means the summary, focused on the column, not the
+   *  pane `tasks` used to mean. The redirect always fixes the pane (so nothing can land on the
+   *  pane that no longer exists), but only raises `focusColumn` — which steals keyboard focus —
+   *  when `tasksLink` says this `tasks` came from an arrival (the boot hash parse or `open()`'s
+   *  own resolution), never from an in-page action re-rendering with `pane` left at `tasks`. */
   function ensureSelection() {
     const s = snap();
     const all = meetingItems(s, now());
+    if (!PANES.includes(v().pane)) v().pane = openOn();
+    else if (v().pane === 'tasks' && s.settings?.meetings?.actionItems !== false) {
+      v().pane = 'summary';
+      v().focusColumn = !!v().tasksLink;
+    }
+    v().tasksLink = false;
     if (v().selected && all.some(m => m.id === v().selected)) return v().selected;
     v().selected = order()[0] || null;
     return v().selected;
   }
 
-  // ---------------------------------------------------------------- the sections
+  // ---------------------------------------------------------------- the summary tabs
 
-  /** The meeting tabs in view (`notes` …), in every section. */
-  const shownTabs = () => dock.visible().map(id => id.replace(/^mtg-/, '')).filter(tab => TABS.includes(tab));
-  /** Brings meeting tab `tab` into view, in the section that holds it. */
-  const showTab = tab => dock.show(`mtg-${tab}`);
+  /** Meeting `id`'s summary tabs and the one shown (meeting-view-model.js `summaryTabs`). */
+  function tabsFor(id) {
+    const m = item(id);
+    if (!m) return { tabs: [], more: [], tab: null };
+    const s = snap();
+    const mc = meetingContext({ s, reads: () => ({}), rules: rulesOf(s) }, m);
+    const { tabs, more } = summaryTabs(s, mc, summaryInputs());
+    return { tabs, more, tab: shownTab(tabs, more, v().summaryTab?.[id]) };
+  }
 
-  /**
-   * The tab the hash names follows the sections: the one meeting tab `fresh` brought into view
-   * (a tab chosen, moved or expanded there), or, when the one chosen last is out of view, the
-   * first meeting tab in view.
-   */
-  function follow(fresh = []) {
-    const shown = shownTabs();
-    const came = fresh.map(id => id.replace(/^mtg-/, '')).filter(tab => shown.includes(tab));
-    if (came.length === 1) v().tab = came[0];
-    else if (shown.length && !shown.includes(v().tab)) v().tab = shown[0];
+  /** Summary tab `key` shown for meeting `id`, in the summary. */
+  async function showSummaryTab(id, key) {
+    const view = v();
+    view.summaryTab = { ...view.summaryTab, [id]: key };
+    view.pane = 'summary';
+    await rerender();
+    focusShownTab(id);
+  }
+
+  /** Focus on the summary tab shown for `id`: its button, or More ▾ when it sits under that menu
+   *  (its item is hidden in the closed menu, so focus would be lost). */
+  function focusShownTab(id) {
+    const { more, tab } = tabsFor(id);
+    if (tab && more.some(t => t.key === tab.key)) return focus('.ws-mtg-tabs .ws-mtg-more');
+    return focus('.ws-mtg-tabs [aria-selected="true"]');
+  }
+
+  /** Copies the shown tab's text (its document's Markdown, or a plugin's minutes), then the
+   *  button reads "Copied" for a moment. */
+  async function copyTab(id, key) {
+    const { tabs, more } = tabsFor(id);
+    const tab = [...tabs, ...more].find(t => t.key === key);
+    if (!tab) return;
+    const text = tab.doc ? await docText(id, tab.doc.id) : tab.text;
+    if (!text) return;
+    await writeText(text);
+    const mark = `${id}:${key}`;
+    v().copied = mark;
+    await render();
+    timer(async () => {
+      if (v().copied !== mark) return;
+      v().copied = null;
+      await render();
+    }, COPIED_MS);
   }
 
   /** The list's section collapsed (`on`) or expanded; it re-renders. */
@@ -156,7 +212,9 @@ export function createMeetingsController({
     return layout ? paneOf(layout, 'mtg-list') : null;
   };
 
-  /** Reads what the open meeting's tabs in view show that isn't read yet, then re-renders once. */
+  /** Reads what the open meeting's pane shows that isn't read yet, then re-renders once: the
+   *  transcript once saved, the glossary for the Transcript pane, the files for Files, the
+   *  documents the Notes pane shows, and the summary tab's document. */
   async function load() {
     if (state.route !== 'meetings') return;
     const id = v().selected;
@@ -165,12 +223,16 @@ export function createMeetingsController({
     const rec = m.rec?.data || {};
     const saved = ['downloaded', 'ready', 'failed'].includes(m.state) && !!rec.folder;
     const c = entry(id);
-    const shown = shownTabs();
+    const pane = PANES.includes(v().pane) ? v().pane : openOn();
     const jobs = [];
     if (saved && c.transcript === undefined) jobs.push(read(id, 'transcript', { part: 'transcript' }));
-    if (shown.includes('transcript')) jobs.push(loadGlossary());
-    if (shown.includes('files') && rec.folder && c.files === undefined) jobs.push(read(id, 'files', { part: 'files' }));
-    if (shown.includes('notes') && saved) {
+    if (pane === 'transcript') jobs.push(loadGlossary());
+    if (pane === 'files' && rec.folder && c.files === undefined) jobs.push(read(id, 'files', { part: 'files' }));
+    if (pane === 'summary' && saved) {
+      const doc = tabsFor(id).tab?.doc;
+      if (doc && c.docs[doc.id] === undefined) jobs.push(read(id, `doc:${doc.id}`, { part: 'doc', docId: doc.id }));
+    }
+    if (pane === 'notes' && saved) {
       const docs = rec.docs || [];
       const view = docs.find(d => d.id === v().docView[id]) || docs.find(d => d.id === rec.main) || docs[0];
       const shown = view ? [view] : [];
@@ -202,9 +264,10 @@ export function createMeetingsController({
   }
 
   /** Opens a meeting on the Meetings page (Today, the calendar, a task, a notification): the
-   *  filter switches when it doesn't show the meeting, `tab` opens (the same meeting keeps its
-   *  tab), `line` highlights a transcript line. */
-  async function open(id, tab = null, line = null) {
+   *  filter switches when it doesn't show the meeting, `pane` opens (with none, the same meeting
+   *  keeps its pane and another opens on the "Open a meeting on" setting), `line` highlights a
+   *  transcript line. */
+  async function open(id, pane = null, line = null) {
     const m = item(id);
     if (!m) {
       toast('This meeting is no longer in your calendar.', 'error');
@@ -213,9 +276,14 @@ export function createMeetingsController({
     const view = v();
     const same = view.selected === id;
     if (!same) leave(view.selected);
+    const resolvedPane = PANES.includes(pane) ? pane : same && PANES.includes(view.pane) ? view.pane : openOn();
     Object.assign(view, laneFor(m, view.filter, view.showNone), {
       q: '', selected: id,
-      tab: TABS.includes(tab) ? tab : same ? view.tab : 'notes',
+      pane: resolvedPane,
+      // An arrival (this is the one function every "go to this meeting" route passes through):
+      // `ensureSelection` reads this to tell a genuine old `/tasks` link from an in-page action
+      // that happens to leave `pane` at `tasks`, so only the former moves focus to the column.
+      tasksLink: resolvedPane === 'tasks',
       focusLine: Number.isInteger(line) ? line : null,
     });
     if (!same || Number.isInteger(line)) Object.assign(view, { tq: '', speaker: '' });
@@ -225,18 +293,17 @@ export function createMeetingsController({
     const day = shown.days.find(d => d.items.some(x => x.id === id));
     if (day && view.folded[day.key]) view.folded = Object.fromEntries(Object.entries(view.folded).filter(([k]) => k !== day.key));
     if (shown.needs.some(x => x.id === id)) view.needsFolded = false;
-    showTab(view.tab);
     await route('meetings');
     focus([`[data-action="meeting-select"][data-id="${quoted(id)}"]`]);
   }
 
-  /** Makes `id` the open meeting, without the last one's transcript search, speaker, line and
-   *  guest list. */
+  /** Makes `id` the open meeting, on the "Open a meeting on" pane, without the last one's
+   *  transcript search, speaker, line and guest list. */
   function pick(id) {
     const view = v();
     if (view.selected === id) return;
     leave(view.selected);
-    Object.assign(view, { selected: id, tq: '', speaker: '', focusLine: null, peopleAll: null });
+    Object.assign(view, { selected: id, pane: openOn(), tq: '', speaker: '', focusLine: null, peopleAll: null });
   }
 
   async function select(id) {
@@ -244,7 +311,7 @@ export function createMeetingsController({
     await rerender();
   }
 
-  /** Side by side takes the list's room: its section collapses, unless it holds the notes too,
+  /** Side by side takes the list's room: its section collapses, unless it holds the meeting too,
    *  and opens again afterwards unless it was collapsed before. */
   async function setCompare(on) {
     const view = v();
@@ -252,16 +319,42 @@ export function createMeetingsController({
     view.compare = !!on;
     const list = listSection();
     if (on) {
-      view.listBefore = !list || list.collapsed || list.tabs.includes('mtg-notes');
+      view.listBefore = !list || list.collapsed || list.tabs.includes('mtg-meeting');
       if (!view.listBefore) await collapseList(true);
     } else if (view.listBefore === false && list?.collapsed) await collapseList(false);
   }
 
-  /** ↑/↓ on the list moves the selection (not while typing, in a dialog or in the meeting). */
+  /** ↑/↓ on the list moves the selection (not while typing, in a dialog or in the meeting); ←/→
+   *  move between the summary tabs; Esc in a pane goes back to the summary. */
   async function key(ev) {
     if (ev.key === 'Escape' && v().rowMenu) {
       v().rowMenu = null;
       await render();
+      return true;
+    }
+    if (ev.key === 'Escape' && !ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
+      // Not while typing, in a dialog or in an open menu (which Escape closes first).
+      if (!PANES.includes(v().pane) || v().pane === 'summary' || ev.target?.closest?.('input, textarea, select, dialog, details[open], [contenteditable]')) return false;
+      ev.preventDefault?.();
+      v().pane = 'summary';
+      await rerender();
+      focusShownTab(v().selected);
+      return true;
+    }
+    // ←/→ on a tab, or on More ▾ (closed: an open menu keeps its own keys).
+    if (['ArrowLeft', 'ArrowRight'].includes(ev.key) && !ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.target?.closest?.('.ws-mtg-tabs [role=tab], .ws-mtg-tabs .ws-mtg-more') && !ev.target.closest('details[open]')) {
+      const id = v().selected;
+      const { tabs, more, tab } = tabsFor(id);
+      const all = [...tabs, ...more];
+      if (all.length < 2) return false;
+      ev.preventDefault?.();
+      // From the tab that has focus (the first visible one can be the Tab stop while a More tab
+      // is shown), else the one shown.
+      const fromKey = ev.target.closest('.ws-mtg-tabs [role=tab]')?.dataset?.key;
+      const from = all.findIndex(t => t.key === fromKey);
+      const at = from >= 0 ? from : Math.max(0, all.findIndex(t => t.key === tab?.key));
+      const next = all[(at + (ev.key === 'ArrowRight' ? 1 : -1) + all.length) % all.length];
+      await showSummaryTab(id, next.key);
       return true;
     }
     // "/" opens the search field (not while typing somewhere).
@@ -372,7 +465,7 @@ export function createMeetingsController({
   function problem(err, id) {
     switch (err?.code) {
       case 'needs_choice':
-        return toast('Choose which Claude writes your meeting notes.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        return toast('Choose which Claude writes your meeting notes.', 'error', { label: 'Open Settings › AI', run: () => route('settings', 'ai') });
       case 'folder_missing':
         return toast(`The folder of “${titleOf(id)}” is gone.`, 'error', id && record(id)?.data?.transcriptIds?.length && !record(id)?.data?.imported ? { label: 'Download again', run: () => download(id) } : { label: 'Import', run: () => importDialog(id) });
       case 'folder_unwritable':
@@ -386,7 +479,7 @@ export function createMeetingsController({
       case 'needs_login':
         // A meeting operation answers needs_login for the Microsoft account (target(),
         // active_workspace); only an error that carries Claude's class is Claude's sign-in.
-        if (err.class === 'needs_login') return toast(err.message || 'Claude needs you to sign in again.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        if (err.class === 'needs_login') return toast(err.message || 'Claude needs you to sign in again.', 'error', { label: 'Open Settings › AI', run: () => route('settings', 'ai') });
         return toast(err.message || 'Microsoft 365 needs you to sign in again.', 'error', { label: 'Sign in to Microsoft', run: () => (connect ? connect([]) : route('settings', 'microsoft')) });
       default:
         throw err;
@@ -653,18 +746,75 @@ export function createMeetingsController({
       const at = lineAt(segments, ref);
       index = at >= 0 ? at : null;
     }
-    Object.assign(view, { selected: id, tab: 'transcript', tq: '', speaker: '', focusLine: index });
-    showTab('transcript');
+    Object.assign(view, { selected: id, pane: 'transcript', tq: '', speaker: '', focusLine: index });
     await rerender();
   }
 
-  /** The meeting's tasks to review, accepted together: queued at once and each shown at once. */
-  async function acceptAll(id) {
-    const review = meetingTasks(snap(), id).filter(t => t.data.status === 'review');
-    await Promise.all(review.map(t => (moveTask
-      ? moveTask(t.id, 'todo', { log: 'Accepted from review' })
-      : mutate('task_save', { id: t.id, status: 'todo', log: 'Accepted from review' }))));
-    if (review.length) toast(`${plural(review.length, 'task')} accepted. They’re on your board.`, 'success');
+  // ---------------------------------------------------------------- the action items column
+
+  /** Meetings with "Add N to Tasks" in flight: a second click while one runs is ignored. */
+  const addingItems = new Set();
+
+  /** The column's tasks and ticks for `id`, read fresh (the review's tasks change once an add
+   *  succeeds, and a tick made while an add is in flight must count). */
+  const itemsFor = id => ({ m: { id }, tasks: meetingTasks(snap(), id) });
+
+  /** Calls the task target's `add` with the column's current ticks (`ticksOf`): moves the added
+   *  tasks off To review, keeps a failed one ticked with why, and lets Undo put a whole add
+   *  back. A rejection (the provider is unreachable, say) is a failure of every ticked id, same
+   *  as a structured one — never an unhandled rejection. */
+  async function addItems(id) {
+    if (addingItems.has(id)) return undefined;
+    const ticked = ticksOf(v(), itemsFor(id), meOf(snap()));
+    if (!ticked.length) return undefined;
+    addingItems.add(id);
+    try {
+      let done = [];
+      let failed = [];
+      try {
+        ({ done, failed } = await taskTarget.add(ticked));
+      } catch (err) {
+        failed = ticked.map(taskId => ({ id: taskId, message: err?.message || String(err) }));
+      }
+      const view = v();
+      // A tick made on another To review task while this add was in flight survives: start from
+      // the column's ticks now, drop the ones this add just moved off To review (pruning may not
+      // have caught up yet), and keep a failed one ticked whatever else changed.
+      const kept = new Set(ticksOf(view, itemsFor(id), meOf(snap())));
+      for (const d of done) kept.delete(d);
+      for (const f of failed) kept.add(f.id);
+      view.ticked = { ...view.ticked, [id]: [...kept] };
+      view.added = { meetingId: id, ids: done };
+      view.addError = failed.length ? { meetingId: id, message: failed[0].message } : null;
+      return render();
+    } finally {
+      addingItems.delete(id);
+    }
+  }
+
+  /** Undoes the last "Add N to Tasks": moves back the tasks it added that are still in To do
+   *  (`undoableOf`: one finished or moved since stays put) and ticks again the ones moved back.
+   *  The target's failures keep Undo for those ids and say why, as an add does; a rejection
+   *  leaves `v.added` as it was and tells the person through a toast, rather than throwing. */
+  async function undoItems(id) {
+    const added = v().added;
+    if (!added || added.meetingId !== id) return undefined;
+    const ids = undoableOf(v(), itemsFor(id));
+    let done = [];
+    let failed = [];
+    if (ids.length) {
+      try {
+        ({ done, failed } = await taskTarget.undo(ids));
+      } catch (err) {
+        toast(err?.message || 'Couldn’t undo. Try again.', 'error');
+        return undefined;
+      }
+    }
+    const view = v();
+    view.ticked = { ...view.ticked, [id]: [...new Set([...(view.ticked[id] || []), ...done])] };
+    view.added = failed.length ? { meetingId: id, ids: failed.map(f => f.id) } : null;
+    view.addError = failed.length ? { meetingId: id, message: failed[0].message } : null;
+    return render();
   }
 
   async function addTask(id, f) {
@@ -732,14 +882,29 @@ export function createMeetingsController({
       case 'meeting-hide': return hide(id);
       case 'meeting-hide-series': return hide(id, { series: true });
       case 'meeting-unhide': return unhide(id);
-      case 'meeting-tab': {
-        // A meeting tab (`notes` …) is the section tab `mtg-notes` …, wherever it sits.
-        if (el.dataset.id) view.selected = el.dataset.id;
-        view.tab = TABS.includes(el.dataset.tab) ? el.dataset.tab : 'notes';
-        showTab(view.tab);
+      // A pane behind ⋯ (or Review, with the column off), and back to the summary.
+      case 'meeting-pane':
+        view.pane = PANES.includes(el.dataset.pane) ? el.dataset.pane : 'summary';
         await rerender();
-        return focus(`[data-action="dock-tab"][data-page="meetings"][data-tab="mtg-${quoted(view.tab)}"]`);
-      }
+        return focus('.ws-mtg-strip [data-action="meeting-back"]');
+      // A person's tasks in the people popover, with the column on: it already shows beside
+      // whatever pane is open (the popover itself just closed, the same way any step in a menu
+      // does, above), so bring it into view rather than change the pane.
+      case 'meeting-items-focus':
+        return focus('.ws-mtg-items [data-action="meeting-item-add-open"]', { scroll: true });
+      case 'meeting-back':
+        view.pane = 'summary';
+        await rerender();
+        return focusShownTab(id);
+      // The strip: a summary tab, its primary (Copy, Make <name>, Try again), and ⋯'s Make again and Edit.
+      case 'meeting-summary-tab': return showSummaryTab(id, el.dataset.key);
+      case 'meeting-copy-tab': return copyTab(id, el.dataset.key);
+      case 'meeting-make-tab': return guarded(id, () => makeNotes(id, { templateId: el.dataset.template, findTasks: true }));
+      case 'meeting-edit-tab':
+        Object.assign(view, { pane: 'notes', docView: { ...view.docView, [id]: docId } });
+        await setCompare(false);
+        syncHash();
+        return startEdit(id, docId);
       case 'meeting-list-toggle': {
         const hide = !listSection()?.collapsed;
         // Showing the list ends Side by side.
@@ -830,7 +995,25 @@ export function createMeetingsController({
       case 'meeting-board':
         state.tasks.filters = { ...DEFAULT_FILTERS, meeting: id };
         return route('tasks');
-      case 'meeting-tasks-accept': return acceptAll(id);
+      // The action items column: a checkbox, which row is open, "Add N to Tasks" and Undo, "+ Add".
+      case 'meeting-item-tick': {
+        const taskId = el.dataset.task;
+        const ticked = new Set(ticksOf(view, itemsFor(id), meOf(snap())));
+        if (el.checked) ticked.add(taskId); else ticked.delete(taskId);
+        view.ticked = { ...view.ticked, [id]: [...ticked] };
+        return render();
+      }
+      case 'meeting-item-open':
+        view.itemOpen = view.itemOpen === el.dataset.task ? null : el.dataset.task;
+        return render();
+      case 'meeting-item-add-open': {
+        view.addOpen = !view.addOpen;
+        await render();
+        if (view.addOpen) focus(`[data-form="meeting-task"][data-id="${quoted(id)}"] [name=text]`);
+        return undefined;
+      }
+      case 'meeting-items-add': return addItems(id);
+      case 'meeting-items-undo': return undoItems(id);
       case 'meeting-reload': cache.delete(id); return load();
       case 'meeting-file-preview': return filePreview(id, el.dataset.file).catch(err => problem(err, id));
       case 'meeting-file-save': {
@@ -912,7 +1095,7 @@ export function createMeetingsController({
   }
 
   /** Fields typed into: the document editor keeps its draft in the view state, and the Notes
-   *  tab's Make notes form (`data-make`) what was chosen and typed, so a render keeps them. */
+   *  pane's Make notes form (`data-make`) what was chosen and typed, so a render keeps them. */
   function input(el) {
     if (el?.id === 'meeting-doc-editor' && v().editing) {
       v().editing.draft = el.value;
@@ -930,12 +1113,17 @@ export function createMeetingsController({
     return true;
   }
 
-  /** The person left a meeting: its unsent Make notes form starts afresh next time. */
-  function leave(id) {
+  /** The person left a meeting: its unsent Make notes form starts afresh next time, and the
+   *  action items column's "+ Add", open row, last add (its Undo) and add error go — none is kept
+   *  per meeting (`v.addOpen`, `v.itemOpen`, `v.added` and `v.addError` are single, page-wide
+   *  values, not maps). `meeting: false` (notes just queued, still on the meeting) keeps the
+   *  last add and its error. */
+  function leave(id, { meeting = true } = {}) {
     if (id && v().makeForm) delete v().makeForm[id];
+    Object.assign(v(), { addOpen: false, itemOpen: null }, meeting ? { added: null, addError: null } : {});
   }
 
-  /** Forms: the Notes tab's Make notes and a task added from the Tasks tab. */
+  /** Forms: the Notes pane's Make notes and a task added from the Action items pane. */
   async function submit(form, f) {
     const id = form.dataset.id;
     if (form.dataset.form === 'meeting-notes') {
@@ -946,7 +1134,8 @@ export function createMeetingsController({
       const queued = await guarded(id, () => makeNotes(id, options));
       const name = (snap().noteTemplates || []).find(t => t.id === options.templateId)?.name || 'notes';
       if (queued) {
-        leave(id);
+        // Still on this meeting: its last add keeps its Undo.
+        leave(id, { meeting: false });
         toast(`Making ${name} for “${titleOf(id)}”`, 'success');
       }
       return undefined;
@@ -955,5 +1144,8 @@ export function createMeetingsController({
     return undefined;
   }
 
-  return { open, handle, input, submit, key, load, follow, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
+  /** The task target's own name, for "Add N to …" and the column's other strings. */
+  const taskLabel = () => taskTarget.label || 'Tasks';
+
+  return { open, handle, input, submit, key, load, data, glossary, taskLabel, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
 }

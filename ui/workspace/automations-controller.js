@@ -4,7 +4,7 @@
 // route, the dialogs), so node:test drives it without a browser; only the editor's own form is
 // DOM.
 import {
-  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, AUTOMATION_TABS, TEMPLATES,
+  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, providerNameOf, AUTOMATION_TABS, TEMPLATES, routeRowOf,
 } from './view-automations.js';
 import { records } from './selectors.js';
 import { controlSelector, soleMatch } from './ui.js';
@@ -95,10 +95,11 @@ export function createAutomationsController({
     return loadRuns({ snapshot });
   }
 
-  /** Asks once which Claude runs automations when nothing would choose one; false when cancelled. */
+  /** Asks once which AI runs automations when nothing would choose one (its own pin, else the
+   *  profile Rust chose for its row); false when cancelled. */
   async function claudeReadyFor(a) {
     const ai = state.ai || {};
-    if (ai.status !== 'ready' || a.ai?.profile || ai.settings?.routes?.automation?.profile || ai.settings?.defaultProfile) return true;
+    if (ai.status !== 'ready' || a.ai?.profile || ai.chosen?.[routeRowOf(a)]?.profile) return true;
     return !!(await ensureClaudeChoice());
   }
 
@@ -169,7 +170,12 @@ export function createAutomationsController({
     return route('automations', 'runs');
   }
 
-  const editorCtx = (error = null) => ({ zone: snap().settings.timeZone, ai: state.ai, error });
+  /** The workspace zone, Claude's state, the active task provider's name ("Tasks in Todoist") and
+   *  the note templates a summary automation can make. */
+  const editorCtx = (error = null) => {
+    const s = snap();
+    return { zone: s.settings.timeZone, ai: state.ai, error, providerName: providerNameOf(s), templates: s.noteTemplates || [] };
+  };
 
   /** Renders the editor again from its own form (a trigger, event, profile or reply-draft change, or an error). */
   function refreshEditor(form, change = {}, error = null) {
@@ -190,7 +196,7 @@ export function createAutomationsController({
   async function openEditor(draft, { title } = {}) {
     // Profiles and models for the AI choice; a failure leaves "Default" to choose.
     if (state.ai?.status !== 'ready') {
-      await store.query('ai_status', {}).then(status => Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings })).catch(() => {});
+      await store.query('ai_status', {}).then(status => Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen })).catch(() => {});
     }
     const creating = !draft.id;
     const dialog = openModal({
@@ -238,7 +244,9 @@ export function createAutomationsController({
       case 'automation-new': return openEditor(newAutomationDraft());
       case 'automation-template': {
         const template = TEMPLATES.find(t => t.id === id);
-        return template ? openEditor(draftFromAutomation(template.automation), { title: `New automation: ${template.name}` }) : undefined;
+        return template
+          ? openEditor({ ...draftFromAutomation(template.automation), template: template.id }, { title: `New automation: ${template.name}` })
+          : undefined;
       }
       case 'automation-edit': {
         const rec = automation(id);

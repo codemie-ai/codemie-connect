@@ -5,18 +5,36 @@
 //! (`uses.network.hosts_from`) are the user's to set, never the plugin's.
 use super::{bad, io_failed, permission, read_json, write_json, Granted, Services};
 use crate::plugins::host::HostError;
+use crate::plugins::manifest::SettingDef;
+use crate::plugins::registry::PluginPaths;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 /// The longest text a setting holds.
 const MAX_TEXT: usize = 8 * 1024;
 
+/// Held while a settings or secrets file is read, changed and written back: the window's
+/// `set_setting` and a plugin's own `ctx.settings.set` both rewrite these files, and a write
+/// between another's read and write would lose its value. Writes are rare, so one lock for every
+/// plugin is enough.
+static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn settings_file(s: &Services, id: &str) -> PathBuf {
-    s.data_of(id).join("settings.json")
+    plain_file(&s.paths, id)
 }
 
 pub(crate) fn secrets_file(s: &Services, id: &str) -> PathBuf {
-    s.paths.secrets_of(id).join("secrets.json")
+    secrets_file_of(&s.paths, id)
+}
+
+/// `<data>/plugins/data/<id>/settings.json`: its plain settings.
+pub(crate) fn plain_file(paths: &PluginPaths, id: &str) -> PathBuf {
+    paths.data_of(id).join("settings.json")
+}
+
+/// `<private>/credentials/plugins/<id>/secrets.json`: its `secret` settings.
+pub(crate) fn secrets_file_of(paths: &PluginPaths, id: &str) -> PathBuf {
+    paths.secrets_of(id).join("secrets.json")
 }
 
 /// Its value: what was set, else the manifest's default, else `null`. An undeclared key is
@@ -47,6 +65,21 @@ pub fn set(s: &Services, p: &Granted, key: &str, value: &Value) -> Result<Value,
             p.id
         )));
     }
+    s.writable()?;
+    store(&s.paths, &p.id, def, value)?;
+    Ok(Value::Null)
+}
+
+/// Stores declared setting `def` of plugin `id` (checked to its type; `null`, or `""` for a
+/// secret, clears it): a secret only in the private root, 0600; anything else in its data folder.
+/// Whoever calls it has checked that the setting may be set.
+pub(crate) fn store(
+    paths: &PluginPaths,
+    id: &str,
+    def: &SettingDef,
+    value: &Value,
+) -> Result<(), HostError> {
+    let key = def.key.as_str();
     let fits = match (def.kind.as_str(), value) {
         (_, Value::Null) => true,
         ("bool", v) => v.is_boolean(),
@@ -64,16 +97,18 @@ pub fn set(s: &Services, p: &Granted, key: &str, value: &Value) -> Result<Value,
             }
         )));
     }
-    s.writable()?;
+    let _writing = WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if def.kind == "secret" {
-        let mut secrets = read_object(&secrets_file(s, &p.id));
+        let mut secrets = read_object(&secrets_file_of(paths, id));
         match value.as_str().filter(|t| !t.is_empty()) {
             Some(t) => secrets.insert(key.into(), json!(t)),
             None => secrets.remove(key),
         };
-        write_private(&secrets_file(s, &p.id), &Value::Object(secrets))?;
+        write_private(&secrets_file_of(paths, id), &Value::Object(secrets))?;
     } else {
-        let file = settings_file(s, &p.id);
+        let file = plain_file(paths, id);
         let mut all = read_object(&file);
         if value.is_null() {
             all.remove(key);
@@ -82,7 +117,24 @@ pub fn set(s: &Services, p: &Granted, key: &str, value: &Value) -> Result<Value,
         }
         write_json(&file, &Value::Object(all))?;
     }
-    Ok(Value::Null)
+    Ok(())
+}
+
+/// Whether plugin `id` has a value stored for its secret `key` (never the value itself).
+pub(crate) fn secret_is_set(paths: &PluginPaths, id: &str, key: &str) -> bool {
+    read_object(&secrets_file_of(paths, id))
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|t| !t.is_empty())
+}
+
+/// Every secret value stored for plugin `id`, only for Connect's own checks that keep them out of
+/// a message (`TaskProviders::secret_matches`); never shown or sent anywhere.
+pub(crate) fn secret_values(paths: &PluginPaths, id: &str) -> Vec<String> {
+    read_object(&secrets_file_of(paths, id))
+        .into_values()
+        .filter_map(|v| v.as_str().filter(|t| !t.is_empty()).map(str::to_string))
+        .collect()
 }
 
 /// The addresses the user listed in the settings `uses.network.hosts_from` names.
@@ -223,5 +275,36 @@ mod tests {
         assert!(
             listed_addresses(&env.services, &env.services.granted("telegram").unwrap()).is_empty()
         );
+    }
+
+    /// The window's `set_setting` and the plugin's own `ctx.settings.set` both rewrite the same
+    /// files: writes at the same moment must each keep the other's value.
+    #[test]
+    fn simultaneous_writes_keep_every_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(&dir.path().join("data"), &dir.path().join("private"));
+        let def = |key: String, kind: &str| SettingDef {
+            key,
+            label: "L".into(),
+            kind: kind.into(),
+            default: None,
+            help: None,
+        };
+        std::thread::scope(|scope| {
+            for t in 0..16 {
+                let (paths, def) = (&paths, &def);
+                scope.spawn(move || {
+                    for i in 0..8 {
+                        let key = format!("k{t}_{i}");
+                        store(paths, "todoist", &def(key.clone(), "string"), &json!("v")).unwrap();
+                        store(paths, "todoist", &def(key, "secret"), &json!("s")).unwrap();
+                    }
+                });
+            }
+        });
+        let plain = read_object(&plain_file(&paths, "todoist"));
+        let secrets = read_object(&secrets_file_of(&paths, "todoist"));
+        assert_eq!(plain.len(), 128, "a plain write was lost");
+        assert_eq!(secrets.len(), 128, "a secret write was lost");
     }
 }

@@ -17,9 +17,28 @@ mod workspace;
 use state::AppState;
 use tauri::Manager;
 
+// The real-app tour (`commands::tour`) never reaches a release build.
+#[cfg(all(feature = "tour", not(debug_assertions)))]
+compile_error!("the tour runs in debug builds only");
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Before anything opens: a tour launch that can't run exits 3 here.
+    let tour = commands::tour::start().is_some();
+    #[cfg_attr(not(feature = "tour"), allow(unused_mut))]
+    let mut context = tauri::generate_context!();
+    #[cfg(feature = "tour")]
+    if tour {
+        commands::tour::edit_window_config(&mut context.config_mut().app.windows[0]);
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    {
+        // tao activates the app at launch otherwise, taking focus from whatever the user is in.
+        builder = builder.activate_ignoring_other_apps(!tour);
+    }
+    builder
         // Every webview stays on Connect's own pages; links open in the browser instead.
         .plugin(navigation::guard())
         // Plugin UIs, served to sandboxed frames only (DESIGN 7.3).
@@ -27,7 +46,12 @@ pub fn run() {
             plugins::protocol::SCHEME,
             plugins::protocol::handle,
         )
-        .setup(|app| {
+        .setup(move |app| {
+            // A tour has no Dock icon or app menu and never becomes the active app.
+            #[cfg(target_os = "macos")]
+            if tour {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
             plugins::caller::trust_dev_server(app.config());
             // Before single-instance, which would hand a smoke launch to a running Connect.
             commands::smoke::start_plugin_smoke(
@@ -105,16 +129,29 @@ pub fn run() {
             });
             // Connect's terminal dock: the Claude Code sessions it runs (commands::terminal).
             app.manage(commands::terminal::Terminals::default());
-            // Register lifecycle plugins only after all process PATH mutations above.
-            app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
+            // Register lifecycle plugins only after all process PATH mutations above. A tour skips
+            // single-instance, so it runs beside the user's Connect without touching its socket.
+            for name in commands::tour::lifecycle_plugins(tour) {
+                match name {
+                    "single-instance" => {
+                        app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }))?
+                    }
+                    // Registered in a tour too, since its API needs the plugin's state; a tour
+                    // shows no banner and asks no permission (`Core::request`,
+                    // `deliver_notification` and `plugin_notify` check first).
+                    "notification" => app.handle().plugin(tauri_plugin_notification::init())?,
+                    "autostart" => app
+                        .handle()
+                        .plugin(tauri_plugin_autostart::Builder::new().build())?,
+                    other => unreachable!("unknown lifecycle plugin {other}"),
                 }
-            }))?;
-            app.handle().plugin(tauri_plugin_notification::init())?;
-            app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
+            }
             // The default folder holds the pointer, sign-in data and the locks; the data itself
             // may live in a user-chosen folder it points at (DESIGN 8).
             // A plugin marketplace smoke opens its own fresh data root, never the user's.
@@ -123,6 +160,27 @@ pub fn run() {
             } else if cfg!(debug_assertions) {
                 std::env::var_os("CODEMIE_WORKSPACE_TEST_DIR").map(std::path::PathBuf::from)
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
+            // The seed goes into a fresh `workspace.sqlite` under `default_root` before anything
+            // opens it (design § 4): a refused import (a path outside the test folder, a
+            // secret) exits 3 naming it, exactly as every other tour refusal does.
+            #[cfg(feature = "tour")]
+            let tour_tasks = if tour {
+                match commands::tour::seed::import(&default_root) {
+                    Ok((counts, provider, voice)) => {
+                        eprintln!(
+                            "CODEMIE_TOUR: seed imported, {} records, {} connections",
+                            counts.records, counts.connections
+                        );
+                        Some((provider, voice))
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e.message);
+                        std::process::exit(3);
+                    }
+                }
+            } else {
+                None
+            };
             commands::plugin_smoke::arm_watchdog(app.handle());
             let handle = app.handle().clone();
             let terminals = app.state::<commands::terminal::Terminals>().inner().clone();
@@ -130,6 +188,12 @@ pub fn run() {
                 // Analytics reads where the dock started its sessions; the private root stays put
                 // when the data folder moves.
                 terminals.set_launch_log(paths.private.join("terminal-launches.jsonl"));
+                // A quiet Core for the tour (design § 2): the test fakes for Claude, Microsoft
+                // and analytics, and the seed's fixed AI profiles.
+                #[cfg(feature = "tour")]
+                if tour {
+                    return workspace::Core::open_tour(handle, paths, commands::tour::quiet::profiles());
+                }
                 workspace::Core::open(handle, paths)
             });
             let core = workspace_state.core.clone();
@@ -142,9 +206,44 @@ pub fn run() {
             app.manage(workspace_state);
             // Plugins start after Core, with the data folder it opened (DESIGN 7.2).
             if let Some(core) = &core {
+                #[cfg(feature = "tour")]
+                if tour {
+                    // Seeded before the plugin manager starts, so its own `set_task_providers`
+                    // and `set_voice_providers` find one set already and do nothing (design
+                    // § 2). The seed's own provider state (Task 3): `tour_tasks` is set whenever
+                    // `tour` is true.
+                    let (tasks, voice) = tour_tasks.expect("the seed was imported for this tour");
+                    core.set_task_providers(tasks);
+                    core.set_voice_providers(voice);
+                    app.manage(plugins::manager::PluginManager::start_with_http(
+                        app.handle(),
+                        core,
+                        plugins::services::http::Client::offline().0,
+                    ));
+                } else {
+                    app.manage(plugins::manager::PluginManager::start(app.handle(), core));
+                }
+                #[cfg(not(feature = "tour"))]
                 app.manage(plugins::manager::PluginManager::start(app.handle(), core));
             }
             commands::status_smoke::arm(app.handle());
+            // Nothing reported within 600 s (watchdog): the tour exits 2, as every other tour
+            // refusal does, rather than hanging forever (design's exit codes).
+            #[cfg(feature = "tour")]
+            commands::tour::report::arm_watchdog(app.handle());
+            // No icon in the menu bar while touring (design § 3): the tray is never built in the
+            // first place, rather than built and then hidden, so it never shows even briefly
+            // (controller ruling, Task 2 fix round 1, M6). The refresher still needs a sink, or
+            // it never records an applied view and T28 can never pass (design ruling 13).
+            #[cfg(feature = "tour")]
+            if tour {
+                if let Some(core) = &core {
+                    commands::tour::install_quiet_menu_bar(&core.menu_bar);
+                }
+            } else {
+                workspace::setup_tray(app)?;
+            }
+            #[cfg(not(feature = "tour"))]
             workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -164,6 +263,14 @@ pub fn run() {
                 );
             }
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
+            // Out of sight once set up (design § 3): transparent, click-through, behind every
+            // window on the main screen, never key, main or active.
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            if tour {
+                if let Some(window) = app.get_webview_window("main") {
+                    commands::tour::window::hide_window(&window);
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -259,17 +366,30 @@ pub fn run() {
             storage::commands::meetings_root_pick,
             plugins::commands::plugins_request,
             plugins::commands::plugin_call,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_window,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_capture,
+            #[cfg(all(feature = "tour", target_os = "macos"))]
+            commands::tour::window::tour_focus,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_menu_bar,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_report,
+            #[cfg(feature = "tour")]
+            commands::tour::report::tour_refused,
         ]))
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
-        .run(|app,event|{
+        .run(move |app,event|{
             // Quitting ends the dock's sessions, as closing Terminal.app does.
             if matches!(event,tauri::RunEvent::Exit) {
                 if let Some(t)=app.try_state::<commands::terminal::Terminals>(){t.close_all();}
             }
             if let tauri::RunEvent::ExitRequested{api,..}=event {
                 if let Some(state)=app.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{
-                    if core.installer_busy.load(std::sync::atomic::Ordering::Relaxed){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}
+                    // A tour's quit is never held back, and its window is never shown or focused.
+                    if commands::tour::quit_blocked(tour, core.installer_busy.load(std::sync::atomic::Ordering::Relaxed)){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}
                     else{core.stop_background();}
                 }}
             }

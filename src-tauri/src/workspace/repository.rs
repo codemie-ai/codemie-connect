@@ -18,6 +18,16 @@ fn encode<T: Serialize>(v: &T) -> Result<String> {
     serde_json::to_string(v)
         .map_err(|_| WorkspaceError::new("storage", "Cannot encode workspace data."))
 }
+/// The hash an operation id is reserved under: the same id must carry the same request.
+fn request_hash(request: &Request) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(encode(
+            &json!({"op":request.op,"workspaceId":request.workspace_id,"data":request.data})
+        )?)
+    ))
+}
 fn decode<T: DeserializeOwned>(s: String) -> Result<T> {
     serde_json::from_str(&s).map_err(|_| {
         WorkspaceError::new(
@@ -95,17 +105,22 @@ pub struct ChangeRow {
 /// The change log and its triggers: every write to `records` and `jobs` leaves a row, however
 /// it is made. Added beside the schema (no version bump: an older Connect still opens the data
 /// folder; its writes are logged by the triggers too).
+/// The record triggers are made again at every open: a body that isn't JSON (a damaged Ask
+/// thread, say) must still be written and deleted, so only a message's conversation is read.
 const CHANGE_LOG: &str = "
     CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, revision INTEGER NOT NULL, tbl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, connection_id TEXT NOT NULL, workspace_id TEXT NOT NULL, deleted INTEGER NOT NULL, at INTEGER NOT NULL, conversation TEXT);
     CREATE INDEX IF NOT EXISTS changes_revision ON changes(revision);
     CREATE TABLE IF NOT EXISTS changes_meta (id INTEGER PRIMARY KEY CHECK(id=1), changes_from INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS message_conversation ON records(COALESCE(json_extract(body,'$.conversationId'),'')) WHERE kind='message';
-    CREATE TRIGGER IF NOT EXISTS records_logged_insert AFTER INSERT ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
-    CREATE TRIGGER IF NOT EXISTS records_logged_update AFTER UPDATE ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),json_extract(NEW.body,'$.conversationId')); END;
-    CREATE TRIGGER IF NOT EXISTS records_logged_delete AFTER DELETE ON records BEGIN
-      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER),json_extract(OLD.body,'$.conversationId')); END;
+    DROP TRIGGER IF EXISTS records_logged_insert;
+    DROP TRIGGER IF EXISTS records_logged_update;
+    DROP TRIGGER IF EXISTS records_logged_delete;
+    CREATE TRIGGER records_logged_insert AFTER INSERT ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),CASE WHEN NEW.kind='message' AND json_valid(NEW.body) THEN json_extract(NEW.body,'$.conversationId') END); END;
+    CREATE TRIGGER records_logged_update AFTER UPDATE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',NEW.kind,NEW.id,NEW.connection_id,NEW.workspace_id,0,CAST(strftime('%s','now') AS INTEGER),CASE WHEN NEW.kind='message' AND json_valid(NEW.body) THEN json_extract(NEW.body,'$.conversationId') END); END;
+    CREATE TRIGGER records_logged_delete AFTER DELETE ON records BEGIN
+      INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at,conversation) VALUES((SELECT revision FROM meta WHERE id=1),'record',OLD.kind,OLD.id,OLD.connection_id,OLD.workspace_id,1,CAST(strftime('%s','now') AS INTEGER),CASE WHEN OLD.kind='message' AND json_valid(OLD.body) THEN json_extract(OLD.body,'$.conversationId') END); END;
     CREATE TRIGGER IF NOT EXISTS jobs_logged_insert AFTER INSERT ON jobs BEGIN
       INSERT INTO changes(revision,tbl,kind,id,connection_id,workspace_id,deleted,at) VALUES((SELECT revision FROM meta WHERE id=1),'job','',NEW.id,'','',0,CAST(strftime('%s','now') AS INTEGER)); END;
     CREATE TRIGGER IF NOT EXISTS jobs_logged_update AFTER UPDATE ON jobs BEGIN
@@ -392,6 +407,39 @@ impl Repository {
         tx.commit()?;
         Ok(n > 0)
     }
+    /// Every text and blob value of every table, joined: what a privacy test scans.
+    #[cfg(test)]
+    pub(crate) fn all_text_for_tests(&self) -> String {
+        let tables: Vec<String> = self
+            .db
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let mut out = String::new();
+        for table in tables {
+            let mut stmt = self
+                .db
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
+            let columns = stmt.column_count();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                for i in 0..columns {
+                    match row.get_ref(i).unwrap() {
+                        rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
+                            out.push_str(&String::from_utf8_lossy(t));
+                            out.push('\n');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        out
+    }
     /// The database, for tests that write what no repository function writes.
     #[cfg(test)]
     pub(crate) fn db_for_tests(&self) -> &Sqlite {
@@ -598,6 +646,10 @@ impl Repository {
         let active = &scope.active;
         let visible = scope.visible.as_ref();
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
+        // A workspace-less, connection-less row only ever gets in here as `plugin_item` or
+        // `plugin_widget`: every other global bookkeeping kind (`menu_bar_seen`, and the voice
+        // copy's `voice_style`/`voice_rule`/`voice_person`/`voice_meta`, reply-voice design §2)
+        // stays out on its own, with no extra filter needed.
         let mut local_stmt=self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run'{wanted} ORDER BY updated_at DESC"))?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
@@ -673,6 +725,10 @@ impl Repository {
                 jobs,
                 meetings_root: None,
                 note_templates: Vec::new(),
+                task_provider: Value::Null,
+                menu_bar: Value::Null,
+                reply_voice: Value::Null,
+                ask: Value::Null,
             },
             hash,
         ))
@@ -715,6 +771,36 @@ impl Repository {
         let more = runs.len() > limit;
         runs.truncate(limit);
         Ok((runs, more))
+    }
+    /// The automation runs of workspace `wid` that `account` may see, updated after `since`:
+    /// every one, where the snapshot keeps only each automation's latest (menu-bar design §3).
+    pub fn automation_runs_since(
+        &self,
+        wid: &str,
+        account: Option<&str>,
+        since: i64,
+    ) -> Result<Vec<Record>> {
+        let mut stmt = self.db.prepare(&format!("SELECT r.id,r.kind,r.connection_id,r.workspace_id,r.source,r.revision,r.updated_at,r.body FROM ({VISIBLE_RUNS}) v JOIN records r ON r.rowid=v.rid WHERE v.updated_at>?4"))?;
+        let runs = stmt
+            .query_map(
+                params![
+                    wid,
+                    account.unwrap_or("__unavailable__"),
+                    None::<&str>,
+                    since
+                ],
+                record_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(runs)
+    }
+    /// Whether a record of `kind` with `id` exists under any connection or workspace.
+    pub fn has_record(&self, kind: &str, id: &str) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND id=?2)",
+            params![kind, id],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
     pub fn record(
         &self,
@@ -771,6 +857,52 @@ impl Repository {
         tx.commit()?;
         Ok(gone)
     }
+    /// Deletes every global bookkeeping record (`connection_id` and `workspace_id` both empty)
+    /// whose kind is in `kinds`, then writes `upserts` in their place, all in one transaction
+    /// with one revision bump — the shape a full refresh needs (reply-voice design §2's
+    /// `voice::copy::replace`): the copy is never seen half old, half new.
+    pub fn replace_global_records(&mut self, kinds: &[&str], upserts: &[Record]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for kind in kinds {
+            tx.execute(
+                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
+                [kind],
+            )?;
+        }
+        for r in upserts {
+            put_record(&tx, r)?;
+        }
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Upserts global bookkeeping records in one transaction with one revision bump, leaving
+    /// every other record (of the same or another kind) untouched — a partial update
+    /// (reply-voice design §2's `voice::copy::merge_context`), unlike `replace_global_records`.
+    pub fn put_global_records(&mut self, records: &[Record]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for r in records {
+            put_record(&tx, r)?;
+        }
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Deletes the global bookkeeping records of `kind` whose id is in `ids`, in one transaction
+    /// with one revision bump when any went (Ask's threads, ask-capture design § 5). Answers how
+    /// many went.
+    pub fn delete_global_records(&mut self, kind: &str, ids: &[String]) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let gone = tx.execute(
+            "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' AND id IN (SELECT value FROM json_each(?2))",
+            params![kind, encode(&ids)?],
+        )?;
+        if gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
     /// The plugin records of `kind`.
     pub fn plugin_records(&self, kind: &str) -> Result<Vec<Record>> {
         let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' ORDER BY updated_at DESC")?;
@@ -778,6 +910,20 @@ impl Repository {
             .query_map([kind], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+    /// `plugin_records`, except that a row whose body isn't JSON is answered by id in the second
+    /// list instead of failing the whole read.
+    pub fn global_records_readable(&self, kind: &str) -> Result<(Vec<Record>, Vec<String>)> {
+        let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' ORDER BY updated_at DESC")?;
+        let mut rows = stmt.query([kind])?;
+        let (mut records, mut damaged) = (Vec::new(), Vec::new());
+        while let Some(row) = rows.next()? {
+            match record_row(row) {
+                Ok(rec) => records.push(rec),
+                Err(_) => damaged.push(row.get(0)?),
+            }
+        }
+        Ok((records, damaged))
     }
     /// Appends one `ai_run` usage record. It does not bump the revision: a run finishing is
     /// not a change the open views must reconcile with.
@@ -834,6 +980,37 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
+    /// Deletes Connect's copy of the voice in one transaction (reply-voice design §6): every
+    /// global record of `kinds`, the stored acks of voice edits (`voiceAck` reservation results)
+    /// and, when given, writes `settings` (the voice turned Off). Answers how many copy records
+    /// went.
+    pub fn forget_voice(&mut self, settings: Option<&Settings>, kinds: &[&str]) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let mut changed = false;
+        if let Some(settings) = settings {
+            tx.execute(
+                "UPDATE meta SET settings=?1 WHERE id=1",
+                [encode(settings)?],
+            )?;
+            changed = true;
+        }
+        let mut gone = 0;
+        for kind in kinds {
+            gone += tx.execute(
+                "DELETE FROM records WHERE kind=?1 AND connection_id='' AND workspace_id=''",
+                [kind],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM reservations WHERE json_extract(result,'$.voiceAck')=1",
+            [],
+        )?;
+        if changed || gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
     pub fn save_workspace(&mut self, ws: &Workspace) -> Result<()> {
         let previous = self.workspace(&ws.id).ok();
         let scope_changed = previous.as_ref().is_some_and(|old| {
@@ -884,19 +1061,74 @@ impl Repository {
         Ok(())
     }
     pub fn check_request(&self, request: &Request) -> Result<bool> {
+        self.reserve(request, true)
+    }
+    /// `check_request` without reserving anything: `Ok(false)` for an operation id already
+    /// reserved (its result is `operation_result`), a refusal for a different request under the
+    /// same id or a stale revision, `Ok(true)` otherwise. For work asked before the mutation lock
+    /// (a voice edit through its provider), so a request that is already stale asks nothing.
+    pub fn peek_request(&self, request: &Request) -> Result<bool> {
+        if !self.fresh_id(request)? {
+            return Ok(false);
+        }
+        self.check_revision(request)?;
+        Ok(true)
+    }
+    /// Reserves the operation id like `check_request`; with `check_revision` false the revision
+    /// isn't compared — for work an outside party already accepted after `peek_request` passed
+    /// (a voice edit through its provider), which must be recorded rather than refused and resent.
+    pub fn reserve(&self, request: &Request, check_revision: bool) -> Result<bool> {
+        if !self.fresh_id(request)? {
+            return Ok(false);
+        }
+        if check_revision {
+            self.check_revision(request)?;
+        }
+        let hash = request_hash(request)?;
+        let opid = request.operation_id.as_deref().unwrap_or_default();
+        self.db.execute(
+            "INSERT INTO reservations VALUES(?1,?2,NULL)",
+            params![opid, hash],
+        )?;
+        // Reserve a revision as well as the operation ID before any asynchronous work.
+        self.db
+            .execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
+        if matches!(
+            request.op,
+            Operation::ActionPrepare
+                | Operation::ActionConfirm
+                | Operation::AiDraft
+                | Operation::AiSummarize
+                | Operation::CalendarWindow
+        ) {
+            let scope = self.request_scope(request)?;
+            let cid = scope["connectionId"].as_str().unwrap_or("");
+            self.db.execute(
+                "INSERT INTO reservation_scopes VALUES(?1,?2,?3)",
+                params![opid, cid, encode(&scope)?],
+            )?;
+        }
+        Ok(true)
+    }
+    fn check_revision(&self, request: &Request) -> Result<()> {
+        if request.expected_revision != Some(self.revision()?) {
+            return Err(WorkspaceError::new(
+                "stale_view",
+                "This view changed. Refresh and review the current values before saving.",
+            ));
+        }
+        Ok(())
+    }
+    /// Checks the operation id: `Ok(false)` when it is already reserved for this same request,
+    /// a refusal when it belongs to different content or scope, `Ok(true)` when it is new.
+    fn fresh_id(&self, request: &Request) -> Result<bool> {
         let opid = request
             .operation_id
             .as_deref()
             .ok_or_else(|| WorkspaceError::new("validation", "An operation ID is required."))?;
         uuid::Uuid::parse_str(opid)
             .map_err(|_| WorkspaceError::new("validation", "Invalid operation ID."))?;
-        use sha2::{Digest, Sha256};
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(encode(
-                &json!({"op":request.op,"workspaceId":request.workspace_id,"data":request.data})
-            )?)
-        );
+        let hash = request_hash(request)?;
         let existing: Option<String> = self
             .db
             .query_row(
@@ -929,34 +1161,6 @@ impl Repository {
                 }
             }
             return Ok(false);
-        }
-        if request.expected_revision != Some(self.revision()?) {
-            return Err(WorkspaceError::new(
-                "stale_view",
-                "This view changed. Refresh and review the current values before saving.",
-            ));
-        }
-        self.db.execute(
-            "INSERT INTO reservations VALUES(?1,?2,NULL)",
-            params![opid, hash],
-        )?;
-        // Reserve a revision as well as the operation ID before any asynchronous work.
-        self.db
-            .execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
-        if matches!(
-            request.op,
-            Operation::ActionPrepare
-                | Operation::ActionConfirm
-                | Operation::AiDraft
-                | Operation::AiSummarize
-                | Operation::CalendarWindow
-        ) {
-            let scope = self.request_scope(request)?;
-            let cid = scope["connectionId"].as_str().unwrap_or("");
-            self.db.execute(
-                "INSERT INTO reservation_scopes VALUES(?1,?2,?3)",
-                params![opid, cid, encode(&scope)?],
-            )?;
         }
         Ok(true)
     }
@@ -1067,6 +1271,15 @@ impl Repository {
         ).optional()?;
         Ok(last.is_some_and(|(status, started)| status == "failed" && started >= since))
     }
+    /// When an automation's latest `ok` run (not `except`) started: where its next "Messages
+    /// since the last run" begins (DESIGN step 5 §3).
+    pub fn last_ok_started(&self, automation_id: &str, except: &str) -> Result<Option<i64>> {
+        Ok(self.db.query_row(
+            "SELECT MAX(CAST(json_extract(body,'$.startedAt') AS INTEGER)) FROM records WHERE kind='automation_run' AND json_extract(body,'$.automationId')=?1 AND id<>?2 AND json_extract(body,'$.status')='ok'",
+            params![automation_id, except],
+            |row| row.get::<_, Option<i64>>(0),
+        )?)
+    }
     /// Saves an automation and, when given, the workspace whose Today layout gains the
     /// Automation results card, as one change.
     pub fn save_automation(&mut self, record: &Record, today: Option<&Workspace>) -> Result<()> {
@@ -1091,6 +1304,30 @@ impl Repository {
             [automation_id],
         )?;
         bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Writes `put` and deletes the local records `delete` (`(kind, id, workspace)`) in one
+    /// transaction, bumping the revision when `bump` (a task and its outbox entry, design §4).
+    pub fn commit_local(
+        &mut self,
+        put: &[Record],
+        delete: &[(&str, &str, &str)],
+        bump: bool,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for (kind, id, wid) in delete {
+            tx.execute(
+                "DELETE FROM records WHERE id=?1 AND kind=?2 AND workspace_id=?3 AND connection_id=''",
+                params![id, kind, wid],
+            )?;
+        }
+        for record in put {
+            put_record(&tx, record)?;
+        }
+        if bump {
+            self::bump(&tx)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -1382,6 +1619,15 @@ impl Repository {
             params![before, encode(&kinds)?],
         )?)
     }
+    /// Deletes the finished jobs (`succeeded`, `failed`, `cancelled`, `blocked`) whose key is
+    /// `key`, so a new job can take it (Ask keys one job per thread, `ask:<threadId>`, and
+    /// a follow-up queues the next one). Queued and running ones stay. Returns how many went.
+    pub fn delete_finished_jobs_keyed(&mut self, key: &str) -> Result<usize> {
+        Ok(self.db.execute(
+            "DELETE FROM jobs WHERE execution_key=?1 AND state IN ('succeeded','failed','cancelled','blocked')",
+            params![key],
+        )?)
+    }
     /// The jobs with these ids that are still there.
     pub fn jobs_by_id(&self, ids: &[&str]) -> Result<Vec<Job>> {
         if ids.is_empty() {
@@ -1457,9 +1703,9 @@ impl Repository {
     pub fn claim(&mut self, at: i64) -> Result<Option<Job>> {
         self.claim_ready(at, true)
     }
-    /// The next due job. Reminders and notifications go first; then everything the person asked
-    /// for one at a time ("Draft with AI", a summary, notes for one meeting) and the rest; then
-    /// the notes of Make notes for all (`payload.batch`); background Claude work (automation runs
+    /// The next due job (a `task_sync` or a `voice_refresh` only while no other of its kind runs). Reminders and notifications go first; then everything the person asked
+    /// for one at a time ("Draft with AI", a summary, notes for one meeting) and the rest; then a
+    /// `voice_refresh` (reply-voice design §7); then the notes of Make notes for all (`payload.batch`); background Claude work (automation runs
     /// and automatic meeting notes, keyed `meeting_notes:auto:…`) goes last. Claude work
     /// (drafts, summaries, automation runs, meeting notes) runs two at a time, of which at most
     /// one is background work, so a burst of automations, of meetings ending together or of a
@@ -1471,7 +1717,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 3 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 2 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind')!='task_sync' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='task_sync')) AND (json_extract(body,'$.kind')!='voice_refresh' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='voice_refresh')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes','ask') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes','ask'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 4 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 3 WHEN json_extract(body,'$.kind')='voice_refresh' THEN 2 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )
@@ -1652,8 +1898,17 @@ fn same_revision(tx: &Transaction<'_>, r: &Record) -> Result<bool> {
         .optional()?;
     Ok(stored.as_deref() == Some(r.revision.as_str()))
 }
+/// A message also keeps `seenAt`, when Connect first stored it (its first write, or for a row
+/// from before the field its last one): "Messages since the last run" reads a message synced
+/// after that run even when it arrived before it (DESIGN step 5 §3).
 fn put_record(tx: &Transaction<'_>, r: &Record) -> Result<()> {
-    tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=excluded.body",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&r.data)?])?;
+    let mut data = r.data.clone();
+    if r.kind == "message" && data.get("seenAt").is_none_or(Value::is_null) {
+        if let Some(fields) = data.as_object_mut() {
+            fields.insert("seenAt".into(), r.updated_at.into());
+        }
+    }
+    tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=CASE WHEN records.kind='message' AND json_valid(excluded.body) AND json_type(excluded.body)='object' THEN json_set(excluded.body,'$.seenAt',COALESCE(json_extract(records.body,'$.seenAt'),records.updated_at)) ELSE excluded.body END",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&data)?])?;
     Ok(())
 }
 fn record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
@@ -2472,7 +2727,7 @@ mod tests {
             data: json!({"title": title, "start": "2026-11-25T10:00:00Z", "end": "2026-11-25T11:00:00Z"}),
         };
         let window = (1_795_564_800, 1_795_651_200); // 25 Nov 2026, the whole day (UTC)
-        let mut round = |r: &mut Repository, events: &[Record]| {
+        let round = |r: &mut Repository, events: &[Record]| {
             r.commit_calendar_round(
                 &c,
                 "calendar:cal-1",
@@ -2587,6 +2842,30 @@ mod tests {
         assert_eq!(r.changes_from().unwrap(), 7);
         r.put_record(&local_note("n1")).unwrap();
         assert_eq!(r.changes_since_rows(7).unwrap().len(), 1);
+    }
+    #[test]
+    fn a_message_keeps_when_connect_first_stored_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let mut m = item("a", "m1", "message", "mail:inbox", json!({"at": 50}));
+        m.updated_at = 100;
+        r.put_record(&m).unwrap();
+        m.updated_at = 500;
+        m.revision = "v2".into();
+        r.put_record(&m).unwrap();
+        let got = r.record("message", "m1", Some("a"), None).unwrap();
+        assert_eq!(got.data["seenAt"], 100, "a re-sync keeps the first time");
+        assert_eq!(got.updated_at, 500);
+        // A message stored before `seenAt` existed: its last write stands in for it.
+        r.db.execute_batch(
+            "INSERT INTO records VALUES('m2','message','a','','mail:inbox','v1',200,'{\"at\":40}')",
+        )
+        .unwrap();
+        let mut m2 = item("a", "m2", "message", "mail:inbox", json!({"at": 40}));
+        m2.updated_at = 900;
+        r.put_record(&m2).unwrap();
+        let got = r.record("message", "m2", Some("a"), None).unwrap();
+        assert_eq!(got.data["seenAt"], 200);
     }
     #[test]
     fn chat_pruning_keeps_the_newest_tail_and_anything_acted_on() {

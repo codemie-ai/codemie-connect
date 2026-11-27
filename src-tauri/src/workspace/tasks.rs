@@ -8,6 +8,12 @@
 //! (older commitments say `"You"`); `ownerName` is the name to show. `done` always equals
 //! `status == "done"`; a body without a status reads as `done ? "done" : "todo"`.
 //!
+//! With a task provider the body also carries `provider`, `key`, `remote`, `pending` and
+//! `syncError`. `syncError` is `null` when no change is parked; a string means a change the
+//! provider refused is parked (Try again / Discard change): the provider's sentence, or `""`
+//! when that sentence was withheld for holding a secret (the window then writes "<Provider>
+//! refused this change."). Never write `""` to mean "cleared": clear it with `null`.
+//!
 //! [`task_save`] merges a change into the stored body and writes one history line for each move,
 //! owner and due date change. A task from a meeting is also written to the meeting folder's
 //! `tasks.json` (Echo's `actions.json` shape), so other tools see the same list. Callers hold
@@ -15,6 +21,7 @@
 use super::meetings::{folder, model::MeAlias};
 use super::models::*;
 use super::repository::Repository;
+use super::task_provider::{active_provider, keys, outbox, sync, wire};
 use super::{new_job, workspace_id_active, Core};
 use chrono::{Datelike, Timelike};
 use serde_json::{json, Value};
@@ -36,6 +43,9 @@ const NAMES: [(&str, &str); 6] = [
 ];
 /// Statuses of a task someone still has to do.
 const OPEN: [&str; 3] = ["todo", "doing", "waiting"];
+/// Every kind a task can be (design §1): the reference task schema's kinds minus `client`.
+/// Absent reads as `"task"`.
+pub(crate) const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 
 const ID_MAX: usize = 200;
 const TEXT_MAX: usize = 2000;
@@ -86,6 +96,24 @@ pub(crate) fn status_of(body: &Value) -> &str {
 /// done or dismissed.
 pub(crate) fn is_open(body: &Value) -> bool {
     OPEN.contains(&status_of(body))
+}
+
+/// A task's provider: the one it was stamped with, or `"local"` for one without a `provider`
+/// field (every task before this step, and every Local task since).
+pub(crate) fn provider_of(body: &Value) -> &str {
+    body["provider"].as_str().unwrap_or("local")
+}
+
+/// The records of `workspace` whose provider is the settings' active one (design §1): what the
+/// Tasks page, Today's widget, the meeting column and the 09:00 reminder show. A task found in
+/// notes and still To review follows this rule too: it is stamped with the active provider at
+/// creation and re-stamped on a switch (a later task).
+pub(crate) fn active(r: &Repository, workspace: &str) -> Result<Vec<Record>> {
+    let active = active_provider(&r.settings()?).to_string();
+    Ok(r.local_records(workspace, KIND)?
+        .into_iter()
+        .filter(|t| provider_of(&t.data) == active)
+        .collect())
 }
 
 /// The name of a status's column: the person's own name for it, or the built-in one.
@@ -155,6 +183,13 @@ fn due(v: &Value) -> Result<Option<String>> {
         .ok_or_else(|| invalid("due", MESSAGE))
 }
 
+/// Whether `s` is a due date `task_save` accepts: a `YYYY-MM-DD` day that exists, from 2000 on.
+// Ask's answer check (`ask::answer`) reads it; Ask's run wires that in (a later task).
+#[allow(dead_code)]
+pub(crate) fn valid_due(s: &str) -> bool {
+    matches!(due(&Value::String(s.to_string())), Ok(Some(_)))
+}
+
 /// History given with a task being created (Undo of a delete puts the old one back).
 fn given_history(v: &Value) -> Result<Vec<Value>> {
     const MESSAGE: &str = "The task’s history can’t be read.";
@@ -204,6 +239,67 @@ pub(crate) fn task_save(
     data: &Value,
     now: i64,
 ) -> Result<Record> {
+    let Prepared {
+        mut record,
+        ops,
+        before,
+    } = prepare(r, workspace_id, data, now)?;
+    // A provider's task is written with its outbox entries, in one transaction (design §4).
+    if ops.is_empty() {
+        r.put_record(&record)?;
+    } else {
+        record.data["pending"] = true.into();
+        outbox::enqueue_all(r, &record, &ops, now)?;
+    }
+    meetings_follow(r, workspace_id, &before, &record.data);
+    Ok(record)
+}
+
+/// What [`task_save`] would write: the merged task, the outbox ops a provider's task needs, and
+/// the body it had before. Nothing is written.
+pub(crate) struct Prepared {
+    pub(crate) record: Record,
+    pub(crate) ops: Vec<(&'static str, Value)>,
+    pub(crate) before: Value,
+}
+
+/// Rewrites `tasks.json` of the meeting a task is in (and of the one it left).
+pub(crate) fn meetings_follow(r: &Repository, workspace_id: &str, before: &Value, after: &Value) {
+    let mut meetings: Vec<&str> = [&before["meetingId"], &after["meetingId"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .collect();
+    meetings.dedup();
+    for meeting in meetings {
+        write_tasks_json(r, workspace_id, meeting);
+    }
+}
+
+/// Whether `key` is a task key: 16 lower-case hex characters (design §3).
+pub(crate) fn valid_key(key: &str) -> bool {
+    key.len() == 16 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+}
+
+/// The key a task without one gets (design §3): from its transcript line, its message, or its
+/// id for a task typed by hand.
+pub(crate) fn key_of(id: &str, body: &Value) -> String {
+    let source = match (body["meetingId"].as_str(), body["line"].as_u64()) {
+        (Some(meeting), Some(line)) => format!("meeting:{meeting}:{line}"),
+        _ => match body["sourceId"].as_str() {
+            Some(source_id) => format!("message:{source_id}"),
+            None => format!("manual:{id}"),
+        },
+    };
+    keys::task_key(&source, body["text"].as_str().unwrap_or(""))
+}
+
+/// The merge [`task_save`] makes, without writing it.
+pub(crate) fn prepare(
+    r: &Repository,
+    workspace_id: &str,
+    data: &Value,
+    now: i64,
+) -> Result<Prepared> {
     if !data.is_object() {
         return Err(invalid("task", "Send the task as an object."));
     }
@@ -253,6 +349,7 @@ pub(crate) fn task_save(
         ("speaker", NAME_MAX, "Choose a speaker."),
         ("sourceId", REF_MAX, "Choose a message."),
         ("sourceRevision", REF_MAX, "Choose a message."),
+        ("copiedFrom", ID_MAX, "Choose a task."),
     ] {
         if has(key) {
             body[key] = text(&data[key], key, max, message)?.map_or(Value::Null, Value::from);
@@ -260,6 +357,9 @@ pub(crate) fn task_save(
     }
     if has("due") {
         body["due"] = due(&data["due"])?.map_or(Value::Null, Value::from);
+    }
+    if has("handled") {
+        body["handled"] = handled(&data["handled"], now)?;
     }
     if has("confidence") {
         body["confidence"] = match &data["confidence"] {
@@ -270,6 +370,13 @@ pub(crate) fn task_save(
                 .map(Value::from)
                 .ok_or_else(|| invalid("confidence", "Say whether the owner is certain."))?,
         };
+    }
+    if has("kind") {
+        body["kind"] = data["kind"]
+            .as_str()
+            .filter(|k| KINDS.contains(k))
+            .map(Value::from)
+            .ok_or_else(|| invalid("kind", "Choose a kind of task."))?;
     }
     if has("line") {
         body["line"] = match &data["line"] {
@@ -334,6 +441,20 @@ pub(crate) fn task_save(
     } else {
         previous.clone()
     };
+    if previous == "done" && status != "done" && !has("handled") && body["handled"]["auto"] == true
+    {
+        // Reopened after the sweep closed it: it doesn't look handled any more, and the same
+        // reply never closes it again (design §6, kept like "Keep open").
+        if let Some(evidence) = body["handled"]["evidence"].as_str() {
+            let hash = super::task_provider::handled::evidence_hash(evidence);
+            let mut kept = body["keptEvidence"].as_array().cloned().unwrap_or_default();
+            if !kept.iter().any(|h| h == hash.as_str()) {
+                kept.push(hash.into());
+            }
+            body["keptEvidence"] = kept.into();
+        }
+        body["handled"] = Value::Null;
+    }
     body["status"] = status.clone().into();
     body["done"] = (status == "done").into();
     if status != "done" {
@@ -345,6 +466,34 @@ pub(crate) fn task_save(
     }
     if creating {
         body["createdAt"] = data["createdAt"].as_i64().unwrap_or(now).into();
+        // Set from the active provider unless the data names one (design §1); never written for
+        // Local, so a Local task's body, and every fixture of one, stays exactly as it was.
+        let provider = match text(
+            &data["provider"],
+            "provider",
+            REF_MAX,
+            "Choose a task provider.",
+        )? {
+            Some(given) => given,
+            None => active_provider(&r.settings()?).to_string(),
+        };
+        if provider != "local" {
+            body["provider"] = provider.into();
+        }
+    }
+    // A new task may bring its key: Undo of a delete, a copy to a provider, step 5's
+    // `create_by_key` (design §3, §10).
+    if creating && has("key") {
+        body["key"] = data["key"]
+            .as_str()
+            .filter(|k| valid_key(k))
+            .map(Value::from)
+            .ok_or_else(|| invalid("key", "Choose a task key."))?;
+    }
+    // A task without a key gets one: every new task, and an older one saved for the first time
+    // since this step (design §13 "Migration"). Never changed once set.
+    if body["key"].as_str().filter(|k| !k.is_empty()).is_none() {
+        body["key"] = key_of(&id, &body).into();
     }
 
     let mut log = text(
@@ -414,16 +563,60 @@ pub(crate) fn task_save(
         updated_at: now,
         data: body,
     };
-    r.put_record(&record)?;
-    let mut meetings: Vec<&str> = [&before["meetingId"], &record.data["meetingId"]]
-        .into_iter()
-        .filter_map(Value::as_str)
-        .collect();
-    meetings.dedup();
-    for meeting in meetings {
-        write_tasks_json(r, workspace_id, meeting);
+    let ops = provider_ops(&before, &record.data, creating);
+    Ok(Prepared {
+        record,
+        ops,
+        before,
+    })
+}
+
+/// "Looks handled" (design §6): `null` clears it; `{evidence, auto?}` sets it, stamped `now`.
+fn handled(v: &Value, now: i64) -> Result<Value> {
+    const MESSAGE: &str = "Say what shows the task is handled.";
+    if v.is_null() {
+        return Ok(Value::Null);
     }
-    Ok(record)
+    let evidence = text(&v["evidence"], "handled", HISTORY_TEXT_MAX, MESSAGE)?
+        .ok_or_else(|| invalid("handled", MESSAGE))?;
+    Ok(json!({"evidence": evidence, "at": now, "auto": v["auto"] == true}))
+}
+
+/// What saving a provider's task from `before` to `after` sends (design §1, §4): nothing for
+/// Local or for a task To review or Dismissed (Connect's drafts, never sent); a `create` the first
+/// time it is open or done; then an `update` naming the fields that changed and a `complete` when
+/// it was done or reopened. A move between To do, In progress and Waiting sends nothing unless
+/// the kind it reads as changes.
+fn provider_ops(before: &Value, after: &Value, creating: bool) -> Vec<(&'static str, Value)> {
+    let sent = |b: &Value| !matches!(status_of(b), "review" | "dismissed");
+    if provider_of(after) == "local" || !sent(after) {
+        return Vec::new();
+    }
+    let in_provider = !creating && (before["remote"]["id"].is_string() || sent(before));
+    let (b, a) = (wire::fields(before), wire::fields(after));
+    if !in_provider {
+        let mut ops = vec![("create", json!({}))];
+        if a["done"] == true {
+            ops.push(("complete", json!({"done": true})));
+        }
+        return ops;
+    }
+    let mut ops = Vec::new();
+    // Done or reopened, with the stored kind unchanged: the kind the fields read follows the
+    // status (`wire::fields`), which is no edit of the kind (re-review N3).
+    let completion_only = a["done"] != b["done"] && after["kind"] == before["kind"];
+    let changed: serde_json::Map<String, Value> = ["text", "notes", "due", "kind", "owner"]
+        .into_iter()
+        .filter(|k| a[*k] != b[*k] && !(completion_only && *k == "kind"))
+        .map(|k| (k.to_string(), Value::Bool(true)))
+        .collect();
+    if !changed.is_empty() {
+        ops.push(("update", Value::Object(changed)));
+    }
+    if a["done"] != b["done"] {
+        ops.push(("complete", json!({"done": a["done"]})));
+    }
+    ops
 }
 
 /// Deletes a task of `workspace_id` and returns its body, so Undo can save it back with
@@ -438,7 +631,25 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
             e
         }
     })?;
-    r.delete_local(KIND, id, workspace_id)?;
+    if provider_of(&task.data) == "local" {
+        // A key's local task is tombstoned with the delete (design §3), so an automation that
+        // made it never remakes it on a later run; the task and the ledger entry as one change.
+        let mut put = Vec::new();
+        if let Some(key) = task.data["key"].as_str() {
+            put.push(keys::ledger_record(
+                "local",
+                key,
+                None,
+                "removed",
+                super::models::now(),
+            ));
+        }
+        r.commit_local(&put, &[(KIND, id, workspace_id)], true)?;
+    } else {
+        // Its unsent changes go with it; once it is in the provider, a `remove` is queued, in the
+        // same transaction (design §10 "Delete with a provider").
+        outbox::delete_task(r, &task, super::models::now())?;
+    }
     if let Some(meeting) = task.data["meetingId"].as_str() {
         if let Some(line) = task.data["line"].as_u64() {
             // Notes made again must not bring a deleted task back.
@@ -453,7 +664,7 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
 
 /// Best effort: the task is saved whatever happens to the file, and a folder that is gone is
 /// never made again.
-fn write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) {
+pub(crate) fn write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) {
     if let Err(e) = try_write_tasks_json(r, workspace_id, meeting_id) {
         log::warn!("tasks: cannot update a meeting's tasks.json: {}", e.code);
     }
@@ -480,10 +691,26 @@ fn try_write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) ->
         return Ok(());
     };
     let names = people_names(&dir);
-    let mut tasks: Vec<Record> = r
+    // Every provider's tasks of the meeting (switching never makes an action item vanish from
+    // the file other tools read), one per key: a copy is not a second item, and the active
+    // provider's record stands for it.
+    let provider = active_provider(&r.settings()?).to_string();
+    let mut all: Vec<Record> = r
         .local_records(workspace_id, KIND)?
         .into_iter()
         .filter(|t| t.data["meetingId"] == meeting_id)
+        .collect();
+    all.sort_by(|a, b| {
+        let active = |t: &Record| provider_of(&t.data) != provider;
+        active(a).cmp(&active(b)).then_with(|| by_order(a, b))
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut tasks: Vec<Record> = all
+        .into_iter()
+        .filter(|t| match t.data["key"].as_str() {
+            Some(key) => seen.insert(key.to_string()),
+            None => true,
+        })
         .collect();
     tasks.sort_by(by_order);
     let list: Vec<Value> = tasks
@@ -597,8 +824,7 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
         .and_then(|id| r.connection(id).ok())
         .map(|c| core.me_alias(&c, &s.meetings))
         .unwrap_or_default();
-    let mut due: Vec<Record> = r
-        .local_records(PERSONAL, KIND)?
+    let mut due: Vec<Record> = active(&r, PERSONAL)?
         .into_iter()
         .filter(|t| {
             OPEN.contains(&status_of(&t.data))
@@ -640,6 +866,65 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
     ))
 }
 
+/// Step 5's only way to make a task (design §3): idempotent by `key`. A task with that key, a
+/// ledger entry for it with the active provider that is `created`, `done` or `removed`, or one
+/// with any other provider that is `done` or `removed`, makes nothing and answers `(id, false)`;
+/// otherwise `body` is saved as a new task of `workspace` with that key, `(id, true)`.
+pub(crate) fn create_by_key(
+    core: &Core,
+    workspace: &str,
+    body: &Value,
+    key: &str,
+) -> Result<(String, bool)> {
+    if !valid_key(key) {
+        return Err(invalid("key", "Choose a task key."));
+    }
+    let _folders = core.meeting_lock();
+    let mut r = core.repo()?;
+    // Any workspace: a key is one task.
+    if let Some(t) = r
+        .records_of_kind(KIND)?
+        .into_iter()
+        .find(|t| t.data["key"] == key)
+    {
+        return Ok((t.id, false));
+    }
+    let provider = active_provider(&r.settings()?).to_string();
+    // Made before, done or deleted in the provider — Local's own ledger included (design §3): a
+    // rerun makes nothing again. Only a withdrawn key (the column's Undo) may be made again.
+    // Done or deleted in any other provider counts too: switching Local and Todoist never
+    // brings back a task the user finished or deleted in the other one.
+    let ledger = keys::ledger_get(&r, &provider, key)?;
+    let known = match ledger
+        .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")))
+    {
+        Some(l) => Some((provider, l)),
+        None => keys::ledger_settled(&r, key)?,
+    };
+    if let Some((provider, l)) = known {
+        // The id the provider's task has (or had) in Connect, `<plugin>-<remote id>`; the
+        // key itself when no remote id was ever learned (always, for Local).
+        let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);
+        let id = l["remoteId"]
+            .as_str()
+            .map_or_else(|| key.to_string(), |rid| format!("{plugin}-{rid}"));
+        return Ok((id, false));
+    }
+    let mut data = body.clone();
+    let fields = data
+        .as_object_mut()
+        .ok_or_else(|| invalid("task", "Send the task as an object."))?;
+    fields.insert("key".into(), key.into());
+    if fields.get("id").is_none_or(Value::is_null) {
+        fields.insert("id".into(), super::models::id().into());
+    }
+    let task = task_save(&mut r, workspace, &data, now())?;
+    if task.data["pending"] == true {
+        sync::queue(&mut r, provider_of(&task.data), now())?;
+    }
+    Ok((task.id, true))
+}
+
 impl Core {
     /// `task_save {id?, text, owner, …, log?}` and `task_delete {id}` (Tasks, Today, Inbox).
     pub(in crate::workspace) fn task_op(&self, req: &Request) -> Result<Value> {
@@ -657,11 +942,18 @@ impl Core {
                     }
                 }
                 let task = task_save(&mut r, &w.id, &data, now())?;
+                if task.data["pending"] == true {
+                    // Pushed at once (design ruling 4), window open or closed.
+                    sync::queue(&mut r, provider_of(&task.data), now())?;
+                }
                 Ok(json!({"id": task.id}))
             }
             Operation::TaskDelete => {
                 let id = required(&req.data, "id", ID_MAX)?;
                 let body = task_delete(&mut r, &w.id, id)?;
+                if body["remote"]["id"].is_string() {
+                    sync::queue(&mut r, provider_of(&body), now())?;
+                }
                 Ok(json!({"deleted": true, "id": id, "body": body}))
             }
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
@@ -953,6 +1245,145 @@ mod tests {
         );
     }
 
+    fn set_provider(core: &Core, provider: &str) {
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.tasks.provider = provider.into();
+        r.settings_update(&s).unwrap();
+    }
+
+    #[test]
+    fn task_save_stamps_provider_key_and_kind() {
+        let e = env();
+        // Local: no "provider" field at all, a 16-hex key, and an absent "kind" (reads as "task").
+        let local = save(
+            &e.core,
+            json!({"id": "t1", "text": "Send the pilot user list"}),
+            NOW,
+        )
+        .unwrap();
+        assert!(local.data.get("provider").is_none(), "{}", local.data);
+        let key = local.data["key"].as_str().expect("a key");
+        assert_eq!(key.len(), 16);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(local.data.get("kind").is_none(), "{}", local.data);
+        // The key never changes on a later save.
+        let resaved = save(&e.core, json!({"id": "t1", "status": "doing"}), NOW + 1).unwrap();
+        assert_eq!(resaved.data["key"], key);
+
+        // With a provider active, a new task is stamped with it.
+        set_provider(&e.core, "plugin:todoist");
+        let provided = save(
+            &e.core,
+            json!({"id": "t2", "text": "Check with Marek about the pilot list"}),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(provided.data["provider"], "plugin:todoist");
+
+        // An unknown kind is refused; a known one is kept.
+        let error = save(
+            &e.core,
+            json!({"id": "t3", "text": "x", "kind": "bogus"}),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert_eq!(error.field.as_deref(), Some("kind"));
+        let waiting = save(
+            &e.core,
+            json!({"id": "t4", "text": "Ask Marek", "kind": "waiting"}),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(waiting.data["kind"], "waiting");
+    }
+
+    #[test]
+    fn tasks_active_and_the_reminder_follow_the_provider() {
+        let e = env();
+        save(
+            &e.core,
+            json!({"id": "local-1", "text": "Task kept in Connect", "owner": "You", "due": "2026-11-18"}),
+            NOW,
+        )
+        .unwrap();
+        set_provider(&e.core, "plugin:todoist");
+        save(
+            &e.core,
+            json!({"id": "todoist-1", "text": "Task kept in Todoist", "owner": "You", "due": "2026-11-18"}),
+            NOW,
+        )
+        .unwrap();
+        let active_tasks = active(&e.core.repo().unwrap(), "personal").unwrap();
+        assert_eq!(
+            active_tasks
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["todoist-1"]
+        );
+        // The 09:00 reminder names only the active provider's task.
+        let nine = 1_794_985_200;
+        due_today_reminders(&e.core, nine).unwrap();
+        let job = e
+            .core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| j.key.starts_with("tasks_due:"))
+            .expect("a reminder job");
+        assert_eq!(job.payload["title"], "1 task due today");
+        assert_eq!(job.payload["body"], "Task kept in Todoist");
+    }
+
+    #[tokio::test]
+    async fn local_saves_queue_nothing() {
+        let e = env();
+        op(
+            &e.core,
+            Operation::TaskSave,
+            json!({"text": "A Local task"}),
+        )
+        .await
+        .unwrap();
+        let jobs = e.core.repo().unwrap().jobs().unwrap();
+        assert!(
+            jobs.iter().all(|j| j.kind != "task_sync"),
+            "no task_sync job is queued for Local: {jobs:?}"
+        );
+        let outbox = e
+            .core
+            .repo()
+            .unwrap()
+            .records_of_kind("task_outbox")
+            .unwrap();
+        assert!(outbox.is_empty(), "no outbox entry for Local: {outbox:?}");
+    }
+
+    /// Final review M3: a provider task changed through `local_save` (Today's checkbox) is pushed
+    /// at once, as `task_save` does, not on the next background round.
+    #[tokio::test]
+    async fn a_local_save_of_a_provider_task_queues_its_push() {
+        let e = env();
+        set_provider(&e.core, "plugin:todoist");
+        op(
+            &e.core,
+            Operation::LocalSave,
+            json!({"kind": "commitment", "text": "Book the workshop room", "owner": "You", "due": null}),
+        )
+        .await
+        .unwrap();
+        let jobs = e.core.repo().unwrap().jobs().unwrap();
+        assert!(
+            jobs.iter()
+                .any(|j| j.kind == "task_sync" && j.state == "queued"),
+            "a task_sync job is queued: {jobs:?}"
+        );
+    }
+
     #[tokio::test]
     async fn local_save_of_commitment_keeps_task_fields() {
         let e = env();
@@ -1065,6 +1496,67 @@ mod tests {
         assert_eq!(
             history(&e.core, &id),
             vec!["Added by you", "Moved from To do to Waiting"]
+        );
+    }
+
+    /// Design §3: Local, like a provider, tombstones a key it deleted, so step 5's
+    /// `create_by_key` never remakes it on a later run; Undo (saving the deleted body back)
+    /// brings the key back to life.
+    #[test]
+    fn local_delete_tombstones_the_key() {
+        let e = env();
+        let key = keys::task_key("message:m1", "Reply to Olga");
+        let (id, created) =
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap();
+        assert!(created);
+        let deleted = task_delete(&mut e.core.repo().unwrap(), "personal", &id).unwrap();
+        assert!(e
+            .core
+            .repo()
+            .unwrap()
+            .records_of_kind(KIND)
+            .unwrap()
+            .iter()
+            .all(|t| t.data["key"] != key.as_str()));
+        let (again, remade) =
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap();
+        assert!(!remade, "the key is tombstoned");
+        assert_eq!(again, key);
+
+        // Undo: the deleted body, saved back under the same id, is live under its key again.
+        let mut restore = deleted;
+        restore["id"] = id.clone().into();
+        save(&e.core, restore, NOW).unwrap();
+        assert_eq!(
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap(),
+            (id, false)
+        );
+    }
+
+    /// A Local task marked done is still found by its key (never duplicated) without needing
+    /// the ledger at all: it is still a record of kind `commitment` with that key.
+    #[test]
+    fn local_done_keys_are_not_made_again() {
+        let e = env();
+        let key = keys::task_key("message:m2", "Reply to Olga about the budget");
+        let (id, created) = create_by_key(
+            &e.core,
+            "personal",
+            &json!({"text": "Reply to Olga about the budget"}),
+            &key,
+        )
+        .unwrap();
+        assert!(created);
+        save(&e.core, json!({"id": id, "status": "done"}), NOW).unwrap();
+        assert_eq!(
+            create_by_key(
+                &e.core,
+                "personal",
+                &json!({"text": "Reply to Olga about the budget"}),
+                &key
+            )
+            .unwrap(),
+            (id, false)
         );
     }
 

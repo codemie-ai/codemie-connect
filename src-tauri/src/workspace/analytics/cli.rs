@@ -113,6 +113,7 @@ impl CodemieCli {
                 "codemie",
                 &env.path_var,
                 &env.home,
+                &env.system_dirs,
                 &env.extra_dirs,
             )
         }))

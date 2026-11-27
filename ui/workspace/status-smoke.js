@@ -137,9 +137,10 @@ export function pickSummaryThread(s) {
   return null;
 }
 
-export const BRIEF_NAME = 'Morning brief';
+/** An existing automation of this name is run as it is; else one is made from the template. */
+export const BRIEF_NAME = TEMPLATES.find(t => t.id === 'morning-brief').name;
 
-/** The Morning brief automation, as the template makes it but off, so no schedule runs it. */
+/** The Morning briefing automation, as the template makes it but off, so no schedule runs it. */
 export function briefFromTemplate() {
   const template = TEMPLATES.find(t => t.id === 'morning-brief');
   return toAutomation(draftFromAutomation({ ...template.automation, enabled: false }));

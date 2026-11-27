@@ -52,6 +52,14 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       await page.waitForSelector('[data-action="market-add"]');
       assert(await page.locator('.ws-settings-nav button[data-tab=plugins][aria-current=page]').count() === 1, 'Plugins tab current');
       await noOverflow(page, 'Plugins');
+      // The built-ins, CodeMie's first: badged, fetchable, never removable.
+      const markets = await page.evaluate(() => [...new Set([...document.querySelectorAll('[data-action="market-refresh"][data-market]')].map(b => b.dataset.market))]);
+      assert(markets[0] === 'codemie' && markets[1] === 'onetest', `marketplaces: ${markets}`);
+      for (const name of ['codemie', 'onetest']) {
+        const row = page.locator(`.ws-market-row[data-market="${name}"]`);
+        assert((await row.textContent()).includes('Built-in'), `${name} is badged Built-in`);
+        assert(await page.locator(`[data-action="market-remove"][data-market="${name}"]`).count() === 0, `${name} can’t be removed`);
+      }
       await shot(page, `plugins-${tag}-empty`);
 
       // A marketplace in a folder, chosen with the native picker (mocked).
@@ -103,6 +111,24 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       await frame.locator('h1:text("Hello page")').waitFor();
       await framed(page);
       assert((await frame.locator('html').getAttribute('class')).includes(theme), 'the frame follows the theme');
+      // Quick capture over a plugin page (ask-capture § 9): ⌘N draws the bar above the plugin's
+      // frame; the frame takes no click while it is open, so a click there closes the bar.
+      await page.locator('.ws-plugin-nav [data-action="plugin-page"][data-plugin-id="hello"]').focus();
+      await page.keyboard.press('ControlOrMeta+n');
+      await page.waitForSelector('#ws-capture-host .ws-capture');
+      const over = await page.evaluate(sel => {
+        const bar = document.querySelector('.ws-capture').getBoundingClientRect();
+        const f = document.querySelector(sel).getBoundingClientRect();
+        const atCentre = document.elementFromPoint(bar.x + bar.width / 2, bar.y + bar.height / 2);
+        const atBox = document.elementFromPoint(...(r => [r.x + 20, r.y + r.height / 2])(document.getElementById('capture-input').getBoundingClientRect()));
+        return { overlaps: bar.top < f.bottom && bar.bottom > f.top && bar.left < f.right && bar.right > f.left, centre: !!atCentre?.closest('#ws-capture-host'), box: atBox?.id, focused: document.activeElement?.id, frame: { x: f.x, y: f.y, w: f.width, h: f.height } };
+      }, FRAME);
+      assert(over.overlaps, 'the bar lies over the frame');
+      assert(over.centre && over.box === 'capture-input' && over.focused === 'capture-input', JSON.stringify(over));
+      await shot(page, `plugins-${tag}-capture`);
+      await page.mouse.click(over.frame.x + over.frame.w / 2, over.frame.y + over.frame.h - 40);
+      await page.waitForSelector('#ws-capture-host', { state: 'detached' });
+      assert(!(await page.evaluate(() => document.querySelector('.ws-plugin-layer').inert)), 'the frame takes clicks again');
       await frame.locator('[data-hello-greet]').click();
       await frame.locator('#hello-out .set-ok').waitFor();
       const greeting = await frame.locator('#hello-out').innerText();
@@ -173,7 +199,9 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       const card = await page.locator('.ws-plugins-card').innerText();
       assert(card.includes('Not sent — Connect never sends for plugins'), 'held message note');
       assert(card.includes('<img src=x'), 'plugin text shown as text');
-      await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+      await page.click('.ws-today-actions details[data-menu="today-more"] > summary');
+      await page.waitForSelector('.ws-today-actions details[data-menu="today-more"][open]');
+      await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-customize"]:has-text("Customize")');
       await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:greeting"]');
       await page.waitForSelector('[data-tile="plugin:hello:greeting"]');
       await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:board"]');

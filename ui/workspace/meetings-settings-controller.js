@@ -12,6 +12,7 @@ import { formatDate, formatTime } from './format.js';
 import { COLUMN_NAMES } from './tasks-model.js';
 import { quoted } from './tasks-controller.js';
 import { templatesOf } from './meetings-model.js';
+import { pinShows, storedPins } from './meeting-view-model.js';
 import { badge, select } from './ui.js';
 import {
   draftOf, editorBar, exampleText, isDirty, latestCard, latestDoc, latestKey, mdEditor, mdStatus, mdSummary, ruleTestResult, sortedRules, swatches, templateOf, wordsHint,
@@ -41,14 +42,15 @@ const skillName = name => {
  * `insertText(selector, text)` types at a field's caret and returns its value; `pickRoot()` the
  * native folder picker; `transcriptsOn()` the Meetings page's Turn on; `makeNotes(id, options)`
  * and `guarded(id, run)` from the Meetings controller; `openMeeting(id, tab)`; `glossaryChanged()`
- * tells the Meetings page to read the glossary again; `later`/`cancel`
+ * tells the Meetings page to read the glossary again; `plugins()` the summary plugins installed
+ * and on (`[{id, name}]`, for the pins the "Pin a summary" menu offers); `later`/`cancel`
  * timers; `now()`.
  */
 export function createMeetingsSettingsController({
   state, store, snap, mutate, save = mutate, render, patch = () => {}, route = async () => {}, openModal = () => null, confirmModal = () => {}, toast = () => {},
   focus = () => {}, writeText = async () => {}, insertText = () => null, pickRoot = async () => null, transcriptsOn = async () => {},
   makeNotes = async () => {}, guarded = async (id, run) => { await run(); return true; }, openMeeting = async () => {}, glossaryChanged = () => {},
-  later = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle), now = () => Date.now(),
+  later = (fn, ms) => setTimeout(fn, ms), cancel = handle => clearTimeout(handle), now = () => Date.now(), plugins = () => [],
 }) {
   const v = () => {
     if (!state.meetingsSettings) state.meetingsSettings = newMeetingsSettingsView();
@@ -166,6 +168,58 @@ export function createMeetingsSettingsController({
     const enabled = s.connection?.enabled || [];
     await mutate('settings_update', { capabilities: enabled.filter(x => x !== 'meetings' && x !== 'transcripts') });
     return toast('Connect stopped reading Teams transcripts. Transcripts and notes already saved stay in their folders.', 'success');
+  }
+
+  // ---------------------------------------------------------------- "When you open a meeting"
+
+  // Pin, unpin and move each send the whole next array, built on every stored entry — a pin of a
+  // plugin that is off or not loaded yet, or of another workspace's template, is not shown here but
+  // must survive an edit made while it is out of sight. Only the list drawn filters (`pinsOf`).
+  // A fast click on a second pin control before the first's `settings_update` round-trip lands
+  // must build on that first click's result, not the snapshot it was sent from (still stale at
+  // that point) — the same shape dock-controller.js's `commit()` keeps for layouts. `pendingPins`,
+  // once set, is what `pins()` reads instead of the snapshot; a read reconciles it away once the
+  // snapshot itself catches up, and a refusal clears it back to whatever the snapshot holds.
+  let pendingPins = null;
+  function pins() {
+    const real = storedPins(snap());
+    if (pendingPins && JSON.stringify(pendingPins) === JSON.stringify(real)) pendingPins = null;
+    return pendingPins || real;
+  }
+  async function sendPins(next) {
+    pendingPins = next;
+    const ok = await saveSetting('summaryTabs', next);
+    // Only undo this call's own pending value: an earlier call refused after a later one has
+    // already moved `pendingPins` on must not wipe out that later, still-in-flight (or already
+    // landed) array.
+    if (!ok && pendingPins === next) pendingPins = null;
+    return ok;
+  }
+
+  /** Pins a template or a plugin (`id`, or `plugin:<id>`) last; a refusal (over 4) shows under
+   *  the card. */
+  async function pinTab(id) {
+    if (!id || pins().includes(id)) return;
+    await sendPins([...pins(), id]);
+  }
+
+  async function unpinTab(id) {
+    if (!id || !pins().includes(id)) return;
+    await sendPins(pins().filter(x => x !== id));
+  }
+
+  /** Swaps a pin with the shown pin before (`d` -1) or after (+1) it, as the card lists them;
+   *  the hidden ones keep their places. */
+  async function movePin(id, d) {
+    const ids = pins();
+    const shown = ids.filter(pinShows(snap(), plugins()));
+    const at = shown.indexOf(id);
+    const to = at + d;
+    if (at < 0 || to < 0 || to >= shown.length) return;
+    const next = [...ids];
+    const [i, j] = [ids.indexOf(id), ids.indexOf(shown[to])];
+    [next[i], next[j]] = [next[j], next[i]];
+    await sendPins(next);
   }
 
   // ---------------------------------------------------------------- the template editor
@@ -674,6 +728,11 @@ export function createMeetingsSettingsController({
         return rootMoved('the default folder again', answer, () => saveSetting('root', before));
       }
       case 'meetings-settings-root-reveal': return reveal();
+      // "When you open a meeting"
+      case 'meetings-settings-open-on': return saveSetting('openOn', el.dataset.v);
+      case 'meetings-settings-pin': return pinTab(el.dataset.pin);
+      case 'meetings-settings-unpin': return unpinTab(el.dataset.pin);
+      case 'meetings-settings-pin-move': return movePin(el.dataset.pin, Number(el.dataset.d) < 0 ? -1 : 1);
       // Templates
       case 'meetings-settings-tpl-edit': return editTemplate(id);
       case 'meetings-settings-tpl-new': return newTemplate();

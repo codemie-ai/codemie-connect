@@ -1,0 +1,13 @@
+{
+  "id": "knowledge",
+  "name": "Knowledge",
+  "version": "1.0.0",
+  "summary": "Your voice for Connect's reply drafts, kept as Markdown in a folder you choose: people, a style card from your sent messages, your instructions, and facts from your notes",
+  "main": "main.js",
+  "requires": ["reply_context_provider"],
+  "provides": ["reply-context"],
+  "uses": {
+    "folders": { "what": "knowledge folder", "write": true },
+    "claude": {}
+  }
+}

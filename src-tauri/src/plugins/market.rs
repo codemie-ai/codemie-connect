@@ -6,15 +6,16 @@
 //! - a local folder (its full path), read where it is;
 //! - an `https://` git address (`#ref` picks a branch or tag) or GitHub's `owner/repo[@ref]`,
 //!   cloned with `git clone --depth 1` (`git`) into `<data root>/plugins/markets/<name>-<hash8>/`;
-//! - the built-in `onetest` (`onetest-ai/echo-plugins`), listed from the start and fetched only
-//!   when the user asks.
+//! - the built-ins (`registry::BUILT_INS`): `codemie` (`codemie-ai/codemie-connect-marketplace`)
+//!   and `onetest` (`onetest-ai/echo-plugins`), listed from the start and fetched only when the
+//!   user asks.
 //!
 //! Connect reaches the network only when the user adds or refreshes a git marketplace. Every
 //! other address (http, ssh, git, file) is refused, here and again by git's own protocol
 //! allowlist. A clone keeps only its checked-out files (its `.git` folder is deleted once the
 //! commit is read) and must stay within 5000 files and 64 MB.
 use super::git::Git;
-use super::registry::{io_error, now, Locked, Market, PluginPaths, Registry, Source};
+use super::registry::{io_error, now, unique_name, Locked, Market, PluginPaths, Registry, Source};
 use super::tree::{check_market_tree, delete_path, open_plain};
 use crate::workspace::models::{Result, WorkspaceError};
 use serde::Deserialize;
@@ -44,8 +45,8 @@ pub fn parse_source(text: &str) -> Result<Source> {
     if t.is_empty() || t.chars().any(char::is_control) {
         return Err(invalid(SOURCE_HELP));
     }
-    if t == super::registry::BUILT_IN_NAME {
-        return Ok(Source::built_in());
+    if let Some(b) = super::registry::BUILT_INS.iter().find(|b| b.name == t) {
+        return Ok(Source::built_in(b.repo));
     }
     if Path::new(t).is_absolute() {
         return Ok(Source::Local {
@@ -297,19 +298,6 @@ fn name_from(catalog: &Catalog) -> Result<String> {
     }
 }
 
-/// `wanted`, or `wanted-2` … `wanted-9` when that name is taken.
-fn unique_name(reg: &Registry, wanted: &str) -> Result<String> {
-    std::iter::once(wanted.to_string())
-        .chain((2..=9).map(|n| format!("{wanted}-{n}")))
-        .find(|n| super::valid_id(n) && reg.market(n).is_none())
-        .ok_or_else(|| {
-            WorkspaceError::new(
-                "exists",
-                format!("A marketplace named “{wanted}” is already added."),
-            )
-        })
-}
-
 fn already_added(reg: &Registry, source: &Source) -> Result<()> {
     match reg.markets.iter().find(|m| &m.source == source) {
         Some(m) => Err(WorkspaceError::new(
@@ -534,7 +522,11 @@ mod tests {
                 "https://gitlab.example.com/team/plugins/#stable",
                 gh("https://gitlab.example.com/team/plugins", Some("stable")),
             ),
-            ("onetest", Source::built_in()),
+            ("onetest", Source::built_in("onetest-ai/echo-plugins")),
+            (
+                "codemie",
+                Source::built_in("codemie-ai/codemie-connect-marketplace"),
+            ),
             (
                 "/Users/taylor/plugins",
                 Source::Local {
@@ -545,7 +537,7 @@ mod tests {
             assert_eq!(parse_source(text).unwrap(), want, "{text}");
         }
         assert_eq!(
-            Source::built_in(),
+            Source::built_in("onetest-ai/echo-plugins"),
             gh("https://github.com/onetest-ai/echo-plugins", None)
         );
         for bad in [
@@ -620,7 +612,7 @@ mod tests {
                 .iter()
                 .map(|m| m.name.as_str())
                 .collect::<Vec<_>>(),
-            ["onetest", "acme"]
+            ["codemie", "onetest", "acme"]
         );
 
         // The same source again, and the built-in one, are already there; refused sources never
@@ -676,6 +668,7 @@ mod tests {
         remove(&env.paths, "acme").unwrap();
         assert!(!clone.exists());
         assert_eq!(remove(&env.paths, "onetest").unwrap_err().code, "invalid");
+        assert_eq!(remove(&env.paths, "codemie").unwrap_err().code, "invalid");
         assert_eq!(remove(&env.paths, "acme").unwrap_err().code, "not_found");
 
         // A folder: its full path, with a catalog; removing it never touches the folder.
@@ -717,7 +710,7 @@ mod tests {
         );
         assert_eq!(testkit::count(&env.paths.tmp()), 0);
         assert_eq!(testkit::count(&env.paths.markets()), 0);
-        assert_eq!(Registry::load(&env.paths).unwrap().markets.len(), 1);
+        assert_eq!(Registry::load(&env.paths).unwrap().markets.len(), 2);
     }
 
     #[test]

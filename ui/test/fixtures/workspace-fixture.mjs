@@ -138,6 +138,9 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
       theme, timeZone: zone, background: true, launchAtLogin: false, criticalRepeat: true, syncDays: 30, notifications: true, notificationPreview: false,
       quietStart: '22:00', quietEnd: '08:00', clientId: '3d7688c6-f449-4d04-8b0d-57d94818e922', tenant: 'common', activeWorkspace: 'personal',
       activeConnection: connected ? CID : null, notificationPermission: 'os_managed', focusUntil: null,
+      // Settings › Notifications' "Menu bar" card (menu-bar-count design §1): only replies on.
+      menuBar: { replies: true, tasks: false, meetings: false, automations: false },
+      ...contract('settings-view').default,
     },
     workspaces: [
       { id: 'personal', name: 'Personal', color: '#2297F6', archived: false, isDefault: true, connectionId: connected ? CID : null, revision: 3, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'focus', 'calendar', 'inbox', 'commitments'], widgetWidths: {}, today: {} },
@@ -146,7 +149,40 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     connection,
     records: connected ? [...events, ...messages, calendars, chats, ...windows, ...localRecords] : localRecords,
     jobs: connected ? [{ id: 'job-sync-1', workspaceId: null, connectionId: CID, kind: 'sync', key: 'sync:1', state: 'succeeded', dueAt: now - 95, leaseUntil: null, attempts: 1, policy: {}, payload: { force: false }, result: 'Sources refreshed' }] : [],
+    // The snapshot's own menu-bar count (menu-bar-count design §5), matching the settings above
+    // (replies only): Task 2's "replies" contract state. `withMenuBar` swaps in another one.
+    menuBar: contract('menu-bar-states').replies,
+    // The snapshot's `ask` (ask-capture design § 6): no threads yet, the field in the menu.
+    // `withAsk` swaps in another ask-states.json state.
+    ask: contract('ask-states').empty,
   };
+}
+
+// ---------------------------------------------------------------- Ask (step 9, Task 9)
+// Written by the Rust test that projects the real snapshot's `ask` (ask-states.json): `empty`,
+// `idle`, `running`, `failedLast`, `stoppedLast`.
+
+export const askStates = () => contract('ask-states');
+/** An `ask_read` answer (ask-thread.json): a done turn with cites of every kind and three actions, a failed turn and a stopped turn. */
+export const askThread = () => contract('ask-thread');
+
+/** `snapshot.ask` replaced with one of the named states from ask-states.json. */
+export function withAsk(s, stateName) {
+  s.ask = askStates()[stateName];
+  return s;
+}
+
+// ---------------------------------------------------------------- menu bar (Task 5)
+// Written by the Rust test `contract_fixtures_match_the_menu_bar` (menu-bar-states.json,
+// menu-bar-reply-cases.json).
+
+export const menuBarStates = () => contract('menu-bar-states');
+
+/** `snapshot.menuBar` replaced with one of Task 2's named states: `zero`, `replies`, `several`,
+ *  `capped`, `amberOnly`, `amberWithCount`, `nothingChosen`. */
+export function withMenuBar(s, stateName) {
+  s.menuBar = menuBarStates()[stateName];
+  return s;
 }
 
 // ---------------------------------------------------------------- Claude (AI) status presets
@@ -156,17 +192,63 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
 const contract = name => JSON.parse(readFileSync(new URL(`./contract/${name}.json`, import.meta.url), 'utf8'));
 export const contractFixtures = () => ({
   status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail'),
-  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), summary: contract('summary'),
+  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), draftVoice: contract('draft-ai-voice'), summary: contract('summary'),
   jobSummaryFailed: contract('job-ai-summarize-failed'), jobSummaryRunning: contract('job-ai-summarize-running'),
   jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'), jobRunning: contract('job-ai-draft-running'),
+  // The `voice_import_scan` answer for the invented skills folder (reply voice design §11).
+  voiceImport: contract('voice-import-preview'),
 });
+
+// ---------------------------------------------------------------- reply voice (Task 9)
+// Written by the Rust test that projects the real snapshot's `replyVoice` (voice-states.json):
+// `off`, `offWithCopy`, `ready`, `needsSetup`, `unavailable`, `pluginOff`, `loading`, `noFacts`.
+
+export const voiceStates = () => contract('voice-states');
+
+/** `snapshot.replyVoice` replaced with one of the named states from voice-states.json. */
+export function withVoice(s, stateName) {
+  s.replyVoice = voiceStates()[stateName];
+  return s;
+}
+
+// A test-only mirror of Rust `workspace::ai::choose` for the browser mock and the presets below.
+// The window never resolves rows itself; `chooses_like_rust` (ai-settings.test.mjs) pins this
+// mirror to ai-route-cases.json and ai-status.json, which Rust writes from `choose`. Self-contained,
+// so the browser mock gets it as source.
+/** `chosen` of `ai_status` / `ai_settings_save` for `settings` (test mirror of Rust `chosen_all`). */
+export function chooseAll(s = {}) {
+  const GROUP = { briefing: 'automation', triage: 'automation', commitments: 'automation' };
+  const set = v => v || null;
+  const inherited = key => {
+    if (key == null) return { profile: set(s.defaultProfile), model: set(s.defaultModel), fallback: set(s.defaultFallback) };
+    const plugin = key.startsWith('plugin:');
+    const group = inherited(plugin ? 'plugin' : GROUP[key] || null);
+    const r = plugin ? s.plugins?.[key.slice(7)] : s.routes?.[key];
+    if (!r) return group;
+    const own = set(r.profile);
+    return { profile: own || group.profile, model: own ? set(r.model) : set(r.model) || group.model, fallback: set(r.fallback) || group.fallback };
+  };
+  const purposes = ['mail_draft', 'chat_draft', 'summary', 'automation', 'plugin', 'meeting', 'briefing', 'triage', 'commitments', 'ask'];
+  const keys = [null, ...purposes, ...Object.keys(s.plugins || {}).map(id => `plugin:${id}`)];
+  const groupOf = key => (key == null ? null : key.startsWith('plugin:') ? 'plugin' : GROUP[key] || 'default');
+  return Object.fromEntries(keys.map(key => {
+    const c = inherited(key);
+    return [key ?? 'default', { ...c, fallback: c.fallback && c.fallback === c.profile ? null : c.fallback, group: groupOf(key) }];
+  }));
+}
 
 /**
  * `ai_status` answers for the browser mock and unit tests. Kinds: none, native,
- * native_needs_login, codemie_only, both. `defaultProfile` overrides the saved default.
+ * native_needs_login, codemie_only, both, and `all` (the whole contract fixture: an Ollama
+ * profile, a default fallback and a plugin row). `defaultProfile` overrides the saved default.
  */
 export function aiStatus(kind = 'both', { defaultProfile } = {}) {
   const { profiles: all, settings } = contract('ai-status');
+  if (kind === 'all') {
+    const out = JSON.parse(JSON.stringify({ profiles: all, settings }));
+    if (defaultProfile !== undefined) out.settings.defaultProfile = defaultProfile;
+    return { ...out, chosen: chooseAll(out.settings) };
+  }
   const [native, prod, staging] = all;
   const notInstalled = { ...native, state: 'not_installed', version: null, account: null, message: 'Claude Code is not installed.' };
   const needsLogin = { ...native, state: 'needs_login', account: null, message: 'Claude Code is not signed in.' };
@@ -180,10 +262,12 @@ export function aiStatus(kind = 'both', { defaultProfile } = {}) {
   const profiles = sets[kind];
   if (!profiles) throw new Error(`Unknown aiStatus kind ${kind}`);
   const defaults = { none: null, native: 'claude', native_needs_login: null, codemie_only: 'codemie:prod', both: settings.defaultProfile };
-  return {
+  const out = {
     profiles: JSON.parse(JSON.stringify(profiles)),
     settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes: kind === 'both' ? settings.routes : {} },
   };
+  out.chosen = chooseAll(out.settings);
+  return out;
 }
 
 export const aiUsage = () => contract('ai-usage');
@@ -195,6 +279,7 @@ export const aiUsage = () => contract('ai-usage');
 export const automationContract = () => ({
   automation: contract('automation'), runOk: contract('automation-run-ok'), runFailed: contract('automation-run-failed'),
   runDraft: contract('automation-run-draft'), runsPage: contract('automation-runs-page'), snapshotRuns: contract('automation-snapshot-runs'),
+  runSummary: contract('automation-run-summary'),
 });
 
 /**
@@ -224,10 +309,58 @@ export function automationRecords(nowMs, connectionId = CID) {
   return { automations, runs, sources };
 }
 
-/** `snapshot` with the contract automations, their runs and the records the runs cite. */
-export function withAutomations(snapshot, nowMs) {
-  const { automations, runs, sources } = automationRecords(nowMs, snapshot.connection?.id || CID);
+/**
+ * Two habit automations and a run of each, for the checks of the create-tasks delivery and the
+ * Formal summary: "Inbox triage" (`auto-triage`, weekdays 08:00, Tasks on) made two reply tasks
+ * 30 minutes ago (one more was already there, one was left out, one task looks handled), and
+ * "Formal meeting summary" (`auto-summary`) queued a Formal summary for the Daily stand-up
+ * (`ev-standup`) 40 minutes ago. The task ids are links only; the tasks are not records here.
+ */
+export function habitRecords(nowMs, connectionId = CID) {
+  const now = Math.floor(nowMs / 1000);
+  const { schedule, summary } = contract('automation');
+  const triage = {
+    ...schedule, id: 'auto-triage', updatedAt: now - 86_400,
+    data: {
+      ...schedule.data, id: 'auto-triage', name: 'Inbox triage', ai: { profile: null, model: null }, capUsd: null,
+      trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:00' },
+      read: { ...schedule.data.read, calendarToday: false, needsReply: true, commitmentsNotes: true },
+      prompt: 'Go through the messages waiting for my reply. Make a reply task for each one that needs an answer or a decision from me.',
+      deliver: { ...schedule.data.deliver, today: true, notify: false, createTasks: true },
+    },
+  };
+  const formal = { ...summary, id: 'auto-summary', updatedAt: now - 86_400, data: { ...summary.data, id: 'auto-summary', name: 'Formal meeting summary', deliver: { ...summary.data.deliver, meetingSummary: 'formal-summary' } } };
+  const ok = contract('automation-run-ok');
+  const triageRun = {
+    ...ok, id: 'run-triage', updatedAt: now - 1800 + 5,
+    data: {
+      ...ok.data, automationId: 'auto-triage', automationName: 'Inbox triage', connectionId, startedAt: now - 1800, durationMs: 4100, costUsd: 0.02,
+      trigger: { kind: 'schedule', scheduledAt: now - 1800 }, delivered: ['today', 'tasks'], handled: 1,
+      output: { title: '3 messages need you', items: [], summaryMarkdown: '3 messages need you; two are about the SOW.', summaryBlocks: [{ type: 'paragraph', inlines: [{ text: '3 messages need you; two are about the SOW.' }] }] },
+      tasks: {
+        made: [{ id: 'task-olga', kind: 'reply', text: 'Reply to Olga about SOW section 4' }, { id: 'task-marek', kind: 'reply', text: 'Reply to Marek about the pilot users' }],
+        existing: 1, dropped: 1,
+      },
+    },
+  };
+  const queued = contract('automation-run-summary');
+  const summaryRun = {
+    ...queued, id: 'run-summary', updatedAt: now - 2400 + 5,
+    data: { ...queued.data, automationName: 'Formal meeting summary', connectionId, startedAt: now - 2400, meetingId: 'ev-standup', trigger: { ...queued.data.trigger, sourceId: 'ev-standup' }, output: { title: 'Formal summary queued for Daily stand-up' } },
+  };
+  return { automations: [triage, formal], runs: [triageRun, summaryRun] };
+}
+
+/** `snapshot` with the contract automations, their runs and the records the runs cite; with
+ *  `habits`, also the Inbox triage and Formal meeting summary automations and their runs. */
+export function withAutomations(snapshot, nowMs, { habits = false } = {}) {
+  const cid = snapshot.connection?.id || CID;
+  const { automations, runs, sources } = automationRecords(nowMs, cid);
   snapshot.records.push(...automations, ...runs, ...sources);
+  if (habits) {
+    const more = habitRecords(nowMs, cid);
+    snapshot.records.push(...more.automations, ...more.runs);
+  }
   return snapshot;
 }
 
@@ -331,21 +464,31 @@ const P = {
 const isoOf = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /** The fixture's meetings: id, title, start, minutes, organizer, attendees, record state (null:
- *  no record), and what else the record holds. */
+ *  no record), and what else the record holds.
+ *
+ *  Meetings a day or more back (`anchor`) sit at a fixed, safe hour of that day rather than at
+ *  whatever hour the suite happens to run: anchoring them to `top` (the current hour) used to
+ *  wrap a meeting "a day ago" into the last hour of the day whenever the suite ran shortly after
+ *  local midnight, rendering it at the very bottom of the calendar's time grid — exactly where
+ *  the toast notifications sit — and blocking clicks on it until a toast cleared (six
+ *  WORKSPACE_E2E_ONLY=meetings "calendar badge → event card" checks, one per theme/width). Only
+ *  the same-day meetings below (`top - N hours`) still need to track the real current hour, so
+ *  they stay in the recent past however the suite is invoked; those are unaffected. */
 function meetingPlan(nowMs) {
   const hour = 3_600_000;
   const day = 24 * hour;
   const top = Math.floor(nowMs / hour) * hour;
+  const anchor = Math.floor(nowMs / day) * day + 13 * hour;
   return [
-    { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: top - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
-    { id: 'mtg-roadmap', title: 'Roadmap review', start: top - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
+    { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: anchor - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
+    { id: 'mtg-roadmap', title: 'Roadmap review', start: anchor - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
     { id: 'mtg-release', title: 'Release 2.4 go/no-go', start: top - 2 * hour, minutes: 45, organizer: P.sam, people: [P.elena, P.me], state: 'available' },
     { id: 'mtg-vendor', title: 'Vendor onboarding', start: top - 3 * hour, minutes: 30, organizer: P.elena, people: [P.me, P.jordan], state: 'available', saveError: { code: 'provider', message: 'Teams didn’t answer in time.' } },
     { id: 'mtg-sprint', title: 'Sprint 25 planning', start: nowMs - 80 * 60_000, minutes: 60, organizer: P.priya, people: [P.me, P.jordan, P.sam, P.elena], state: 'pending' },
     { id: 'mtg-northwind', title: 'Northwind partnership call', start: top - 5 * hour, minutes: 60, organizer: P.hannah, people: [P.me, P.jordan], state: 'blocked' },
-    { id: 'mtg-critique', title: 'Design critique: Tasks board', start: top - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
-    { id: 'mtg-planning', title: 'Quarterly planning', start: top - 3 * day - hour, minutes: 60, organizer: P.jordan, people: [P.me, P.priya], state: 'none' },
-    { id: 'mtg-lunch', title: 'Team lunch', start: top - day + hour, minutes: 60, organizer: P.me, people: [P.jordan, P.priya], state: null, inPerson: true },
+    { id: 'mtg-critique', title: 'Design critique: Tasks board', start: anchor - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
+    { id: 'mtg-planning', title: 'Quarterly planning', start: anchor - 3 * day - hour, minutes: 60, organizer: P.jordan, people: [P.me, P.priya], state: 'none' },
+    { id: 'mtg-lunch', title: 'Team lunch', start: anchor - day + hour, minutes: 60, organizer: P.me, people: [P.jordan, P.priya], state: null, inPerson: true },
   ];
 }
 

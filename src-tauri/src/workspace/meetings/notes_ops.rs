@@ -10,7 +10,7 @@ use super::record::*;
 use super::rules::{self, Rule};
 use super::templates::{self, Template};
 use crate::ai::stream::{AiError, ErrorClass};
-use crate::workspace::{ai::chosen_profile, graph, models::*, new_job, Core};
+use crate::workspace::{ai::chosen_profile, graph, menu_bar, models::*, new_job, Core};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -191,6 +191,8 @@ impl Core {
             };
         }
         store(&mut r, &t.c, &source, &m)?;
+        // The person is in this meeting: its notes are seen (menu-bar design §2).
+        menu_bar::mark_meeting(&mut r, &t.id, now())?;
         Ok(json!({"saved": true}))
     }
 
@@ -248,7 +250,9 @@ impl Core {
         if folder::write_file(&dir.join("meta.json"), meta_json(&m).as_bytes()).is_err() {
             log::warn!("meetings: cannot rewrite meta.json");
         }
-        store(&mut *self.repo()?, &t.c, &source, &m)?;
+        let mut r = self.repo()?;
+        store(&mut r, &t.c, &source, &m)?;
+        menu_bar::mark_meeting(&mut r, &t.id, now())?;
         Ok(if action == "delete" {
             json!({"deleted": true})
         } else {

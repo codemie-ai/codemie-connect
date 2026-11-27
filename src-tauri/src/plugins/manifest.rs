@@ -17,7 +17,21 @@ pub const ENGINE: &str = "1.0";
 /// as needing a newer Connect instead of installing and failing.
 pub const ECHO_COMPAT: &str = "0.10.1";
 /// The optional features (`requires`, PLUGIN-ENGINE.md §6) Connect has.
-const FEATURES: [&str; 4] = ["work", "deliver", "deliver_provider", "echo"];
+const FEATURES: [&str; 6] = [
+    "work",
+    "deliver",
+    "deliver_provider",
+    "echo",
+    "tasks_provider",
+    "reply_context_provider",
+];
+/// The roles a plugin can take in Connect (`provides`): `tasks` holds the user's tasks
+/// (`ctx.tasks.provide`); `reply-context` shapes the user's reply drafts
+/// (`ctx.replyContext.provide`, reply-voice design §1).
+pub const ROLES: [&str; 2] = ["tasks", "reply-context"];
+/// What a `reply-context` plugin may not also ask for (reply-voice ruling 10): it reads the
+/// user's sent messages, so nothing it reads may leave the Mac.
+const OFF_THIS_MAC: [&str; 4] = ["network", "web", "signin", "deliver"];
 const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
 /// The kinds of widget Echo draws (and Connect's Today draws) for a plugin.
 pub const WIDGET_KINDS: [&str; 8] = [
@@ -46,6 +60,8 @@ pub enum ManifestError {
     UnknownKey(String),
     #[error("\"{key}\" is asked for in a way Connect can't read: {why}")]
     BadValue { key: String, why: String },
+    #[error("A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.")]
+    ReplyContextOffMac,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +118,8 @@ pub struct Manifest {
     pub echo: Option<VersionReq>,
     /// The optional features it can't work without.
     pub requires: Vec<String>,
+    /// The roles it takes in Connect (`ROLES`).
+    pub provides: Vec<String>,
     pub summary: String,
     pub uses: Map<String, Value>,
     pub settings: Vec<SettingDef>,
@@ -125,6 +143,9 @@ struct Raw {
     echo: Option<Value>,
     #[serde(default)]
     requires: Vec<String>,
+    /// One role as a string, or a list of them.
+    #[serde(default)]
+    provides: Option<Value>,
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -231,6 +252,7 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
             "\"requires\" lists at most 16 feature names (a-z, _)".into(),
         ));
     }
+    let provides = roles(raw.provides.as_ref())?;
     for w in &raw.widgets {
         if !WIDGET_KINDS.contains(&w.kind.as_str()) {
             return Err(ManifestError::BadWidgetKind {
@@ -270,6 +292,7 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
             .and_then(Value::as_str)
             .and_then(|t| parse_min_req("echo", t).ok()),
         requires: raw.requires,
+        provides,
         summary: raw.summary,
         uses: raw.uses,
         settings: raw.settings,
@@ -282,14 +305,53 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
     })
 }
 
+/// `provides`: one role or a list of them, each one Connect knows (`ROLES`).
+fn roles(v: Option<&Value>) -> Result<Vec<String>, ManifestError> {
+    let listed: Vec<&Value> = match v {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(one) => vec![one],
+    };
+    let mut roles = Vec::new();
+    for role in listed {
+        let Some(role) = role.as_str() else {
+            return Err(ManifestError::Invalid(
+                "\"provides\" lists roles by name".into(),
+            ));
+        };
+        if !ROLES.contains(&role) {
+            return Err(ManifestError::Invalid(format!(
+                "provides a role Connect doesn't know ({})",
+                role.escape_debug()
+            )));
+        }
+        if !roles.iter().any(|r| r == role) {
+            roles.push(role.to_string());
+        }
+    }
+    Ok(roles)
+}
+
 fn is_feature(f: &str) -> bool {
     (1..=40).contains(&f.len()) && f.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
+/// Whether these roles and `uses` break ruling 10: `reply-context` with the network, the web, a
+/// sign-in or a delivery. Checked at install and turning on (`check_compat`), at load
+/// (`Granted::of`) and when listing voice providers.
+pub fn reaches_off_mac(provides: &[String], uses: &Map<String, Value>) -> bool {
+    provides.iter().any(|r| r == "reply-context")
+        && OFF_THIS_MAC.iter().any(|k| uses.contains_key(*k))
+}
+
 /// Refuses a plugin whose engine range excludes Connect's engine (`ENGINE`), whose `echo` range
-/// excludes the Echo API Connect provides (`ECHO_COMPAT`), or that requires a feature Connect
-/// lacks (PLUGIN-ENGINE.md §3, §6).
+/// excludes the Echo API Connect provides (`ECHO_COMPAT`), that requires a feature Connect
+/// lacks (PLUGIN-ENGINE.md §3, §6), or that provides `reply-context` and also asks for the
+/// network, the web, a sign-in or a delivery (`OFF_THIS_MAC`).
 pub fn check_compat(m: &Manifest) -> Result<(), ManifestError> {
+    if reaches_off_mac(&m.provides, &m.uses) {
+        return Err(ManifestError::ReplyContextOffMac);
+    }
     let have = Version::parse(&format!("{ENGINE}.0")).expect("ENGINE is a version");
     if !m.engine.matches(&have) {
         return Err(ManifestError::Incompatible {
@@ -496,6 +558,81 @@ mod tests {
         assert!(parse_min_req("engine", "0.10")
             .unwrap()
             .matches(&Version::parse("0.11.0").unwrap()));
+    }
+
+    #[test]
+    fn provides_tasks_parses_and_needs_the_feature() {
+        for provides in [json!("tasks"), json!(["tasks"]), json!(["tasks", "tasks"])] {
+            let mut j = base();
+            j["provides"] = provides.clone();
+            j["requires"] = json!(["tasks_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(m.provides, ["tasks"], "{provides}");
+            assert!(
+                check_compat(&m).is_ok(),
+                "tasks_provider is a feature Connect has"
+            );
+        }
+        let m = parse_manifest(package(base()).path()).unwrap();
+        assert!(m.provides.is_empty());
+        let mut j = base();
+        j["provides"] = json!(["calendar"]);
+        assert_eq!(
+            parse_manifest(package(j).path()).unwrap_err(),
+            ManifestError::Invalid("provides a role Connect doesn't know (calendar)".into())
+        );
+        let mut j = base();
+        j["provides"] = json!([7]);
+        assert!(matches!(
+            parse_manifest(package(j).path()),
+            Err(ManifestError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn reply_context_role_needs_its_feature_and_is_known() {
+        for provides in [json!("reply-context"), json!(["reply-context"])] {
+            let mut j = base();
+            j["uses"] = json!({});
+            j["provides"] = provides.clone();
+            j["requires"] = json!(["reply_context_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(m.provides, ["reply-context"], "{provides}");
+            assert!(
+                check_compat(&m).is_ok(),
+                "reply_context_provider is a feature Connect has"
+            );
+        }
+        let mut j = base();
+        j["provides"] = json!(["reply-voice"]);
+        assert_eq!(
+            parse_manifest(package(j).path()).unwrap_err(),
+            ManifestError::Invalid("provides a role Connect doesn't know (reply-voice)".into())
+        );
+    }
+
+    #[test]
+    fn reply_context_plugin_cannot_use_the_network() {
+        for key in ["network", "web", "signin", "deliver"] {
+            let mut j = base();
+            j["uses"] = json!({ key: {} });
+            j["provides"] = json!(["reply-context"]);
+            j["requires"] = json!(["reply_context_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(
+                check_compat(&m).unwrap_err().to_string(),
+                "A reply-context plugin can't use the network: what it reads of your sent messages stays on this Mac.",
+                "{key}"
+            );
+        }
+        // Reading folders and Claude stays allowed; a tasks provider may still use the network.
+        let mut j = base();
+        j["uses"] = json!({"folders": {"write": true}, "claude": {}});
+        j["provides"] = json!(["reply-context"]);
+        assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
+        let mut j = base();
+        j["provides"] = json!(["tasks"]);
+        assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
     }
 
     #[test]

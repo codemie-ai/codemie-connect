@@ -49,6 +49,8 @@ pub enum ProfileState {
     TooOld,
     NeedsLogin,
     NotConfigured,
+    /// A local Ollama was found but `ollama list` failed or timed out.
+    NotRunning,
     /// Reserved for the UI while a refresh runs; detection itself never returns it.
     #[allow(dead_code)] // the Settings UI (Task 6) shows it
     Checking,
@@ -83,6 +85,9 @@ pub struct ModelChoice {
 pub struct AiProfile {
     pub id: String,
     pub kind: ProfileKind,
+    /// The CodeMie profile's `provider` (`ai-run-sso`, `litellm`, `bedrock`, `ollama`, …);
+    /// `None` for the native Claude Code. Not a secret: Settings › CodeMie shows it already.
+    pub provider: Option<String>,
     pub label: String,
     pub state: ProfileState,
     pub version: Option<String>,
@@ -90,14 +95,40 @@ pub struct AiProfile {
     pub models: Vec<ModelChoice>,
     pub default_model: Option<String>,
     pub message: Option<String>,
+    /// For an Ollama profile, whether its base URL is local (ruling 10) — the only thing that
+    /// decides whether it was actually probed with `ollama list`; `None` for every other
+    /// profile. Not a secret: it carries no host or path, only yes/no.
+    pub local: Option<bool>,
 }
 
 /// A CodeMie CLI profile with the models it offers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CodemieProfile {
     pub name: String,
+    pub provider: String,
+    /// Read only to decide where Ollama is (`ollama_is_local`); never leaves
+    /// `ai::profiles`. Redacted from `Debug` below (a `baseUrl` can carry
+    /// `user:pass@host`).
+    pub base_url: String,
     pub models: Vec<ModelChoice>,
     pub default_model: Option<String>,
+}
+
+impl std::fmt::Debug for CodemieProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let base_url = if self.base_url.is_empty() {
+            String::new()
+        } else {
+            "<redacted>".to_string()
+        };
+        f.debug_struct("CodemieProfile")
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("base_url", &base_url)
+            .field("models", &self.models)
+            .field("default_model", &self.default_model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +224,8 @@ pub fn codemie_profiles(config: &serde_json::Value) -> Vec<CodemieProfile> {
         .iter()
         .map(|p| CodemieProfile {
             name: p.name.clone(),
+            provider: p.provider.clone(),
+            base_url: p.base_url.clone(),
             models: model_choices(p),
             default_model: Some(p.model.clone()).filter(|m| !m.is_empty()),
         })
@@ -212,6 +245,43 @@ fn native_models() -> Vec<ModelChoice> {
         label: label.to_string(),
     })
     .collect()
+}
+
+/// `ollama list`'s output: the first column of every line after the header.
+/// Empty input (no header, no models) is `[]`.
+pub fn parse_ollama_list(out: &str) -> Vec<String> {
+    out.lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `base_url` names a local Ollama: empty, or loopback (`localhost`,
+/// `127.0.0.1`, `[::1]`) with no explicit port or port `11434`. Anything else
+/// (another host, another port) is remote and never probed.
+pub fn ollama_is_local(base_url: &str) -> bool {
+    if base_url.is_empty() {
+        return true;
+    }
+    let Ok(url) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let host_ok = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let port_ok = matches!(url.port(), None | Some(11434));
+    host_ok && port_ok
+}
+
+/// Ollama's `:latest` rule: a name without a tag means `:latest`.
+fn same_ollama_model(a: &str, b: &str) -> bool {
+    fn tagged(s: &str) -> std::borrow::Cow<'_, str> {
+        if s.contains(':') {
+            std::borrow::Cow::Borrowed(s)
+        } else {
+            std::borrow::Cow::Owned(format!("{s}:latest"))
+        }
+    }
+    tagged(a) == tagged(b)
 }
 
 // ------------------------------------------------------------- command probing
@@ -244,6 +314,10 @@ impl CommandProbe for SystemProbe {
             for k in super::command::NATIVE_ENV_REMOVE {
                 child.env_remove(k);
             }
+            // Ruling 10: only a local Ollama is ever probed. `ollama list` itself has no
+            // "local only" flag — it asks whatever `OLLAMA_HOST` names — so an `OLLAMA_HOST`
+            // the app inherited (for example from a dev shell) must never reach the probe.
+            child.env_remove("OLLAMA_HOST");
             let child = child.output();
             match tokio::time::timeout(PROBE_TIMEOUT, child).await {
                 Err(_) => Err("timed out".to_string()),
@@ -264,6 +338,11 @@ impl CommandProbe for SystemProbe {
 pub struct DetectEnv {
     pub path_var: String,
     pub home: PathBuf,
+    /// The fixed OS dirs `find_program_in` always searches in production (Homebrew,
+    /// `/usr/local/bin`, the Ollama.app Resources dir — see `discover::system_dirs`).
+    /// Empty in tests, so a program actually installed there on the developer's own
+    /// Mac cannot leak into a "nothing installed" assertion.
+    pub system_dirs: Vec<PathBuf>,
     /// Searched after the user's own dirs (for example the bundled `codemie-claude` shim).
     pub extra_dirs: Vec<PathBuf>,
     pub config_path: PathBuf,
@@ -274,6 +353,7 @@ impl DetectEnv {
         Self {
             path_var: std::env::var("PATH").unwrap_or_default(),
             home: super::discover::home_dir(),
+            system_dirs: super::discover::system_dirs(),
             extra_dirs,
             config_path: PathBuf::from(codemie_config::config_path()),
         }
@@ -284,6 +364,7 @@ fn profile(id: &str, kind: ProfileKind, label: &str, state: ProfileState) -> AiP
     AiProfile {
         id: id.to_string(),
         kind,
+        provider: None,
         label: label.to_string(),
         state,
         version: None,
@@ -291,6 +372,7 @@ fn profile(id: &str, kind: ProfileKind, label: &str, state: ProfileState) -> AiP
         models: Vec::new(),
         default_model: None,
         message: None,
+        local: None,
     }
 }
 
@@ -302,7 +384,8 @@ async fn detect_native(probe: &dyn CommandProbe, env: &DetectEnv) -> AiProfile {
         ProfileState::NotInstalled,
     );
     p.models = native_models();
-    let Some(bin) = find_program_in("claude", &env.path_var, &env.home, &[]) else {
+    let Some(bin) = find_program_in("claude", &env.path_var, &env.home, &env.system_dirs, &[])
+    else {
         p.message = Some("Claude Code is not installed.".to_string());
         return p;
     };
@@ -352,11 +435,79 @@ async fn detect_native(probe: &dyn CommandProbe, env: &DetectEnv) -> AiProfile {
     p
 }
 
-fn detect_codemie(env: &DetectEnv) -> Vec<AiProfile> {
+/// What probing the local Ollama found.
+enum OllamaProbe {
+    NotInstalled,
+    NotRunning,
+    Models(Vec<String>),
+}
+
+/// Find `ollama` and run `list` once. Never runs when no local Ollama profile exists.
+async fn probe_ollama(probe: &dyn CommandProbe, env: &DetectEnv) -> OllamaProbe {
+    let Some(bin) = find_program_in("ollama", &env.path_var, &env.home, &env.system_dirs, &[])
+    else {
+        return OllamaProbe::NotInstalled;
+    };
+    match probe.run(&bin, &["list"]).await {
+        Ok(o) if o.success => OllamaProbe::Models(parse_ollama_list(&o.stdout)),
+        _ => OllamaProbe::NotRunning,
+    }
+}
+
+/// The Ollama models a profile offers, and whether it is ready: the pulled models
+/// (from `probe`) plus the config's own models not among them; `Ready` when the
+/// profile's default model is pulled.
+fn apply_ollama(p: &mut AiProfile, default_model: &Option<String>, probe: &OllamaProbe) {
+    match probe {
+        OllamaProbe::NotInstalled => {
+            p.state = ProfileState::NotInstalled;
+            p.message = Some("Ollama is not installed on this Mac.".to_string());
+        }
+        OllamaProbe::NotRunning => {
+            p.state = ProfileState::NotRunning;
+            p.message = Some("Ollama isn't running. Open Ollama, then check again.".to_string());
+        }
+        OllamaProbe::Models(pulled) => {
+            let mut models: Vec<ModelChoice> = pulled
+                .iter()
+                .map(|name| ModelChoice {
+                    id: name.clone(),
+                    label: name.clone(),
+                })
+                .collect();
+            for m in std::mem::take(&mut p.models) {
+                if !pulled.iter().any(|name| same_ollama_model(name, &m.id)) {
+                    models.push(m);
+                }
+            }
+            p.models = models;
+            let pulled_default = default_model
+                .as_deref()
+                .is_none_or(|d| pulled.iter().any(|name| same_ollama_model(name, d)));
+            if pulled_default {
+                p.state = ProfileState::Ready;
+            } else {
+                p.state = ProfileState::NotConfigured;
+                p.message = Some(format!(
+                    "Ollama doesn't have {}. Pull it in Ollama, then check again.",
+                    default_model.clone().unwrap_or_default()
+                ));
+            }
+        }
+    }
+}
+
+async fn detect_codemie(probe: &dyn CommandProbe, env: &DetectEnv) -> Vec<AiProfile> {
     let kind_none = || ProfileKind::CodeMie {
         name: String::new(),
     };
-    let found = find_program_in("codemie-claude", &env.path_var, &env.home, &env.extra_dirs);
+    let found = find_program_in(
+        "codemie-claude",
+        &env.path_var,
+        &env.home,
+        &env.system_dirs,
+        &env.extra_dirs,
+    );
     if found.is_none() {
         let mut p = profile(
             "codemie",
@@ -381,7 +532,17 @@ fn detect_codemie(env: &DetectEnv) -> Vec<AiProfile> {
         p.message = Some("No CodeMie profile is configured yet.".to_string());
         return vec![p];
     }
-    // Auth is confirmed by the first run, so a found binary plus a profile is Ready.
+    // `ollama list` is the one new probe: run at most once, only when a local
+    // Ollama profile exists, and shared by every such profile.
+    let is_local_ollama =
+        |c: &CodemieProfile| c.provider == "ollama" && ollama_is_local(&c.base_url);
+    let ollama = if profiles.iter().any(is_local_ollama) {
+        Some(probe_ollama(probe, env).await)
+    } else {
+        None
+    };
+    // Auth is confirmed by the first run, so a found binary plus a profile is Ready
+    // (remote and non-Ollama profiles keep this path exactly).
     profiles
         .into_iter()
         .map(|c| {
@@ -393,8 +554,17 @@ fn detect_codemie(env: &DetectEnv) -> Vec<AiProfile> {
                 &format!("CodeMie \u{b7} {}", c.name),
                 ProfileState::Ready,
             );
-            p.models = c.models;
-            p.default_model = c.default_model;
+            p.provider = Some(c.provider.clone()).filter(|s| !s.is_empty());
+            p.models = c.models.clone();
+            p.default_model = c.default_model.clone();
+            if c.provider == "ollama" {
+                p.local = Some(is_local_ollama(&c));
+            }
+            if is_local_ollama(&c) {
+                if let Some(probed) = &ollama {
+                    apply_ollama(&mut p, &c.default_model, probed);
+                }
+            }
             p
         })
         .collect()
@@ -403,7 +573,7 @@ fn detect_codemie(env: &DetectEnv) -> Vec<AiProfile> {
 /// Detect every AI profile. Never panics; problems show up as profile states.
 pub async fn detect_profiles(probe: &dyn CommandProbe, env: &DetectEnv) -> Vec<AiProfile> {
     let mut all = vec![detect_native(probe, env).await];
-    all.extend(detect_codemie(env));
+    all.extend(detect_codemie(probe, env).await);
     all
 }
 
@@ -565,18 +735,38 @@ mod tests {
             ids,
             vec!["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5"]
         );
+        // `base_url` ("https://x.test") is redacted from `Debug`, not just `apiKey`/`token`.
         let dump = format!("{list:?}");
         assert!(!dump.contains("SECRET"), "{dump}");
+        assert!(!dump.contains("x.test"), "{dump}");
+        assert!(dump.contains("<redacted>"), "{dump}");
     }
     struct Fake {
         calls: std::sync::atomic::AtomicUsize,
         help: String,
         auth: String,
+        /// `ollama list`'s answer; `None` means the command fails.
+        list: Option<String>,
+        list_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl CommandProbe for Fake {
         fn run<'a>(&'a self, _p: &'a Path, args: &'a [&'a str]) -> ProbeFuture<'a> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if args.first().copied() == Some("list") {
+                self.list_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let list = self.list.clone();
+                return Box::pin(async move {
+                    match list {
+                        Some(out) => Ok(ProbeOutput {
+                            stdout: out,
+                            success: true,
+                        }),
+                        None => Err("ollama is not running".to_string()),
+                    }
+                });
+            }
             let out = match args[0] {
                 "--version" => "2.1.322 (Claude Code)".to_string(),
                 "--help" => self.help.clone(),
@@ -602,6 +792,9 @@ mod tests {
         DetectEnv {
             path_var: String::new(),
             home: h.to_path_buf(),
+            // Empty, unlike `DetectEnv::system`: a real `claude`/`codemie-claude`/`ollama`
+            // installed at a fixed OS dir on the developer's own Mac must never leak in.
+            system_dirs: vec![],
             extra_dirs: vec![],
             config_path: h.join("cfg.json"),
         }
@@ -615,6 +808,8 @@ mod tests {
             calls: Default::default(),
             help: REQUIRED_FLAGS.join(" "),
             auth: r#"{"loggedIn":true,"subscriptionType":"pro"}"#.into(),
+            list: None,
+            list_calls: Default::default(),
         });
 
         // Nothing installed.
@@ -664,6 +859,8 @@ mod tests {
             calls: Default::default(),
             help: "--print --model".into(),
             auth: "{}".into(),
+            list: None,
+            list_calls: Default::default(),
         };
         let got = detect_profiles(&old, &env_in(h)).await;
         assert_eq!(got[0].state, ProfileState::TooOld);
@@ -673,8 +870,192 @@ mod tests {
             calls: Default::default(),
             help: REQUIRED_FLAGS.join(" "),
             auth: r#"{"loggedIn":false}"#.into(),
+            list: None,
+            list_calls: Default::default(),
         };
         let got = detect_profiles(&out, &env_in(h)).await;
         assert_eq!(got[0].state, ProfileState::NeedsLogin);
+    }
+
+    /// A `Fake` with claude already logged in; `list` is `ollama list`'s answer
+    /// (`None` means the command fails).
+    fn ollama_fake(list: Option<&str>) -> Fake {
+        Fake {
+            calls: Default::default(),
+            help: REQUIRED_FLAGS.join(" "),
+            auth: r#"{"loggedIn":true}"#.into(),
+            list: list.map(str::to_string),
+            list_calls: Default::default(),
+        }
+    }
+
+    fn write_config(h: &Path, body: &str) {
+        std::fs::write(h.join("cfg.json"), body).unwrap();
+    }
+
+    #[test]
+    fn parse_ollama_list_reads_names() {
+        let out = "NAME ID SIZE MODIFIED\nllama3.2:latest a80c 2.0 GB 2 weeks ago\nqwen3:8b 500a 5.2 GB 3 days ago\n";
+        assert_eq!(parse_ollama_list(out), vec!["llama3.2:latest", "qwen3:8b"]);
+        assert_eq!(parse_ollama_list(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ollama_is_local_only_for_loopback_on_11434() {
+        for local in [
+            "",
+            "http://localhost:11434",
+            "http://127.0.0.1",
+            "http://[::1]:11434/",
+        ] {
+            assert!(ollama_is_local(local), "{local}");
+        }
+        for remote in ["http://localhost:11500", "https://ollama.example.test"] {
+            assert!(!ollama_is_local(remote), "{remote}");
+        }
+    }
+
+    /// Ruling 10: the probe never inherits a remote `OLLAMA_HOST` the app's own
+    /// environment set (for example a dev shell's). `SystemProbe` is the only thing
+    /// that ever actually runs a program; this test exercises it directly, against
+    /// a throwaway shell script, never against a real `ollama`/`claude`/`codemie`.
+    #[tokio::test]
+    async fn system_probe_never_passes_on_a_remote_ollama_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("print-ollama-host.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'OLLAMA_HOST=[%s]' \"$OLLAMA_HOST\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // SAFETY: this test alone reads `OLLAMA_HOST`; it restores the prior value
+        // (absent) when done. No other test in this crate touches it.
+        std::env::set_var("OLLAMA_HOST", "http://ollama.example.test:9999");
+        let out = SystemProbe.run(&script, &["list"]).await.unwrap();
+        std::env::remove_var("OLLAMA_HOST");
+
+        assert!(out.success);
+        assert_eq!(out.stdout, "OLLAMA_HOST=[]");
+    }
+
+    #[tokio::test]
+    async fn local_ollama_profile_states_and_models() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        exe(&h.join(".local/bin/codemie-claude"));
+        write_config(
+            h,
+            r#"{"profiles":{"ol":{"provider":"ollama","model":"llama3.2"}}}"#,
+        );
+        let env = env_in(h);
+
+        // No ollama binary. `env.system_dirs` is empty (see `env_in`), so this is
+        // deterministic on every Mac, including one with a real Ollama installed at
+        // a fixed OS dir.
+        let fake = ollama_fake(None);
+        let got = detect_profiles(&fake, &env).await;
+        let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
+        assert_eq!(ol.state, ProfileState::NotInstalled);
+        assert_eq!(
+            ol.message.as_deref(),
+            Some("Ollama is not installed on this Mac.")
+        );
+
+        // ollama present, `list` fails.
+        exe(&h.join(".local/bin/ollama"));
+        let fake = ollama_fake(None);
+        let got = detect_profiles(&fake, &env).await;
+        let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
+        assert_eq!(ol.state, ProfileState::NotRunning);
+        assert_eq!(
+            ol.message.as_deref(),
+            Some("Ollama isn't running. Open Ollama, then check again.")
+        );
+
+        // `list` answers both models, the default is pulled.
+        let fake = ollama_fake(Some(
+            "NAME ID SIZE MODIFIED\nllama3.2:latest a80c 2.0 GB 2 weeks ago\nqwen3:8b 500a 5.2 GB 3 days ago\n",
+        ));
+        let got = detect_profiles(&fake, &env).await;
+        let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
+        assert_eq!(ol.state, ProfileState::Ready);
+        assert_eq!(ol.provider.as_deref(), Some("ollama"));
+        let ids: Vec<_> = ol.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["llama3.2:latest", "qwen3:8b"]);
+
+        // `list` answers only the other model: the default is not pulled.
+        let fake = ollama_fake(Some(
+            "NAME ID SIZE MODIFIED\nqwen3:8b 500a 5.2 GB 3 days ago\n",
+        ));
+        let got = detect_profiles(&fake, &env).await;
+        let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
+        assert_eq!(ol.state, ProfileState::NotConfigured);
+        assert_eq!(
+            ol.message.as_deref(),
+            Some("Ollama doesn't have llama3.2. Pull it in Ollama, then check again.")
+        );
+        let ids: Vec<_> = ol.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["qwen3:8b", "llama3.2"]);
+    }
+
+    #[tokio::test]
+    async fn ollama_is_probed_once_for_two_profiles() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        exe(&h.join(".local/bin/codemie-claude"));
+        exe(&h.join(".local/bin/ollama"));
+        write_config(
+            h,
+            r#"{"profiles":{"ol1":{"provider":"ollama","model":"llama3.2"},
+                             "ol2":{"provider":"ollama","model":"qwen3:8b"}}}"#,
+        );
+        let fake = ollama_fake(Some(
+            "NAME ID SIZE MODIFIED\nllama3.2:latest a80c 2.0 GB 2 weeks ago\nqwen3:8b 500a 5.2 GB 3 days ago\n",
+        ));
+        let got = detect_profiles(&fake, &env_in(h)).await;
+        assert_eq!(fake.list_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(got.len(), 3, "native + two CodeMie profiles");
+    }
+
+    #[tokio::test]
+    async fn remote_ollama_is_not_probed_and_leaks_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        exe(&h.join(".local/bin/codemie-claude"));
+        exe(&h.join(".local/bin/ollama"));
+        write_config(
+            h,
+            r#"{"profiles":{"remote":{"provider":"ollama","model":"m",
+                "baseUrl":"https://ollama.example.test","apiKey":"SECRET-KEY"}}}"#,
+        );
+        let fake = ollama_fake(None);
+        let got = detect_profiles(&fake, &env_in(h)).await;
+        assert_eq!(fake.list_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let remote = got.iter().find(|p| p.id == "codemie:remote").unwrap();
+        assert_eq!(remote.state, ProfileState::Ready);
+        assert_eq!(remote.provider.as_deref(), Some("ollama"));
+        let dump = serde_json::to_string(&got).unwrap();
+        assert!(!dump.contains("SECRET"), "{dump}");
+        assert!(!dump.contains("example.test"), "{dump}");
+    }
+
+    #[tokio::test]
+    async fn non_ollama_codemie_profiles_keep_their_provider() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        exe(&h.join(".local/bin/codemie-claude"));
+        write_config(
+            h,
+            r#"{"profiles":{"prod":{"provider":"litellm","model":"gpt-x"}}}"#,
+        );
+        let fake = ollama_fake(None);
+        let got = detect_profiles(&fake, &env_in(h)).await;
+        assert_eq!(fake.list_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let prod = got.iter().find(|p| p.id == "codemie:prod").unwrap();
+        assert_eq!(prod.provider.as_deref(), Some("litellm"));
+        assert_eq!(prod.state, ProfileState::Ready);
     }
 }

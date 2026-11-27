@@ -140,7 +140,7 @@ export function templateEditor(s, v, ctx) {
   const instructions = skill
     ? subCard({
       title: 'Runs a skill', iconName: 'skill', sub: 'The skill’s own instructions decide the notes. Edit it where it lives; Connect reads it again on every run. Wishes you type for a meeting are passed to it too.',
-      body: `<label class="ws-field"><span class="ws-field-label">SKILL.md</span><input class="ws-input ws-ms-mono" data-ms-input="tpl-skill" value="${e(d.skillPath)}" spellcheck="false" autocomplete="off"><small class="ws-field-hint">The full path. Runs with the Claude chosen for Meeting notes in Settings › Claude, with the meeting’s transcript as its input.</small>${fieldError(v, 'tpl.skillPath')}</label>`,
+      body: `<label class="ws-field"><span class="ws-field-label">SKILL.md</span><input class="ws-input ws-ms-mono" data-ms-input="tpl-skill" value="${e(d.skillPath)}" spellcheck="false" autocomplete="off"><small class="ws-field-hint">The full path. Runs with the Claude chosen for Meeting notes in Settings › AI, with the meeting’s transcript as its input.</small>${fieldError(v, 'tpl.skillPath')}</label>`,
       footer: `<span class="ws-spacer"></span>${button('Copy path', { action: 'meetings-settings-copy', variant: 'ghost', size: 'sm', iconName: 'copy', attrs: { 'data-text': d.skillPath } })}`,
     })
     : subCard({

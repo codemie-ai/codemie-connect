@@ -214,6 +214,7 @@ fn spawn_detached(_program: &Path, _args: &[OsString]) -> std::io::Result<()> {
 /// Lets go of the workspace (best effort) and starts Connect again: on macOS through a helper
 /// that reopens the bundle once this process has exited, elsewhere with Tauri's restart.
 async fn relaunch(app: tauri::AppHandle, core: Option<Arc<Core>>) -> Result<()> {
+    crate::commands::tour::opens_nothing("relaunch").map_err(|m| WorkspaceError::new("tour", m))?;
     let helper = if cfg!(target_os = "macos") {
         std::env::current_exe()
             .ok()
@@ -616,6 +617,8 @@ pub(crate) async fn pick_folder(
     start: PathBuf,
     title: &str,
 ) -> Result<Option<String>> {
+    crate::commands::tour::opens_nothing("folder picker")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
     let unavailable = || WorkspaceError::new("io", "Connect couldn’t open the folder picker.");
     let (tx, rx) = tokio::sync::oneshot::channel();
     let title = title.to_string();
@@ -641,6 +644,8 @@ pub(crate) async fn pick_folder(
     _start: PathBuf,
     _title: &str,
 ) -> Result<Option<String>> {
+    crate::commands::tour::opens_nothing("folder picker")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
     Err(WorkspaceError::new(
         "unsupported",
         "Choosing a folder is available on macOS and Windows.",
@@ -649,6 +654,8 @@ pub(crate) async fn pick_folder(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
+    crate::commands::tour::opens_nothing("Finder reveal")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
     if !path.exists() {
         return Err(WorkspaceError::new(
             "not_found",
@@ -670,6 +677,8 @@ pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
 /// meeting folders open. Explorer answers 1 even when it worked, so only a failed start counts.
 #[cfg(windows)]
 pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
+    crate::commands::tour::opens_nothing("File Explorer reveal")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
     if !path.exists() {
         return Err(WorkspaceError::new(
             "not_found",
@@ -689,6 +698,8 @@ pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
 }
 #[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn reveal(_place: Place, _path: &Path) -> Result<()> {
+    crate::commands::tour::opens_nothing("Finder reveal")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
     Err(WorkspaceError::new(
         "unsupported",
         "Showing folders is available on macOS and Windows.",

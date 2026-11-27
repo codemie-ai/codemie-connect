@@ -226,6 +226,25 @@
       "skillPath": null
     },
     {
+      "blurb": "A summary you can send to the attendees: in English, the real title and people, what was discussed, decided and who does what by when.",
+      "color": "#8A5CC2",
+      "edited": false,
+      "extractTasks": true,
+      "icon": "list",
+      "id": "formal-summary",
+      "kind": "builtin",
+      "name": "Formal summary",
+      "prompt": "Write a summary of \"{{title}}\" ({{date}}) that {{me}} can send to the attendees. Always write in English, whatever language the meeting was held in. Be neutral: report positions and decisions, not opinions of the people who hold them.\n\n# {{title}} — {{date}}\nAttendees: {{participants}}\n\n## Summary — two or three sentences: who met, why, and what came out of it\n## Discussion — by topic, each a short paragraph or a few bullets\n## Decisions — if any: <decision> — <why>\n## Action items — owner · action · due date only when someone said one\n\nName the subject instead of \"it\" or \"this\". Spell names and terms as the glossary does. A collective \"we\" becomes {{me}}. Extra wishes for this run: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+      "sections": [
+        "summary",
+        "attendees",
+        "discussion",
+        "decisions",
+        "actions"
+      ],
+      "skillPath": null
+    },
+    {
       "blurb": "",
       "color": "#C084FC",
       "edited": false,
@@ -352,6 +371,7 @@
   ],
   "settings": {
     "meetings": {
+      "actionItems": true,
       "askSpeakers": true,
       "autoNotes": "rules",
       "checkEveryMin": 5,
@@ -365,10 +385,12 @@
       "keepVersions": true,
       "keepVtt": true,
       "onlyAttendees": true,
+      "openOn": "summary",
       "remind": true,
       "review": true,
       "root": null,
       "skipShort": true,
+      "summaryTabs": [],
       "tagsFile": null,
       "waitMin": 15,
       "weMe": true

@@ -36,13 +36,18 @@ impl CliRunner {
     /// copies, the newest runs.
     pub fn new(env: DetectEnv) -> Self {
         Self::with_resolver(Arc::new(move |kind| match kind {
-            ProfileKind::Native => {
-                super::discover::find_program_in("claude", &env.path_var, &env.home, &[])
-            }
+            ProfileKind::Native => super::discover::find_program_in(
+                "claude",
+                &env.path_var,
+                &env.home,
+                &env.system_dirs,
+                &[],
+            ),
             ProfileKind::CodeMie { .. } => super::discover::find_codemie_program_in(
                 "codemie-claude",
                 &env.path_var,
                 &env.home,
+                &env.system_dirs,
                 &env.extra_dirs,
             ),
         }))
@@ -355,6 +360,7 @@ mod tests {
         AiProfile {
             id: NATIVE_ID.into(),
             kind: ProfileKind::Native,
+            provider: None,
             label: "x".into(),
             state: ProfileState::Ready,
             version: None,
@@ -362,6 +368,7 @@ mod tests {
             models: vec![],
             default_model: None,
             message: None,
+            local: None,
         }
     }
 
@@ -399,6 +406,7 @@ mod tests {
         let runner = CliRunner::new(DetectEnv {
             path_var: npm_bin.path().to_str().unwrap().into(),
             home: home.path().into(),
+            system_dirs: vec![],
             extra_dirs: vec![],
             config_path: home.path().join("codemie-cli.config.json"),
         });

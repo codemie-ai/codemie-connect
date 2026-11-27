@@ -100,9 +100,12 @@ pub fn parse_config(raw: &str) -> CodemieConfig {
     }
 }
 
-/// One CodeMie CLI profile as the AI features need it. Names and model ids only:
-/// tokens, API keys and URLs in the file are never copied out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One CodeMie CLI profile as the AI features need it. Tokens and API keys in
+/// the file are never copied out. `base_url` is: it is read only so
+/// `ai::profiles` can tell a local Ollama from a remote one, is never
+/// serialized, and is redacted from `Debug` (a `baseUrl` can carry
+/// `user:pass@host`) by the manual impl below.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProfileSummary {
     pub name: String,
     pub provider: String,
@@ -110,6 +113,26 @@ pub struct ProfileSummary {
     pub haiku_model: String,
     pub sonnet_model: String,
     pub opus_model: String,
+    pub base_url: String,
+}
+
+impl std::fmt::Debug for ProfileSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let base_url = if self.base_url.is_empty() {
+            String::new()
+        } else {
+            "<redacted>".to_string()
+        };
+        f.debug_struct("ProfileSummary")
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("haiku_model", &self.haiku_model)
+            .field("sonnet_model", &self.sonnet_model)
+            .field("opus_model", &self.opus_model)
+            .field("base_url", &base_url)
+            .finish()
+    }
 }
 
 /// Every profile in the parsed config, sorted by name. An entry that is not an
@@ -128,6 +151,7 @@ pub fn list_profiles(json: &serde_json::Value) -> Vec<ProfileSummary> {
             haiku_model: str_field(p, "haikuModel"),
             sonnet_model: str_field(p, "sonnetModel"),
             opus_model: str_field(p, "opusModel"),
+            base_url: str_field(p, "baseUrl"),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -378,5 +402,29 @@ mod tests {
     fn config_path_with_windows_userprofile() {
         let p = config_path_with("C:\\Users\\alice");
         assert_eq!(p, "C:\\Users\\alice/.codemie/codemie-cli.config.json");
+    }
+
+    #[test]
+    fn profile_summary_debug_redacts_a_non_empty_base_url() {
+        let with_url = ProfileSummary {
+            name: "ol".into(),
+            provider: "ollama".into(),
+            model: "llama3.2".into(),
+            haiku_model: String::new(),
+            sonnet_model: String::new(),
+            opus_model: String::new(),
+            base_url: "http://user:pass@ollama.example.test:9999".into(),
+        };
+        let dump = format!("{with_url:?}");
+        assert!(!dump.contains("user:pass"), "{dump}");
+        assert!(!dump.contains("example.test"), "{dump}");
+        assert!(dump.contains("<redacted>"), "{dump}");
+        assert!(dump.contains("\"ol\""), "{dump}"); // other fields still show.
+
+        let without_url = ProfileSummary {
+            base_url: String::new(),
+            ..with_url
+        };
+        assert!(!format!("{without_url:?}").contains("<redacted>"));
     }
 }

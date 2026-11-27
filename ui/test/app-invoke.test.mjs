@@ -34,5 +34,7 @@ test('errors from the native call reach the caller unchanged', async () => {
 
 test('the workspace builds its invoke with the page origin', () => {
   const app = readFileSync(new URL('../workspace/app.js', import.meta.url), 'utf8');
-  assert.match(app, /const invoke = rawInvoke && withAppOrigin\(rawInvoke, location\.origin\);/);
+  assert.match(app, /const appInvoke = rawInvoke && withAppOrigin\(rawInvoke, location\.origin\);/);
+  // Every call goes through it; a tour build only puts its gate in front (tour/runner.js `gate`).
+  assert.match(app, /const invoke = appInvoke && \(\(cmd, args, options\) => \(tourGated \|\| appInvoke\)\(cmd, args, options\)\);/);
 });

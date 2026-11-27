@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   meetingState, meetingRows, meetingCounts, parseHash, meetingHash, resolveTemplate, parseGlossary, parseTags, runOf, legendOf, lineAt, FILTERS,
-  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems, tabsOf, TABS, previewMeetingSet, previewMeetingDoc, previewRun, previewJobCancel,
+  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems, hasTranscript, previewMeetingSet, previewMeetingDoc, previewRun, previewJobCancel,
 } from '../workspace/meetings-model.js';
 import { dayKey } from '../workspace/format.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
@@ -38,21 +38,29 @@ test('meetingState derives upcoming, offline, pending and none without a record,
   assert.equal(meetingState(event().data, { state: 'ready' }, NOW, true), 'ready');
 });
 
-test('boot opens #/meetings/<encoded id>/transcript', () => {
+test('old meeting links open the same content; a link with no pane, or an unknown one, leaves it to the setting', () => {
+  // /notes, /transcript, /files and /tasks open the pane of the same name; /people (gone) and a
+  // bare meeting link leave the pane null, for "Open a meeting on" to decide.
+  for (const pane of ['notes', 'transcript', 'files', 'tasks']) {
+    assert.deepEqual(parseHash(`#/meetings/mtg-x/${pane}`), { route: 'meetings', meetingId: 'mtg-x', pane });
+  }
+  assert.deepEqual(parseHash('#/meetings/mtg-x/people'), { route: 'meetings', meetingId: 'mtg-x', pane: null });
+  assert.deepEqual(parseHash('#/meetings/mtg-x'), { route: 'meetings', meetingId: 'mtg-x', pane: null });
+  assert.equal(meetingHash('a b', 'summary'), '#/meetings/a%20b/summary');
   for (const id of ['AAMkADk0/Zj+Rk==', 'an id with spaces', '100% done', 'ev-standup']) {
     const hash = meetingHash(id, 'transcript');
     assert.equal(hash, `#/meetings/${encodeURIComponent(id)}/transcript`);
-    assert.deepEqual(parseHash(hash), { route: 'meetings', meetingId: id, tab: 'transcript' });
+    assert.deepEqual(parseHash(hash), { route: 'meetings', meetingId: id, pane: 'transcript' });
   }
   assert.equal(meetingHash(null, 'notes'), '#/meetings');
   assert.equal(meetingHash('a/b', 'notes'), '#/meetings/a%2Fb/notes');
-  assert.deepEqual(parseHash('#/meetings'), { route: 'meetings', meetingId: null, tab: null });
-  assert.deepEqual(parseHash('#/meetings/x/bogus'), { route: 'meetings', meetingId: 'x', tab: null }, 'an unknown tab');
-  assert.deepEqual(parseHash('#/meetings/%E0%A4%A/notes'), { route: 'meetings', meetingId: null, tab: 'notes' }, 'a broken id');
-  assert.deepEqual(parseHash('#/settings/ai'), { route: 'settings', meetingId: null, tab: 'ai' });
-  assert.deepEqual(parseHash('#/tasks'), { route: 'tasks', meetingId: null, tab: null });
-  assert.deepEqual(parseHash('#/nowhere/x'), { route: 'today', meetingId: null, tab: 'x' });
-  assert.deepEqual(parseHash(''), { route: null, meetingId: null, tab: null });
+  assert.deepEqual(parseHash('#/meetings'), { route: 'meetings', meetingId: null, pane: null });
+  assert.deepEqual(parseHash('#/meetings/x/bogus'), { route: 'meetings', meetingId: 'x', pane: null }, 'an unknown pane');
+  assert.deepEqual(parseHash('#/meetings/%E0%A4%A/notes'), { route: 'meetings', meetingId: null, pane: 'notes' }, 'a broken id');
+  assert.deepEqual(parseHash('#/settings/ai'), { route: 'settings', meetingId: null, pane: 'ai' });
+  assert.deepEqual(parseHash('#/tasks'), { route: 'tasks', meetingId: null, pane: null });
+  assert.deepEqual(parseHash('#/nowhere/x'), { route: 'today', meetingId: null, pane: 'x' });
+  assert.deepEqual(parseHash(''), { route: null, meetingId: null, pane: null });
 });
 
 test('lanes: All hides no-transcript meetings unless showNone; To do counts available+downloaded', () => {
@@ -257,6 +265,13 @@ test('resolveTemplate matches meeting-rules-cases.json', () => {
   assert.equal(resolveTemplate({ data: fixture.cases[6].event }, null, s).reason, 'Your default template');
 });
 
+test('the meeting view settings fixture: defaults, a dedupe and a delete unpin', () => {
+  const fixture = contract('meeting-view-settings');
+  assert.deepEqual(fixture.default, { openOn: 'summary', actionItems: true, summaryTabs: [] });
+  assert.deepEqual(fixture.updated.summaryTabs, ['short-summary', 'custom-formal', 'plugin:podervianskyi']);
+  assert.ok(!fixture.afterTemplateDelete.summaryTabs.includes('custom-formal'));
+});
+
 test('parseGlossary and parseTags match glossary-parse.json', () => {
   const fixture = contract('glossary-parse');
   assert.deepEqual(parseGlossary(fixture.glossary), fixture.expected.glossary);
@@ -281,21 +296,15 @@ test('an in-person meeting with an imported transcript is in All and To do, not 
   assert.ok(!ids('all').includes('mtg-planning') && ids('all', true).includes('mtg-planning'));
 });
 
-test('tabsOf gives four tabs with a transcript and none without', () => {
+test('hasTranscript is true with a transcript (saved, saving or found), false before', () => {
   const s = snapshot();
   const items = meetingItems(s, NOW);
   const byId = id => items.find(m => m.id === id);
-  const FOUR = ['notes', 'transcript', 'tasks', 'files'];
-  assert.deepEqual(TABS, FOUR);
-  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-critique']) assert.deepEqual(tabsOf(byId(id)), FOUR, id);
-  for (const id of ['mtg-sprint', 'mtg-northwind', 'mtg-planning', 'mtg-lunch', 'ev-next']) assert.deepEqual(tabsOf(byId(id)), [], id);
-  // A save running for a waiting meeting: its tabs show what comes in.
-  assert.deepEqual(tabsOf({ ...byId('mtg-sprint'), run: { kind: 'transcript_download' } }), FOUR);
-  assert.deepEqual(tabsOf({ ...byId('mtg-sprint'), run: { kind: 'transcript_check' } }), []);
-});
-
-test('a #/meetings/<id>/people hash opens notes', () => {
-  assert.deepEqual(parseHash('#/meetings/x/people'), { route: 'meetings', meetingId: 'x', tab: null });
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-critique']) assert.equal(hasTranscript(byId(id)), true, id);
+  for (const id of ['mtg-sprint', 'mtg-northwind', 'mtg-planning', 'mtg-lunch', 'ev-next']) assert.equal(hasTranscript(byId(id)), false, id);
+  // A save running for a waiting meeting: it has one as soon as it's running; a different job, not yet.
+  assert.equal(hasTranscript({ ...byId('mtg-sprint'), run: { kind: 'transcript_download' } }), true);
+  assert.equal(hasTranscript({ ...byId('mtg-sprint'), run: { kind: 'transcript_check' } }), false);
 });
 
 test('hiddenCount counts what Show would bring back', () => {

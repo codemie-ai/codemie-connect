@@ -7,17 +7,33 @@
 // Screenshots go to output/playwright/workspace-e2e/ (git-ignored). Exit code 1 on any failure.
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates, voiceStates, withVoice, withAsk } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
+import { meetingsViewChecks } from './meetings-view-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
 import { layoutChecks } from './layout-checks.mjs';
 import { analyticsChecks } from './analytics-checks.mjs';
+import { compactChecks } from './compact-checks.mjs';
+import { replyChecks } from './reply-checks.mjs';
+import { tasksDatesChecks } from './tasks-dates-checks.mjs';
+import { settingsTasksChecks } from './settings-tasks-checks.mjs';
+import { tasksProviderChecks } from './tasks-provider-checks.mjs';
+import { automationsChecks } from './automations-checks.mjs';
+import { menuBarChecks } from './menu-bar-checks.mjs';
+import { aiRoutesChecks } from './ai-routes-checks.mjs';
+import { voiceChecks } from './voice-checks.mjs';
+import { askChecks } from './ask-checks.mjs';
+import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
+// capture_parse's answers by text, for the mock (when-cases.json, written by `when::` tests).
+const WHEN_CASES = JSON.parse(readFileSync(new URL('../fixtures/contract/when-cases.json', import.meta.url), 'utf8'));
+const ASK_THREAD = JSON.parse(readFileSync(new URL('../fixtures/contract/ask-thread.json', import.meta.url), 'utf8'));
 const core = process.env.PLAYWRIGHT_CORE;
 const playwright = await import(core ? pathToFileURL(join(core, 'index.js')).href : 'playwright-core');
 const chromium = playwright.chromium || playwright.default.chromium;
@@ -50,6 +66,44 @@ const server = createServer(async (req, res) => {
       res.end(body);
       return;
     }
+    // meetings-view-checks.mjs V9: a mock plugin frame hook, beside the existing plugin mocks
+    // above. No synthetic frame actually declares `call.minutes` for this check, so the served
+    // copy of the real host.js is wrapped to answer `callSlots()`/`minutesPlugins()` from a plain
+    // page global, `window.__minutes = {pluginId, name, minutes}`, as if a plugin's frame had
+    // declared that slot. The real module on disk (and every other import of it, including the
+    // node:test suite) is untouched; only what this server hands the browser for this one path is.
+    if (path === 'plugins/host.js') {
+      const real = await readFile(join(UI, path), 'utf8');
+      const marker = 'export function createPluginHost(';
+      const at = real.indexOf(marker);
+      if (at < 0) throw new Error('createPluginHost not found in plugins/host.js');
+      const patched = `${real.slice(0, at)}function __realCreatePluginHost(${real.slice(at + marker.length)}
+export function createPluginHost(opts) {
+  const api = __realCreatePluginHost(opts);
+  const realCallSlots = api.callSlots;
+  const realMinutesPlugins = api.minutesPlugins;
+  const realSetCall = api.setCall;
+  // callSlots() only answers slots whose \`call\` names the meeting shown (view-meetings.js
+  // \`slotsOf\`): remember the latest one setCall() was given, so the injected slot can match it.
+  let lastCall = null;
+  api.setCall = next => { lastCall = next; return realSetCall ? realSetCall(next) : undefined; };
+  api.callSlots = () => {
+    const base = realCallSlots ? realCallSlots() : [];
+    const extra = typeof window === 'undefined' ? null : window.__minutes;
+    return extra && lastCall ? [...base, { plugin: extra.pluginId, pluginName: extra.name, call: lastCall.name, header: [], menu: [], minutes: extra.minutes || [] }] : base;
+  };
+  api.minutesPlugins = () => {
+    const base = realMinutesPlugins ? realMinutesPlugins() : [];
+    const extra = typeof window === 'undefined' ? null : window.__minutes;
+    return extra ? [...base, { id: extra.pluginId, name: extra.name }] : base;
+  };
+  return api;
+}
+`;
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      res.end(patched);
+      return;
+    }
     const body = await readFile(join(UI, path));
     res.writeHead(200, { 'content-type': TYPES[extname(path)] || 'application/octet-stream' });
     res.end(body);
@@ -64,9 +118,20 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false, voice = { states: {}, preview: null }, draftVoice = null, replyPlugin = false, whenCases = [], askThread = null, askLive = false }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
+  // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
+  // child (the loading spinner boot() draws before the native snapshot arrives) — the view the
+  // import-time localStorage mirror picked, before a mismatched one is corrected against it.
+  window.__firstChildView = undefined;
+  new MutationObserver((_, obs) => {
+    const root = document.getElementById('workspace-app');
+    if (root?.firstElementChild && window.__firstChildView === undefined) {
+      window.__firstChildView = root.dataset.view ?? null;
+      obs.disconnect();
+    }
+  }).observe(document, { childList: true, subtree: true });
   // ---- CodeMie CLI, mocked by scenario: 'fresh' (nothing set up), 'ready', 'expired' (signed out).
   const NOT_CODEMIE = Symbol('not codemie');
   const cm = {
@@ -161,6 +226,14 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const s = snapshot;
   // Saved layouts survive page.reload(): the workspaces live in sessionStorage too.
   try { const kept = sessionStorage.getItem('e2e.workspaces'); if (kept) s.workspaces = JSON.parse(kept); } catch {}
+  // A check that reloads after a send keeps the stored drafts, as native does (read once).
+  try {
+    const drafts = sessionStorage.getItem('e2e.drafts');
+    if (drafts) {
+      sessionStorage.removeItem('e2e.drafts');
+      s.records = s.records.filter(r => r.kind !== 'draft').concat(JSON.parse(drafts));
+    }
+  } catch {}
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
   let allRuns = s.records.filter(r => r.kind === 'automation_run');
@@ -220,6 +293,23 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         case 'autoNotes': one(k, v, ['off', 'rules', 'all'], 'Choose when notes are made automatically.'); break;
         case 'waitMin': int(k, v, 0, 240, 'Wait between 0 and 240 minutes after the meeting.'); break;
         case 'doneDays': int(k, v, 1, 365, 'Hide done tasks after 1 to 365 days.'); break;
+        case 'openOn': one(k, v, ['summary', 'transcript', 'notes'], 'Choose Summary, Transcript or Notes.'); break;
+        case 'actionItems':
+          if (typeof v !== 'boolean') refuse(k, 'Turn this setting on or off.');
+          next[k] = v;
+          break;
+        case 'summaryTabs': {
+          const message = 'Choose a template or a plugin to pin.';
+          if (!Array.isArray(v)) refuse(k, message);
+          const tabs = [];
+          for (const item of v) {
+            if (typeof item !== 'string' || item.length < 1 || item.length > 100 || !/^[A-Za-z0-9\-_.:]+$/.test(item)) refuse(k, message);
+            if (!tabs.includes(item)) tabs.push(item);
+          }
+          if (tabs.length > 4) refuse(k, 'Pin up to 4 summaries.');
+          next.summaryTabs = tabs;
+          break;
+        }
         case 'skipShort': case 'keepVtt': case 'keepVersions': case 'review': case 'onlyAttendees': case 'weMe': case 'askSpeakers': case 'remind': case 'dueOnlySaid':
           if (typeof v !== 'boolean') refuse(k, 'Turn this setting on or off.');
           next[k] = v;
@@ -276,21 +366,58 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const removedJobs = [...jobsWas.keys()].filter(id => !jobsIs.has(id));
       const jobsAll = removedJobs.length > 0;
       const jobs = jobsAll ? now.snapshot.jobs : (now.snapshot.jobs || []).filter(j => jobsWas.get(j.id) !== JSON.stringify(j));
-      const { settings, workspaces, connection, available, meetingsRoot, noteTemplates } = now.snapshot;
-      return { reset: false, revision: now.snapshot.revision, scope: now.scope, records, removed, replace: [], jobs, removedJobs, jobsAll, settings, workspaces, connection, available, meetingsRoot, noteTemplates, authPending: now.authPending, authError: now.authError };
+      // The parts native fills from their own stores come whole too (changes.rs): the task
+      // provider, the menu bar's count, the reply voice and Ask's threads.
+      const { settings, workspaces, connection, available, meetingsRoot, noteTemplates, taskProvider, menuBar, replyVoice, ask } = now.snapshot;
+      return { reset: false, revision: now.snapshot.revision, scope: now.scope, records, removed, replace: [], jobs, removedJobs, jobsAll, settings, workspaces, connection, available, meetingsRoot, noteTemplates, taskProvider, menuBar, replyVoice, ask, authPending: now.authPending, authError: now.authError };
     },
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
+      if ('view' in d && !['default', 'compact'].includes(d.view)) refuse('view', 'Unknown view.');
+      // menu-bar-checks.mjs: only the fields given change (model.rs's `MenuBarSettings::apply`
+      // shape), merged into the existing four booleans rather than replacing them. The mock can't
+      // recompute the real count from the new settings (that's native, menu_bar.rs `compute`), so
+      // a test hook names which menu-bar-states.json state the next snapshot answers with.
+      if (d.menuBar) {
+        if (window.__menuBarRefuse) refuse('menuBar', 'Couldn’t save the menu bar setting.');
+        s.settings.menuBar = { ...s.settings.menuBar, ...d.menuBar };
+        if (window.__nextMenuBarState) {
+          s.menuBar = clone(menuBarStates[window.__nextMenuBarState]);
+          window.__nextMenuBarState = null;
+        }
+      }
       const rootBefore = s.settings.meetings?.root ?? null;
       if (d.meetings) applyMeetings(d.meetings);
       if (d.capabilities) s.connection.enabled = d.capabilities;
-      for (const [k, v] of Object.entries(d)) if (k !== 'capabilities' && k !== 'meetings') s.settings[k] = v;
+      for (const [k, v] of Object.entries(d)) {
+        if (k === 'capabilities' || k === 'meetings' || k === 'menuBar') continue;
+        if (k === 'hiddenPages') { s.settings.hiddenPages = navIds.filter(id => v.includes(id)); continue; }
+        s.settings[k] = v;
+        // ask/mod.rs's `snapshot` always derives `ask.inMenu` live from the setting; the mock
+        // mirrors that so a check can turn the switch off and see the field go (ask-capture § 6).
+        if (k === 'askInMenu' && s.ask) s.ask = { ...s.ask, inMenu: v };
+      }
       // library_ops.rs `carry_texts`: a new meetings folder gets the glossary and the tag list
       // (the mock keeps one copy of each, so nothing is ever kept apart or fails).
       if (d.meetings && 'root' in d.meetings && (s.settings.meetings.root ?? null) !== rootBefore) {
         return { saved: true, texts: { copied: ['glossary', 'tags'].filter(n => texts[n]).map(n => `${n}.md`), kept: [], failed: [] } };
       }
       return { saved: true };
+    },
+    // Design §2/§6: a meeting seen (in front and focused, or hidden) drops out of `newMeetings`;
+    // automation results seen (Automations, or Today's card) zero `sources.automations` — both so
+    // a mark, once sent, doesn't keep re-qualifying as new on the next render.
+    menu_bar_seen: d => {
+      calls.push(['menu_bar_seen', clone(d)]);
+      // menu-bar-checks.mjs (a), carried from the Task 6 review (I1): an opt-in switch refuses
+      // every attempt with the persistent `storage` code menu_bar.rs can answer (a repository
+      // write failure), rather than the lenient always-succeeds default, so a check can prove two
+      // marks due at once don't loop (491fcda keeps a refused mark's key, so it isn't resent until
+      // the revision moves).
+      if (window.__menuBarSeenRefuse) throw { code: 'storage', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
+      if (d?.meetingId) { s.menuBar = { ...s.menuBar, newMeetings: s.menuBar.newMeetings.filter(id => id !== d.meetingId) }; return { seen: true }; }
+      if (d?.automations === true) { s.menuBar = { ...s.menuBar, sources: { ...s.menuBar.sources, automations: 0 } }; return { seen: true }; }
+      refuse('menuBarSeen', 'Say what was seen.');
     },
     local_save: (d, wid) => {
       const id = d.id || crypto.randomUUID();
@@ -301,7 +428,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { id };
     },
     local_delete: d => { s.records = s.records.filter(r => !(r.kind === d.kind && r.id === d.id)); return { deleted: true }; },
-    draft_save: (d, wid) => ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid),
+    draft_save: (d, wid) => {
+      calls.push(['draft_save', clone(d)]);
+      return ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid);
+    },
     layout_save: (d, wid) => {
       calls.push(['layout_save', clone(d)]);
       const w = active(wid);
@@ -315,6 +445,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     workspace_update: (d, wid) => { Object.assign(active(wid), d); if (d.archived && s.settings.activeWorkspace === wid) s.settings.activeWorkspace = 'personal'; return { saved: true }; },
     workspace_select: d => { s.settings.activeWorkspace = d.id; return { selected: true }; },
     inbox_decision: d => {
+      calls.push(['inbox_decision', clone(d)]);
       const m = find('message', d.id);
       if (d.action === 'lane') m.data.lane = d.lane;
       if (d.action === 'archive') m.data.lifecycle = 'archived';
@@ -360,6 +491,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const job = s.jobs.find(j => j.id === d.id);
       if (job && !['queued', 'running', 'blocked'].includes(job.state)) fail('conflict', 'This job already completed.');
       if (job) job.state = 'cancelled';
+      // ask/ops.rs `stop_turn` (ask-checks.mjs, `open({ ask })` only): the turn reads `stopped`.
+      if (askLive && job?.kind === 'ask') askSettle(job.payload?.threadId, { state: 'stopped' });
       // save.rs `note_save_stopped`: a stopped save of a meeting still in Teams is not started again by itself.
       const stopped = job?.kind === 'transcript_download' && s.records.find(r => r.kind === 'meeting' && r.id === job.payload?.meetingId);
       if (stopped && stopped.data.state === 'available') {
@@ -372,22 +505,22 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     notification_permission: () => ({ permission: 'os_managed' }),
     notification_test: () => ({ queued: true }),
     export: () => ({ version: 1, workspaces: [], records: [] }),
-    ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings) }),
+    ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings), chosen: chooseAll(ai.settings) }),
     ai_usage: () => clone(usage),
     // ---- Analytics (contract fixtures from the checks): the CLI's answers as the page's operations return them.
     ...(analytics ? analyticsOps() : {}),
     ai_settings_save: d => {
       calls.push(['ai_settings_save', d]);
       const known = id => ai.profiles.some(p => p.id === id);
-      if (d.defaultProfile && !known(d.defaultProfile)) fail('validation', 'Choose one of the listed Claude profiles.');
-      ai.settings = { defaultProfile: d.defaultProfile || null, routes: d.routes || {} };
-      return { settings: clone(ai.settings) };
+      if (d.defaultProfile && !known(d.defaultProfile)) fail('validation', 'Choose one of the listed profiles.');
+      ai.settings = { defaultProfile: d.defaultProfile || null, defaultModel: d.defaultModel || null, defaultFallback: d.defaultFallback || null, routes: d.routes || {}, plugins: d.plugins || {} };
+      return { settings: clone(ai.settings), chosen: chooseAll(ai.settings) };
     },
     ai_test: async d => {
       calls.push(['ai_test', d]);
       await sleep(700);
       const p = ai.profiles.find(x => x.id === d.profileId);
-      if (!p) fail('validation', 'Choose one of the listed Claude profiles.');
+      if (!p) fail('validation', 'Choose one of the listed profiles.');
       if (p.state !== 'ready') return { ...testFail, message: p.message || testFail.message };
       return clone(testOk);
     },
@@ -395,9 +528,23 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       calls.push(['action_prepare', d]);
       const m = find('message', d.sourceId);
       if (!s.connection.enabled.includes(d.kind === 'chat_reply' ? 'chat_send' : 'mail_send')) fail('permission_required', 'Allow replies in Settings first.');
-      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: `Reply to ${m.data.from}`, recipients: [{ emailAddress: { name: m.data.from, address: m.data.fromAddress || m.data.fromId } }], body: d.body } };
+      const address = m.data.fromAddress || m.data.fromId;
+      // actions.rs `new_recipients`: the Reply-To addresses the thread never showed, lower-case
+      // compared with the sender. `window.__replyTo` names the address the next mail prepare uses.
+      const replyTo = window.__replyTo;
+      const redirected = replyTo && String(replyTo).toLowerCase() !== String(address).toLowerCase();
+      const newRecipients = redirected ? [replyTo] : [];
+      // actions.rs builds `review.title` from the message's own subject (`Project update` in the
+      // contract fixture), not a "Reply to …" line.
+      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: m.data.title, recipients: [{ emailAddress: { name: m.data.from, address: redirected ? replyTo : address } }], newRecipients, body: d.body } };
     },
-    action_confirm: d => { calls.push(['action_confirm', d]); return { message: 'Sent for delivery.' }; },
+    // `window.__confirmHold` keeps the confirm in flight until `window.__finishConfirm()`.
+    action_confirm: async d => {
+      calls.push(['action_confirm', d]);
+      if (window.__confirmHold) await new Promise(resolve => { window.__finishConfirm = resolve; });
+      if (window.__replyToChanged) fail('conflict', 'The Outlook message or reply destination changed. Review a new reply.');
+      return { state: 'accepted', message: 'Sent for delivery.' };
+    },
     // AI drafts: queued → running (profile, model, startedAt) → a draft record, or the failure
     // in `window.__draftPlan`; `hold` keeps it running until `window.__finishDraft(plan)`.
     ai_draft: d => {
@@ -434,7 +581,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
           const thread = s.records.filter(r => r.kind === 'message' && r.data.conversationId === m.data.conversationId).sort((a, b) => a.data.at - b.data.at).slice(-12);
           // A Teams draft is short with no greeting or sign-off; an Outlook draft is a letter.
           const t = clone(chat ? chatDraft : mailDraft);
-          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text: result.text || t.data.text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options: { ...d }, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
+          // "Tell AI what to change": the changed text says so, so checks can tell it from a
+          // fresh draft; the job's "revise" never ends up on the stored draft's own options.
+          const { revise, ...options } = { ...d };
+          const text = revise ? `${revise} (changed: ${d.instructions})` : (result.text || t.data.text);
+          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText, ...(window.__draftVoice ? { voice: clone(window.__draftVoice) } : {}) } } };
           s.records = s.records.filter(r => r.id !== record.id).concat(record);
           job.state = 'succeeded';
           job.result = 'AI draft ready for review';
@@ -498,8 +649,12 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     automation_save: d => {
       calls.push(['automation_save', d]);
       const invalid = (field, message) => { throw { code: 'validation', field, message }; };
+      // automations-checks.mjs A3: a forced backend refusal (the client itself never sends an
+      // inconsistent Tasks payload, so this is the only way to see the sentence rendered inline).
+      if (window.__automationDeliverError) invalid('deliver', window.__automationDeliverError);
       if (!String(d.name || '').trim()) invalid('name', 'Give the automation a name (up to 80 characters).');
-      if (!String(d.prompt || '').trim()) invalid('prompt', 'Write the instructions for the automation.');
+      // A summary automation's prompt is its optional wishes.
+      if (!String(d.prompt || '').trim() && d.trigger?.event !== 'meeting_ready') invalid('prompt', 'Write the instructions for the automation.');
       if (d.trigger?.kind === 'schedule' && !(d.trigger.days || []).length) invalid('days', 'Choose at least one day for the schedule.');
       if (['mail_from', 'chat_from'].includes(d.trigger?.event) && !(d.trigger.senders || []).length) invalid('senders', 'Add at least one sender or domain for this trigger.');
       const id = d.id || crypto.randomUUID();
@@ -538,8 +693,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (job.state !== 'running') return;
         const ok = plan.outcome !== 'fail';
         const t = clone(ok ? automationTemplates.runOk : automationTemplates.runFailed);
-        const delivered = ok ? [a.data.deliver?.today && 'today', a.data.deliver?.notify && 'notification_queued'].filter(Boolean) : [];
-        allRuns.push({ ...t, id: job.id, updatedAt: now(), data: { ...t.data, automationId: a.id, automationName: a.data.name, connectionId: s.connection?.id || null, startedAt: now() - 2, trigger: { kind: 'manual' }, delivered } });
+        const tasks = ok && !!a.data.deliver?.createTasks;
+        const delivered = ok ? [a.data.deliver?.today && 'today', a.data.deliver?.notify && 'notification_queued', tasks && 'tasks'].filter(Boolean) : [];
+        // As native: a run says what tasks it made only when Tasks is on.
+        allRuns.push({ ...t, id: job.id, updatedAt: now(), data: { ...t.data, automationId: a.id, automationName: a.data.name, connectionId: s.connection?.id || null, startedAt: now() - 2, trigger: { kind: 'manual' }, delivered, tasks: tasks ? t.data.tasks : undefined, handled: tasks ? t.data.handled : undefined } });
         Object.assign(job, { state: ok ? 'succeeded' : 'failed', result: ok ? 'Automation ran' : 'Claude Code is not signed in.' });
         update();
       }, 150 + (plan.ms || 1500));
@@ -690,6 +847,44 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     return j;
   }
   window.__folderMissing = id => { if (folders[id]) folders[id].missing = true; };
+  // Ask (ask-capture § 6): native moves the snapshot's `ask` (an answer starts, lands, is stopped)
+  // and, with it, the jobs a running answer holds; a check plays that with `__askSet`.
+  window.__askSet = (ask, jobs = []) => {
+    s.ask = ask;
+    for (const j of jobs) { s.jobs = s.jobs.filter(x => x.id !== j.id); s.jobs.unshift(j); }
+    update();
+  };
+  // ask-checks.mjs: the `ask` job settling a running turn, as ask/ops.rs writes it — the turn in
+  // `window.__askThreads[threadId]` (what `ask_read` answers) takes `fields`, the snapshot's
+  // `ask` stops running and its summary takes the turn's state, the job ends. Answers the turn.
+  const askSettle = (threadId, fields) => {
+    const t = window.__askThreads?.[threadId];
+    if (!t) return null;
+    const runId = s.ask?.running?.threadId === threadId ? s.ask.running.turnId : null;
+    const at = t.turns.findIndex(x => (runId ? x.id === runId : ['queued', 'running'].includes(x.state)));
+    if (at < 0) return null;
+    const was = t.turns[at];
+    t.turns[at] = { ...was, ...fields, id: was.id, jobId: was.jobId };
+    t.updatedAt = now();
+    if (s.ask) {
+      s.ask = { ...s.ask, running: s.ask.running?.threadId === threadId ? null : s.ask.running, threads: s.ask.threads.map(x => (x.id === threadId ? { ...x, last: t.turns.at(-1).state, updatedAt: t.updatedAt } : x)) };
+    }
+    const job = s.jobs.find(j => j.id === was.jobId);
+    if (job && ['queued', 'running'].includes(job.state)) job.state = fields.state === 'stopped' ? 'cancelled' : fields.state === 'failed' ? 'failed' : 'succeeded';
+    return t.turns[at];
+  };
+  // `window.__askJob = {threadId, turn}` finishes that thread's running turn as the job would:
+  // `turn` holds what the job writes (`state`, `answer`, `cites`, `actions`, `searched`, `took`,
+  // `error` …); the snapshot and the `ask_read` answer move together, so the page reads it again.
+  let askJobLast = null;
+  Object.defineProperty(window, '__askJob', {
+    configurable: true,
+    get: () => askJobLast,
+    set: v => {
+      askJobLast = v;
+      if (askSettle(v?.threadId, { state: 'done', ...(v?.turn || {}) })) update();
+    },
+  });
   // Another window (or a run) changes a document while the person edits it.
   window.__docChanged = (id, docId) => {
     const m = meetingRec(id);
@@ -902,6 +1097,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (original) { s.noteTemplates = s.noteTemplates.map(t => (t.id === d.id ? clone(original) : t)); return { reset: true, id: d.id }; }
       if (!s.noteTemplates.some(t => t.id === d.id)) fail('not_found', 'This template is no longer there.');
       if (s.settings.meetings.defaultTemplate === d.id) s.settings.meetings.defaultTemplate = 'meeting-notes';
+      // model.rs / library_ops.rs: deleting a template unpins it from the meeting view's summary tabs.
+      if ((s.settings.meetings.summaryTabs || []).includes(d.id)) s.settings.meetings.summaryTabs = s.settings.meetings.summaryTabs.filter(t => t !== d.id);
       for (const r of s.records) if (r.kind === 'meeting_rule' && r.data.template === d.id) r.data.template = s.settings.meetings.defaultTemplate;
       s.noteTemplates = s.noteTemplates.filter(t => t.id !== d.id);
       return { deleted: true, id: d.id };
@@ -983,6 +1180,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (!stored) {
         const orders = s.records.filter(r => r.kind === 'commitment').map(r => r.data.order ?? r.updatedAt);
         const status = fields.status || (fields.done ? 'done' : 'todo');
+        // As native (tasks.rs): a new task is the active provider's unless it names one.
+        if (!fields.provider && s.taskProvider && s.taskProvider.active !== 'local') fields.provider = s.taskProvider.active;
         s.records.push({ id, kind: 'commitment', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: at,
           data: { ...fields, status, done: status === 'done', doneAt: status === 'done' ? fields.doneAt || at : null, createdAt: fields.createdAt || at, order: fields.order ?? Math.max(at, ...orders) + 1, history: history?.length ? history : [{ at, text: log || 'Added by you' }] } });
         return { id };
@@ -1005,6 +1204,77 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       Object.assign(stored, { data: body, revision: crypto.randomUUID(), updatedAt: at });
       return { id };
     },
+    // Quick capture (ask-capture § 9): `capture_parse` answers as when-cases.json does for the
+    // same text (its own fixed `now`), any other text unread; `note_append` adds `- <text>` (and
+    // ` (from <title>)`) at the end of Today's Notes as today.rs does, with its two refusals.
+    capture_parse: d => {
+      calls.push(['capture_parse', clone(d)]);
+      const known = whenCases.find(c => c.kind === 'parse' && c.input === d.text);
+      return known ? clone(known.expected) : { title: d.text, due: null };
+    },
+    note_append: (d, wid) => {
+      calls.push(['note_append', clone(d)]);
+      const text = String(d.text ?? '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 2000) refuse('text', 'Write the note, up to 2,000 characters.');
+      const src = d.sourceId ? s.records.find(r => r.id === d.sourceId) : null;
+      const label = src?.data?.title ? String(src.data.title).replace(/\s+/g, ' ').trim() : '';
+      const line = `- ${text}${label ? ` (from ${label})` : ''}`;
+      const note = s.records.find(r => r.kind === 'note' && r.source === 'local' && (r.workspaceId || 'personal') === (wid || 'personal'));
+      const joined = note?.data.text ? `${note.data.text.replace(/\n+$/, '')}\n${line}` : line;
+      if (joined.length > 20000) fail('validation', 'Notes on Today is full. Tidy it first.');
+      if (note) Object.assign(note, { data: { ...note.data, text: joined }, revision: crypto.randomUUID(), updatedAt: now() });
+      else s.records.push({ id: crypto.randomUUID(), kind: 'note', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { text: joined } });
+      return { id: (note || s.records.at(-1)).id };
+    },
+    // Ask (ask-capture § 6): `ask_start` is recorded and answers `{threadId, turnId, jobId}`;
+    // `window.__askRefuse = {op, code, message, field?}` refuses the next one (`busy`,
+    // `validation`, `needs_choice`), once.
+    ask_start: d => {
+      calls.push(['ask_start', clone(d)]);
+      const refusal = window.__askRefuse;
+      if (refusal && (!refusal.op || refusal.op === 'ask_start')) {
+        window.__askRefuse = null;
+        throw refusal.field ? { code: refusal.code, message: refusal.message, field: refusal.field } : { code: refusal.code, message: refusal.message };
+      }
+      const threadId = d.threadId || `ask-${crypto.randomUUID().slice(0, 12)}`;
+      const jobId = `job-${crypto.randomUUID().slice(0, 8)}`;
+      if (!askLive) return { threadId, turnId: 'turn-1', jobId };
+      // ask-checks.mjs (`open({ ask })`): as ask/ops.rs, one answer at a time; the turn is written
+      // `running` into the thread `ask_read` answers, with its `ask` job and the snapshot's
+      // `running`, until `__askJob` (or Stop) settles it.
+      if (s.ask?.running) throw { code: 'busy', message: 'Connect is still answering. Stop it or wait.' };
+      const threads = (window.__askThreads ||= {});
+      const kept = askThread && threadId === askThread.id && !(window.__askDeleted || []).includes(threadId) ? clone(askThread) : null;
+      const t = threads[threadId] || kept || { id: threadId, createdAt: now(), updatedAt: now(), nextRef: 1, turns: [] };
+      if (d.threadId && !threads[threadId] && !kept) fail('not_found', 'That conversation is gone. Ask again.');
+      const turnId = `turn-${t.turns.length + 1}`;
+      t.turns.push({ id: turnId, at: now(), question: d.question, about: d.about ? clone(d.about) : null, state: 'running', answer: null, cites: [], actions: [], searched: null, cut: false, profile: 'claude', model: null, fellBackFrom: null, fallbackReason: null, error: null, jobId, took: null });
+      t.updatedAt = now();
+      threads[threadId] = t;
+      const summary = { id: threadId, title: [...t.turns[0].question].slice(0, 80).join(''), updatedAt: t.updatedAt, turns: t.turns.length, last: 'running' };
+      s.ask = { ...(s.ask || { inMenu: true }), threads: [summary, ...(s.ask?.threads || []).filter(x => x.id !== threadId)], running: { threadId, turnId, jobId, startedAt: now() } };
+      s.jobs.unshift({ id: jobId, kind: 'ask', key: `ask:${threadId}`, state: 'running', dueAt: now(), attempts: 1, connectionId: null, workspaceId: 'personal', policy: {}, payload: { threadId, turnId, purpose: 'ask', profile: 'claude', model: null, runModel: 'claude-sonnet-4-5', startedAt: now() }, result: null });
+      return { threadId, turnId, jobId };
+    },
+    // `ask_read` answers `window.__askThreads[id]` (a check's own threads), else ask-thread.json
+    // for its own id, else not_found as native does; `ask_delete` drops the threads from the
+    // snapshot's `ask` and answers `{deleted}`.
+    ask_read: d => {
+      calls.push(['ask_read', clone(d)]);
+      const own = window.__askThreads?.[d.threadId];
+      if (own) return clone(own);
+      if (askThread && d.threadId === askThread.id && !(window.__askDeleted || []).includes(d.threadId)) return clone(askThread);
+      fail('not_found', 'That conversation is gone. Ask again.');
+    },
+    ask_delete: d => {
+      calls.push(['ask_delete', clone(d)]);
+      const ids = d.all ? (s.ask?.threads || []).map(t => t.id) : [d.threadId];
+      window.__askDeleted = [...(window.__askDeleted || []), ...ids];
+      if (window.__askThreads) for (const id of ids) delete window.__askThreads[id];
+      const before = s.ask?.threads?.length || 0;
+      if (s.ask) s.ask = { ...s.ask, threads: s.ask.threads.filter(t => !ids.includes(t.id)) };
+      return { deleted: before - (s.ask?.threads?.length || 0) };
+    },
     task_delete: d => {
       calls.push(['task_delete', clone(d)]);
       const stored = s.records.find(r => r.kind === 'commitment' && r.id === d.id);
@@ -1013,17 +1283,244 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { deleted: true, id: d.id, body: clone(stored.data) };
     },
   });
+  // Task providers (task_provider/ops.rs): the snapshot keeps `taskProvider` (Local's shape from
+  // task-provider-states.json unless a check sets another); the ops answer in native's shapes,
+  // with its refusals (`field`). The mock has no outbox: nothing is ever sent anywhere.
+  s.taskProvider ||= { active: 'local', name: 'Connect', available: [{ id: 'local', name: 'Connect' }], state: 'local', pending: 0, parked: 0, lastSync: null, retryAt: null, message: null, copyOffered: false };
+  s.settings.tasks ||= { provider: 'local', copyOffered: [] };
+  const providerOf = b => b.provider || 'local';
+  const taskRecord = (id, wid) => s.records.find(r => r.kind === 'commitment' && r.id === id && (!wid || (r.workspaceId || 'personal') === wid));
+  const OPEN = ['todo', 'doing', 'waiting'];
+  // The Todoist plugin's own settings (Settings › Tasks, design §11): present in
+  // `plugins_request installed` (and so Settings › Plugins and Settings › Tasks) whenever a
+  // check's `taskProvider.available` names `plugin:todoist`, which is also the one place a check
+  // turns it "off" or drops it (removed) for `settings-tasks-checks.mjs`.
+  const td = { token: false, project: 'Connect', label: 'connect' };
+  const todoistListed = () => s.taskProvider.available.some(p => p.id === 'plugin:todoist');
+  const todoistView = () => {
+    const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
+    return {
+      id: 'todoist', name: 'Todoist', version: '1.0.0', summary: "Keeps Connect's tasks in your Todoist",
+      market: 'codemie', source: './plugins/todoist', commit: null, hash: 'tdhash', enabled: listed?.on !== false,
+      agreed: ['network', 'provides_tasks'], installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
+      client: null, widgets: [], signin: [], addresses: [],
+      settings: [
+        { key: 'token', label: 'API token', type: 'secret', help: 'Todoist › Settings › Integrations › Developer', set: td.token },
+        { key: 'project', label: 'Project', type: 'string', help: null, value: td.project },
+        { key: 'label', label: 'App label', type: 'string', help: null, value: td.label },
+      ],
+    };
+  };
+  Object.assign(ops, {
+    task_sync_now: () => { calls.push(['task_sync_now', {}]); return { queued: s.taskProvider.active !== 'local' }; },
+    // Read-only, no operation id, like `task_sync_now`: Settings › Tasks's Check.
+    task_provider_check: () => {
+      calls.push(['task_provider_check', {}]);
+      if (s.taskProvider.active === 'local') return { ok: true };
+      if (!td.token) fail('needs_token', `${s.taskProvider.name} needs your API token.`);
+      return { ok: true, account: 'Taylor Morgan', project: td.project };
+    },
+    task_provider_set: d => {
+      calls.push(['task_provider_set', clone(d)]);
+      const tp = s.taskProvider;
+      const listed = tp.available.find(p => p.id === d.provider);
+      if (!listed) refuse('provider', 'Choose Connect or an installed task plugin.');
+      if (d.provider !== 'local' && listed.on === false) refuse('provider', `Turn ${listed.name} on in Settings › Plugins first.`);
+      const offered = s.settings.tasks.copyOffered;
+      if (d.provider !== 'local' && !offered.includes(d.provider)) offered.push(d.provider);
+      s.settings.tasks.provider = d.provider;
+      Object.assign(tp, { active: d.provider, name: listed.name, copyOffered: offered.includes(d.provider), state: d.provider === 'local' ? 'local' : 'ready' });
+      // To review tasks follow the provider; nothing is deleted or closed.
+      for (const r of s.records.filter(r => r.kind === 'commitment' && taskStatus(r.data) === 'review')) {
+        if (d.provider === 'local') delete r.data.provider; else r.data.provider = d.provider;
+      }
+      let copied = 0;
+      if (d.copy && d.provider !== 'local') {
+        const held = new Set(s.records.filter(r => r.kind === 'commitment' && providerOf(r.data) === d.provider).map(r => r.data.key));
+        for (const r of s.records.filter(r => r.kind === 'commitment' && providerOf(r.data) === 'local' && OPEN.includes(taskStatus(r.data)))) {
+          if (r.data.key && held.has(r.data.key)) continue;
+          held.add(r.data.key);
+          s.records.push({ ...clone(r), id: crypto.randomUUID(), revision: crypto.randomUUID(), updatedAt: now(),
+            data: { ...clone(r.data), provider: d.provider, copiedFrom: r.id, pending: true, history: [...(r.data.history || []), { at: now(), text: 'Copied from Connect' }] } });
+          copied++;
+        }
+      }
+      return { provider: d.provider, copied };
+    },
+    task_withdraw: (d, wid) => {
+      calls.push(['task_withdraw', clone(d)]);
+      if (!Array.isArray(d.ids)) refuse('ids', 'Choose the tasks.');
+      if (d.ids.length > 200) refuse('ids', 'Choose up to 200 tasks.');
+      let done = 0, failed = 0;
+      for (const id of d.ids) {
+        const stored = taskRecord(id, wid);
+        if (!stored) { failed++; continue; }
+        if (taskStatus(stored.data) !== 'review') {
+          Object.assign(stored.data, { status: 'review', done: false, doneAt: null, history: [...(stored.data.history || []), { at: now(), text: 'Moved back to review' }] });
+          if (stored.data.provider) Object.assign(stored.data, { remote: null, pending: false });
+        }
+        done++;
+      }
+      return { done, failed };
+    },
+    task_bulk: (d, wid) => {
+      calls.push(['task_bulk', clone(d)]);
+      if (!Array.isArray(d.items) || d.items.length > 200) refuse('items', 'Choose up to 200 tasks.');
+      if (d.items.some(i => 'status' in i && !['todo', 'doing', 'waiting', 'done'].includes(i.status))) refuse('items', 'Move tasks to To do, In progress, Waiting or Done.');
+      let done = 0, failed = 0;
+      const before = [];
+      for (const item of d.items) {
+        const stored = taskRecord(item.id, wid);
+        if (!stored) { failed++; continue; }
+        const was = { id: item.id, due: stored.data.due ?? null, status: taskStatus(stored.data) };
+        const change = { id: item.id };
+        if ('due' in item) change.due = item.due;
+        if ('status' in item) change.status = item.status;
+        ops.task_save(change, wid);
+        before.push(was);
+        done++;
+      }
+      return { done, failed, before };
+    },
+    task_handled: (d, wid) => {
+      calls.push(['task_handled', clone(d)]);
+      const stored = taskRecord(d.id, wid);
+      if (!stored) fail('not_found', 'This task is no longer there.');
+      const kept = stored.data.keptEvidence || [];
+      if (d.evidence !== undefined && d.evidence !== null) {
+        const evidence = String(d.evidence).trim();
+        if (!evidence || evidence.length > 500) refuse('evidence', 'Say what shows the task is handled.');
+        // The mock keeps evidence as given; native keeps sha1(evidence)[..16].
+        if (OPEN.includes(taskStatus(stored.data)) && !kept.includes(evidence)) stored.data.handled = { evidence, at: now(), auto: false };
+      } else if (d.action === 'done') {
+        ops.task_save({ id: d.id, status: 'done' }, wid);
+        stored.data.handled = null;
+      } else if (d.action === 'keep') {
+        if (stored.data.handled) stored.data.keptEvidence = [...new Set([...kept, stored.data.handled.evidence])];
+        stored.data.handled = null;
+      } else refuse('action', 'Choose Done or Keep open.');
+      return { id: d.id };
+    },
+    task_parked: (d, wid) => {
+      calls.push(['task_parked', clone(d)]);
+      if (!['retry', 'discard'].includes(d.action)) refuse('action', 'Choose Try again or Discard change.');
+      const stored = taskRecord(d.id, wid);
+      if (stored) {
+        stored.data.syncError = null;
+        if (d.action === 'discard') stored.data.pending = false;
+      }
+      return { id: d.id };
+    },
+  });
+  // Settings › Your voice (reply voice design §5–§7, §11): `replyVoice` is Off from
+  // voice-states.json unless a check sets another state; the ops answer in native's shapes and
+  // refusals. `window.__voiceRefuse = {op, message, field?}` makes the next such op refuse. Nothing
+  // reaches a provider: the mock keeps the copy itself.
+  s.replyVoice ||= clone(voice.states.off);
+  // voice-checks.mjs V6: `__draftVoice` is the `provenance.voice` a mail or Teams draft carries
+  // (draft-ai-voice.json's with `open({ draftVoice: true })`); null drafts without a voice.
+  window.__draftVoice = draftVoice ? clone(draftVoice) : null;
+  const vc = () => s.replyVoice;
+  const voiceRefused = op => {
+    const r = window.__voiceRefuse;
+    if (!r || r.op !== op) return;
+    window.__voiceRefuse = null;
+    throw r.field ? { code: 'validation', message: r.message, field: r.field } : { code: r.code || 'refused', message: r.message };
+  };
+  const voiceName = () => vc().name || 'Knowledge';
+  const PROFILES = {
+    'priya-n': { text: 'Short sentences; no small talk.', about: 'Product lead; prefers mornings.' },
+    'jordan-lee': { text: 'Engineering manager. Bullet points.', about: '' },
+    'marek-novak': { text: 'Finance contact. Formal.', about: '' },
+  };
+  Object.assign(ops, {
+    voice_set: d => {
+      calls.push(['voice_set', clone(d)]);
+      voiceRefused('voice_set');
+      const v = vc();
+      if (d.provider !== 'off') {
+        const listed = (v.available || []).find(a => a.id === d.provider);
+        if (!listed) refuse('provider', 'Choose Off or an installed reply-context plugin.');
+        if (d.provider !== v.provider && listed.on === false) refuse('provider', `Turn ${listed.name} on in Settings › Plugins first.`);
+        Object.assign(v, { name: listed.name, state: listed.on === false ? 'unavailable' : 'ready', facts: { on: d.facts ?? v.facts.on, offered: !!listed.facts } });
+      } else {
+        Object.assign(v, { name: null, state: 'off', facts: { on: d.facts ?? v.facts.on, offered: false } });
+      }
+      v.provider = d.provider;
+      return { provider: v.provider, facts: v.facts.on };
+    },
+    voice_save: d => {
+      calls.push(['voice_save', clone(d)]);
+      voiceRefused('voice_save');
+      const v = vc();
+      if (v.provider === 'off') refuse('provider', 'Choose where your voice comes from first.');
+      if (d.kind === 'style') {
+        if (String(d.text).length > 8000) refuse('text', 'Keep the style card under 8,000 characters.');
+        v.style = { ...(v.style || { source: 'Voice/style.md', head: null }), text: d.text, basedOn: null, updatedAt: new Date(now() * 1000).toISOString() };
+        return { item: clone(v.style) };
+      }
+      const a = d.applies || {};
+      if (!['to', 'chat', 'domain', 'topic', 'no-profile', 'everyone'].includes(a.kind) || (['to', 'chat', 'domain', 'topic'].includes(a.kind) && !String(a.value || '').trim())) refuse('applies', 'Say what the instruction applies to.');
+      if (!String(d.text || '').trim() || String(d.text).length > 2000) refuse('text', 'Write what to do, up to 2,000 characters.');
+      const rule = { id: d.id || `${a.kind}-${crypto.randomUUID().slice(0, 8)}`, applies: { kind: a.kind, value: a.value ?? null, channel: a.channel ?? null }, text: d.text.trim(), source: 'Voice/rules.md', editable: true };
+      v.rules = d.id ? v.rules.map(r => (r.id === d.id ? rule : r)) : [...v.rules, rule];
+      v.copy = true;
+      return { item: clone(rule) };
+    },
+    voice_delete: d => {
+      calls.push(['voice_delete', clone(d)]);
+      voiceRefused('voice_delete');
+      const v = vc();
+      const rule = v.rules.find(r => r.id === d.id);
+      if (!rule) fail('not_found', 'This instruction is no longer there.');
+      v.rules = v.rules.filter(r => r !== rule);
+      return { removed: clone(rule) };
+    },
+    voice_forget: d => {
+      calls.push(['voice_forget', clone(d)]);
+      const deleted = vc().rules.length + vc().people.length + (vc().style ? 1 : 0);
+      s.replyVoice = { ...clone(voice.states.off), available: clone(vc().available || []) };
+      return { deleted, provider: 'off' };
+    },
+    voice_refresh: d => { calls.push(['voice_refresh', clone(d)]); voiceRefused('voice_refresh'); return { queued: true }; },
+    voice_read: d => {
+      calls.push(['voice_read', clone(d)]);
+      const p = vc().people.find(x => x.id === d.id);
+      if (!p) fail('not_found', "This person is no longer in Connect's copy.");
+      return { id: p.id, name: p.name, ...(PROFILES[p.id] || { text: '', about: '' }), source: p.source };
+    },
+    voice_import_scan: d => {
+      calls.push(['voice_import_scan', clone(d)]);
+      voiceRefused('voice_import_scan');
+      if (vc().provider === 'off') refuse('provider', 'Choose where your voice comes from first.');
+      return { ...clone(voice.preview), folder: String(d.path).split('/').filter(Boolean).at(-1) || voice.preview.folder };
+    },
+    voice_import_distil: async d => {
+      calls.push(['voice_import_distil', clone(d)]);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      voiceRefused('voice_import_distil');
+      return { skill: d.skill, items: [{ applies: { kind: 'everyone' }, text: 'Lead with the answer, then the reasons.' }, { applies: { kind: 'everyone', channel: 'mail' }, text: 'Short paragraphs, one idea each.' }] };
+    },
+    voice_import: d => {
+      calls.push(['voice_import', clone(d)]);
+      voiceRefused('voice_import');
+      const v = vc();
+      for (const item of d.items) v.rules.push({ id: `imported-${crypto.randomUUID().slice(0, 8)}`, applies: { kind: item.applies.kind, value: item.applies.value ?? null, channel: item.applies.channel ?? null }, text: item.text, source: 'Voice/rules.md', editable: true });
+      return { added: d.items.length, skipped: 0 };
+    },
+  });
   // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
     markets: clone(pluginInit.markets), installed: [], storage: {}, addresses: {}, signedIn: {},
-    calls: [], loadErrors: {}, opened: [],
+    calls: [], loadErrors: {}, opened: [], settings: {},
   };
   window.__pluginCalls = pl.calls;
   // Links the user agreed to open (`open_link`): recorded, never opened in a browser.
   window.__pluginOpened = pl.opened;
   // Why a plugin's host half didn't load, as the manager would say (`installed` answers it).
   window.__setPluginLoadError = (id, text) => { pl.loadErrors[id] = text; };
+  const isAddress = x => (pluginInit.hello.manifest.uses?.network?.hosts_from || []).includes(x.key);
   const helloView = () => {
     const m = pluginInit.hello.manifest;
     const p = pl.installed.find(x => x.id === 'hello');
@@ -1032,13 +1529,36 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       hash: '5eed5eed', enabled: p.enabled, agreed: p.agreed, installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
       client: m.client, widgets: m.widgets.map(w => ({ id: w.id, label: w.label, about: w.about || '', kind: w.kind, sizes: w.sizes || [] })),
       signin: [{ host: 'github.com', signedIn: !!pl.signedIn.hello, from: pl.signedIn.hello ? 'gh' : null }],
-      addresses: m.settings.map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+      addresses: m.settings.filter(isAddress).map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+      // Every other declared setting (`set_setting`); a secret says only whether it is set.
+      settings: m.settings.filter(x => !isAddress(x)).map(x => (x.type === 'secret'
+        ? { key: x.key, label: x.label, type: 'secret', help: x.help || null, set: !!pl.settings[x.key] }
+        : { key: x.key, label: x.label, type: x.type || 'string', help: x.help || null, value: pl.settings[x.key] ?? x.default ?? null })),
       ...(pl.loadErrors[m.id] && p.enabled ? { loadError: pl.loadErrors[m.id] } : {}),
     };
   };
+  // ai-routes-checks.mjs: a plugin with the `claude` permission agreed, enabled, so Settings › AI
+  // draws its own row under "All plugins" (DESIGN §5, ruling 4). Its id ("knowledge") matches
+  // `ai-status.json` / `ai-route-cases.json`'s own example plugin row.
+  const knowledgeView = () => ({
+    id: 'knowledge', name: 'Knowledge', version: '1.0.0', summary: 'Keeps a notes vault in sync.',
+    market: 'codemie', source: './plugins/knowledge', commit: null, hash: 'knhash', enabled: true,
+    agreed: ['claude'], installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
+    client: null, widgets: [], signin: [], addresses: [], settings: [],
+  });
+  // voice-checks.mjs V7 (`open({ replyPlugin: true })`): a folder marketplace also offers an
+  // invented reply-context plugin, whose sheet carries the role's line as capabilities.rs words it.
+  const REPLY_SHEET = [{ key: 'provides_reply-context', support: { status: 'supported' }, text: 'Shape your replies: Connect asks it how you write, about the people you write to and for notes on the names and codes in a message, and adds what it answers to your AI drafts. It can read the text of messages you sent that Connect has synced.' }];
+  const replyOffer = { id: 'reply-notes', name: 'Reply notes', version: '1.0.0', summary: 'Keeps notes on how you write.', categories: ['test'], featured: false, installable: true, reason: null, installed: null, update: false };
+  const replyNotesView = () => ({
+    id: 'reply-notes', name: 'Reply notes', version: '1.0.0', summary: replyOffer.summary, market: pl.replyNotes.market,
+    source: pl.replyNotes.source, commit: null, hash: 'rnhash', enabled: true, agreed: [...pl.replyNotes.agreed],
+    installedAt: '2026-11-17T09:30:00Z', update: null, problem: null, client: null, widgets: [], signin: [], addresses: [], settings: [],
+  });
   const offerOf = market => {
     const installed = pl.installed.find(x => x.id === 'hello');
-    return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...clone(pluginInit.others)];
+    const reply = replyPlugin && market !== 'codemie' && market !== 'onetest' ? [{ ...replyOffer, installed: pl.replyNotes ? replyOffer.version : null }] : [];
+    return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...reply, ...clone(pluginInit.others)];
   };
   const marketOf = name => {
     const m = pl.markets.find(x => x.name === name);
@@ -1047,7 +1567,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   };
   const pluginOps = {
     markets: () => pl.markets,
-    pick_folder: () => ({ path: '/Users/qa/Plugins/acme-market' }),
+    // Settings › Your voice's import asks for the skills folder: `__skillsFolder` (null cancels).
+    pick_folder: d => (d.purpose === 'skills' ? { path: window.__skillsFolder ?? null } : { path: '/Users/qa/Plugins/acme-market' }),
     market_add: d => {
       if (!d.source.startsWith('/')) fail('invalid', 'The stand-in adds folders only.');
       const m = { builtIn: false, commit: null, fetchedAt: null, kind: 'local', name: 'acme', ready: true, ref: null, source: d.source };
@@ -1060,23 +1581,50 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     inspect: d => {
       const o = offerOf(d.market).find(x => x.id === d.id);
       if (!o) fail('not_found', `The “${d.market}” marketplace has no plugin “${d.id}”.`);
-      const sheet = d.id === 'hello' ? pluginInit.hello.sheet : [{ key: 'knowledge', support: { status: 'blocking', limit: "Needs Connect's Knowledge engine (coming later)" }, text: 'Read and change your notes vaults' }];
-      return { ...o, market: d.market, source: marketOf(d.market).source, commit: null, sheet, sheetHash: d.id === 'hello' ? pluginInit.hello.sheetHash : 'k' };
+      const sheet = d.id === 'hello' ? pluginInit.hello.sheet : d.id === 'reply-notes' ? REPLY_SHEET : [{ key: 'knowledge', support: { status: 'blocking', limit: "Needs Connect's Knowledge engine (coming later)" }, text: 'Read and change your notes vaults' }];
+      return { ...o, market: d.market, source: marketOf(d.market).source, commit: null, sheet, sheetHash: d.id === 'hello' ? pluginInit.hello.sheetHash : d.id === 'reply-notes' ? 'rn' : 'k' };
     },
     install: d => {
+      if (d.id === 'reply-notes' && replyPlugin) {
+        if (d.agreed.length !== REPLY_SHEET.length) fail('consent_required', 'Agree to every line of the permission sheet to install “reply-notes”.');
+        pl.replyNotes = { market: d.market, source: marketOf(d.market).source, agreed: [...d.agreed].sort() };
+        return { status: 'installed', plugin: replyNotesView() };
+      }
       if (d.id !== 'hello') fail('blocked', 'It can’t be installed.');
       if (d.sheetHash !== pluginInit.hello.sheetHash) fail('changed', 'The permission sheet of “hello” changed.');
       if (d.agreed.length !== pluginInit.hello.sheet.length) fail('consent_required', 'Agree to every line of the permission sheet to install “hello”.');
       pl.installed.push({ id: 'hello', market: d.market, source: marketOf(d.market).source, enabled: true, agreed: [...d.agreed].sort() });
       return { status: 'installed', plugin: helloView() };
     },
-    installed: () => (pl.installed.length ? [helloView()] : []),
-    set_enabled: d => { pl.installed.find(x => x.id === d.id).enabled = d.enabled; return helloView(); },
+    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : []), ...(aiPlugin ? [knowledgeView()] : []), ...(pl.replyNotes ? [replyNotesView()] : [])],
+    set_enabled: d => {
+      if (d.id === 'todoist') {
+        const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
+        if (listed) listed.on = d.enabled;
+        return todoistView();
+      }
+      pl.installed.find(x => x.id === d.id).enabled = d.enabled;
+      return helloView();
+    },
     update: () => fail('up_to_date', '“hello” is up to date (1.0.0).'),
     remove: d => { pl.installed = pl.installed.filter(x => x.id !== d.id); return { removed: d.id, deletedData: !!d.deleteData }; },
     signin: d => { pl.signedIn[d.id] = true; return clone(pluginInit.signin.signin); },
     signout: d => { delete pl.signedIn[d.id]; return clone(pluginInit.signin.signout); },
     set_addresses: d => { pl.addresses[d.key] = d.value.trim(); return helloView(); },
+    set_setting: d => {
+      if (d.id === 'todoist') {
+        if (!['token', 'project', 'label'].includes(d.key)) fail('invalid', `todoist has no setting “${d.key}” in its manifest`);
+        if (d.key === 'token') td.token = !!(d.value && String(d.value).length);
+        else td[d.key] = d.value === '' || d.value == null ? (d.key === 'project' ? 'Connect' : 'connect') : d.value;
+        return todoistView();
+      }
+      const def = pluginInit.hello.manifest.settings.find(x => x.key === d.key);
+      if (!def) fail('invalid', `${d.id} has no setting “${d.key}” in its manifest`);
+      if (isAddress(def)) fail('invalid', `“${d.key}” lists the addresses ${d.id} may reach: set it under its addresses`);
+      if (d.value === '' || d.value === null || d.value === undefined) delete pl.settings[d.key];
+      else pl.settings[d.key] = def.type === 'secret' ? true : d.value; // a secret is never kept, as in Connect
+      return helloView();
+    },
     open_link: d => {
       if (!/^(https|obsidian):/.test(d.url)) fail('validation', 'Connect opens only https:// and obsidian:// links.');
       pl.opened.push(clone(d));
@@ -1094,6 +1642,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // A sync changes an event (e.g. Graph names its series): the window reads the new snapshot.
   window.__eventData = (id, data) => { const ev = s.records.find(r => r.kind === 'event' && r.id === id); Object.assign(ev.data, data); s.revision++; emit('workspace:changed'); };
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
+  // Todoist is uninstalled: dropped from `taskProvider.available` (and so from the next
+  // `plugins_request installed`, as a real removal drops it from the plugin registry); a check
+  // fires `plugins:reloaded` next, as the manager does after a real registry change.
+  window.__removeTodoist = () => { s.taskProvider.available = s.taskProvider.available.filter(p => p.id !== 'plugin:todoist'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
   window.__setAiProfiles = profiles => { ai.profiles = profiles; };
@@ -1104,6 +1656,9 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (cmd === 'plugins_request') {
           const op = pluginOps[args.op];
           if (!op) throw { code: 'invalid', message: `Mock does not implement plugin request ${args.op}` };
+          // Recorded under its own op name (never collides with a workspace_request op), for a
+          // check's `calls(page, 'set_setting')` etc.
+          calls.push([args.op, clone(args.data || {})]);
           await sleep(40);
           return clone(op(args.data || {}));
         }
@@ -1167,7 +1722,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['revision', 'changes_since', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['revision', 'changes_since', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check', 'voice_refresh', 'voice_read', 'voice_import_scan', 'voice_import_distil'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -1234,14 +1789,37 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null } = {}) {
+// ai-routes-checks.mjs: the `ai` option also takes a named Ollama state, built on the full
+// contract fixture (`aiStatus('all', …)`, ai-status.json: Claude Code, two CodeMie profiles and
+// an Ollama one) with only the Ollama profile patched — `ollama-running` leaves it exactly as the
+// fixture has it (Ready), `ollama-down` matches `ai::profiles`' own `NotRunning` copy, and
+// `ollama-no-model` its `NotConfigured` one (spec §1). `aiSettings` (a full `settings.ai` object)
+// and `aiProfilePatch` (profile id → fields to merge) let a check build an exact routing or
+// status scenario without a second native round trip; `chosen` is always recomputed from
+// `aiSettings` with the same `chooseAll` the mock's `ai_status`/`ai_settings_save` use.
+const OLLAMA_STATES = {
+  'ollama-running': null,
+  'ollama-down': { state: 'not_running', message: "Ollama isn't running. Open Ollama, then check again." },
+  'ollama-no-model': { state: 'not_configured', message: "Ollama doesn't have qwen3:8b. Pull it in Ollama, then check again." },
+};
+function aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch } = {}) {
+  const ollamaPatch = OLLAMA_STATES[ai];
+  const kind = ollamaPatch !== undefined ? 'all' : ai;
+  const out = aiStatus(kind, aiDefault === undefined ? {} : { defaultProfile: aiDefault });
+  const patches = { ...(ollamaPatch ? { 'codemie:local-ollama': ollamaPatch } : {}), ...(aiProfilePatch || {}) };
+  if (Object.keys(patches).length) out.profiles = out.profiles.map(p => (patches[p.id] ? { ...p, ...patches[p.id] } : p));
+  if (aiSettings) { out.settings = aiSettings; out.chosen = chooseAll(aiSettings); }
+  return out;
+}
+
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null, voice = null, draftVoice = false, replyPlugin = false, ask = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/favicon/.test(m.text())) errors.push(m.text()); });
-  const now = Date.now();
+  const now = fixedNow ?? Date.now();
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
   connected.connection.enabled.push(...enable);
   if (longThread) {
@@ -1249,7 +1827,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     const first = connected.records.find(r => r.id === 'm-reply-1');
     ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
   }
-  if (automations) withAutomations(connected, now);
+  // `automations: 'habits'` adds the Inbox triage and Formal meeting summary automations and their runs.
+  if (automations) withAutomations(connected, now, { habits: automations === 'habits' });
   if (tasks) withTasks(connected, now);
   if (meetings) withMeetings(connected, now);
   if (transcriptsOff) {
@@ -1259,11 +1838,22 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (pluginRecords) connected.records.push(...pluginRecords(now));
   if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
+  if (settings) Object.assign(snapshot.settings, settings);
+  // voice-checks.mjs: `voice` names a voice-states.json state for `replyVoice` (Off otherwise);
+  // `draftVoice: true` gives AI drafts draft-ai-voice.json's `provenance.voice`; `replyPlugin`
+  // offers an invented reply-context plugin in a folder marketplace.
+  if (voice) withVoice(snapshot, voice);
+  // ask-checks.mjs: `ask` names an ask-states.json state for the snapshot's `ask` (`empty`
+  // otherwise), and makes the mock's `ask_start` and Stop write the turn as native does.
+  if (ask) withAsk(snapshot, ask);
+  // A check's own changes to the snapshot (e.g. a task provider and its tasks), before the page loads.
+  if (patch) patch(snapshot, now);
+  const { testOk, testFail, draft, draftChat, jobFailed, summary, draftVoice: voiceDraft } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin, voice: { states: voiceStates(), preview: contractFixtures().voiceImport }, draftVoice: draftVoice ? voiceDraft.data.provenance.voice : null, replyPlugin, whenCases: WHEN_CASES, askThread: ASK_THREAD, askLive: !!ask })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
+  if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   await quiet(page);
@@ -1278,12 +1868,23 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`, `analytics`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings', 'layout', 'analytics'].includes(process.env.WORKSPACE_E2E_ONLY)) {
-  if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`, `voice`, `ask`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes', 'voice', 'ask'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+  if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'automations') await automationsChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'menu-bar') await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-view') await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'ai-routes') await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'voice') await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'ask') await askChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -1342,15 +1943,13 @@ for (const theme of ['dark', 'light']) {
     assert(Number(z.line) < Number(z.event) && Number(z.dot) > Number(z.event), `now line is not under event text: ${JSON.stringify(z)}`);
     await shot(p, `${theme}-today-polish-${width}`);
     await p.click('.ws-nav button[data-route=inbox]');
-    await p.waitForSelector('.ws-read-actions');
+    await p.waitForSelector('.ws-reply-bar');
     const rows = await p.evaluate(() => {
-      const bar = document.querySelector('.ws-read-actions');
-      const tops = [...bar.querySelectorAll(':scope > *, .ws-read-lane > *')].map(el => Math.round(el.getBoundingClientRect().top));
-      const lane = bar.querySelector('.ws-read-lane').getBoundingClientRect();
-      const btn = bar.querySelector('[data-action="commitment"]').getBoundingClientRect();
-      return { sameRow: btn.top >= lane.top - 1 && btn.bottom <= lane.bottom + 1, tops };
+      const bar = document.querySelector('.ws-reply-bar');
+      const controls = [...bar.querySelectorAll(':scope > button, :scope > details > summary')].map(el => el.getBoundingClientRect());
+      return { count: controls.length, sameRow: controls.every(r => Math.abs(r.top - controls[0].top) < 2), tops: controls.map(r => Math.round(r.top)) };
     });
-    assert(rows.sameRow, `the commitment button wrapped away from the lane picker: ${JSON.stringify(rows)}`);
+    assert(rows.count === 3 && rows.sameRow, `the reply's three controls are not one row: ${JSON.stringify(rows)}`);
     await shot(p, `${theme}-inbox-actions-${width}`);
     await n.context.close().catch(() => {});
     const none = await open({ theme, width, height, ai: 'none', codemie: 'fresh', localPrefs: introduced });
@@ -1391,7 +1990,9 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: Customize moves a widget by its header, undoes it, and removes and adds through the gallery`, async () => {
     const saves = () => page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'layout_save').map(([, d]) => d));
     const before = (await saves()).length;
-    await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+    await page.click('.ws-today-actions details[data-menu="today-more"] > summary');
+    await page.waitForSelector('.ws-today-actions details[data-menu="today-more"][open]');
+    await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-customize"]:has-text("Customize")');
     await page.waitForSelector('.ws-today-editbar:has-text("Customizing Today")');
     await page.waitForSelector('.ws-gallery .ws-gallery-group:has-text("On Today")');
     await shot(page, `${theme}-customize`);
@@ -1482,11 +2083,12 @@ for (const theme of ['dark', 'light']) {
     const first = await page.locator('.ws-inbox-row').first().getAttribute('data-id');
     assert(first === 'c-reply-1', `newest row ${first}`);
     assert(await page.locator('.ws-inbox-row[data-id="c-reply-1"] .ws-thread-count').innerText() === '2', 'chat count badge');
-    await page.locator('.ws-read-actions summary:has-text("Snooze")').click();
+    await page.click('.ws-reply-bar details[data-menu="reply-snooze"] > summary');
     await page.locator('.ws-menu-item:has-text("Tomorrow")').click();
     await page.waitForTimeout(300);
     assert(await page.locator('.ws-inbox-row:has-text("Jordan Lee")').count() === 0, 'snooze left part of the Teams chat behind');
-    await page.locator('.ws-read-actions button:has-text("Done")').click();
+    await page.click('.ws-reply-bar details[data-menu="reply-more"] > summary');
+    await page.click('.ws-reply-bar details[data-menu="reply-more"] [data-action="message-archive"]');
     await page.waitForTimeout(200);
     await page.click('.ws-lane[data-lane=critical]');
     await page.waitForSelector('.ws-read:has-text("Production alert")');
@@ -1561,30 +2163,39 @@ for (const theme of ['dark', 'light']) {
     await page.waitForFunction(() => document.querySelector('select[data-action="sync-every"]')?.value === '1');
   });
 
-  await check(`${theme}: settings claude page`, async () => {
+  await check(`${theme}: settings AI page`, async () => {
     await page.click('.ws-nav button[data-route=settings]');
+    assert((await text(page, '.ws-settings-nav button[data-tab=ai]')).trim() === 'AI', 'tab label');
     await page.click('.ws-settings-nav button[data-tab=ai]');
     await page.waitForSelector('[data-ai-profile="claude"]');
     assert(await page.locator('[data-ai-profile]').count() === 3, 'profile cards');
     const native = await text(page, '[data-ai-profile="claude"]');
     assert(/Ready/i.test(native) && /Max/.test(native) && /taylor@example\.com/.test(native) && /2\.1\.150/.test(native), native);
     assert(/Needs sign-in/i.test(await text(page, '[data-ai-profile="codemie:staging"]')), 'needs sign-in chip');
-    assert(await page.locator('[data-ai-route-row]').count() === 6, 'route rows');
+    // Ten visible rows (ask-capture § 6, ruling 1: Ask's row is shown; no plugin asks for AI here).
+    assert(await page.locator('[data-ai-route-row]:visible').count() === 10, 'route rows');
+    assert(await page.locator('[data-ai-route-row="ask"]').isVisible(), 'Ask row shown');
     assert(/Meeting notes/.test(await text(page, '[data-ai-route-row="meeting"]')), 'meeting notes route row');
+    assert(/Working/i.test(await text(page, '[data-ai-route-row="summary"]')), 'summary row status');
+    for (const g of ['Replies', 'Summaries and notes', 'Ask', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
     assert(/runs/.test(await text(page, '#ai-usage')) && /estimate/i.test(await text(page, '#ai-usage')), 'usage');
-    await shot(page, `${theme}-settings-claude-both`);
+    await shot(page, `${theme}-settings-ai-both`);
+    await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+    await shot(page, `${theme}-settings-ai-both-routes`);
     await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = el.scrollHeight; });
-    await shot(page, `${theme}-settings-claude-both-bottom`);
+    await shot(page, `${theme}-settings-ai-both-bottom`);
     await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = 0; });
     await page.locator('[data-action="ai-test"][data-profile="claude"]').click();
     await page.waitForSelector('[data-ai-profile="claude"] .ws-spinner');
     await page.waitForSelector('[data-ai-profile="claude"] [data-ai-test-result]');
     assert(/OK · 2\.1 s · \$0\.0004/.test(await text(page, '[data-ai-profile="claude"] [data-ai-test-result]')), 'test result text');
-    await shot(page, `${theme}-settings-claude-test`);
+    await shot(page, `${theme}-settings-ai-test`);
     await page.locator('select[name="ai-default"]').selectOption('codemie:prod');
     await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.defaultProfile === 'codemie:prod'));
     await page.locator('select[data-route="plugin"][data-field="profile"]').selectOption('claude');
     await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.routes.plugin?.profile === 'claude'));
+    await page.locator('select[data-route="triage"][data-field="fallback"]').selectOption('claude');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.routes.triage?.fallback === 'claude'));
     assert(await page.locator('select[name="ai-default"]').inputValue() === 'codemie:prod', 'default did not persist');
     assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, 'error toast');
     const failing = page.locator('[data-action="ai-test"][data-profile="codemie:staging"]');
@@ -1664,8 +2275,11 @@ for (const theme of ['dark', 'light']) {
 // Reply drafts with Claude (DESIGN 6.4): composer, progress, result, replace, errors, Today.
 const lastCall = async (page, name) => (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === name).at(-1)?.[1];
 const plan = (page, value) => page.evaluate(v => { window.__draftPlan = v; }, value);
+const MORE = '.ws-reply-bar details[data-menu="reply-more"]';
+const onMore = () => document.activeElement?.matches('.ws-reply-bar details[data-menu="reply-more"] > summary');
 const openOptions = async page => {
-  await page.click('[data-action="ai-draft-options"]');
+  await page.click(`${MORE} > summary`);
+  await page.click(`${MORE} [data-action="ai-draft-options"]`);
   await page.waitForSelector('#draft-options');
   await page.waitForTimeout(150);
 };
@@ -1673,19 +2287,22 @@ for (const theme of ['dark', 'light']) {
   const { page, context, errors } = await open({ theme, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
 
   await check(`${theme}: ai draft flow`, async () => {
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] [data-action="ai-draft-options"]');
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] [data-action="ai-draft-options"]', { state: 'attached' });
+    // The empty box: the ✦ hint over it, no change line.
+    assert(await page.locator('.ws-reply-hint:visible [data-action="ai-draft-quick"]').count() === 1, 'the empty box has no ✦ draft with AI');
+    assert(await page.locator('#reply-change').count() === 0, 'a change line under the empty box');
     await openOptions(page);
     assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft'), 'Draft is focused when the options open');
+    assert(await page.locator(`${MORE}[open]`).count() === 0, 'the ⋯ menu stays open under the options');
     await page.keyboard.press('Escape');
     await page.waitForSelector('#draft-options', { state: 'detached' });
-    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'Esc returns focus to Draft with AI');
-    await page.keyboard.press('Enter');
-    await page.waitForSelector('#draft-options');
+    assert(await page.evaluate(onMore), 'Esc returns focus to ⋯');
+    await openOptions(page);
     await page.keyboard.press('Tab');
     assert(await page.evaluate(() => document.activeElement?.dataset.draftIntent === 'reply'), 'Tab stays inside the popover');
     const geometry = await page.evaluate(() => {
       const pop = document.getElementById('draft-options').getBoundingClientRect();
-      const trigger = document.querySelector('[data-action="ai-draft-options"]').getBoundingClientRect();
+      const trigger = document.querySelector('.ws-reply-bar details[data-menu="reply-more"] > summary').getBoundingClientRect();
       return { pop: [pop.left, pop.top, pop.right, pop.bottom], trigger: [trigger.left, trigger.top, trigger.right, trigger.bottom], vw: innerWidth, vh: innerHeight };
     });
     const [l, t, r, b] = geometry.pop;
@@ -1714,6 +2331,7 @@ for (const theme of ['dark', 'light']) {
     await page.waitForFunction(() => document.getElementById('reply-body')?.value.startsWith('[Yes, 11:00 works for me / Sorry, I can'), null, { timeout: 4000 });
     await page.waitForSelector('.ws-draft-provenance:has-text("Drafted with Claude Code · Sonnet 4.5")');
     assert(/3 s · from 2 messages/.test(await text(page, '.ws-draft-provenance')), 'duration and message count');
+    assert(await page.locator('.ws-reply-hint:visible').count() === 0 && await page.locator('#reply-change').count() === 1, 'the filled box keeps the hint or has no change line');
     assert(/Choose an option in brackets before sending/.test(await text(page, '.ws-draft-todo')), 'bracket note');
     assert(/Can you join the call at 11:00\?/.test(await text(page, '.ws-draft-todo')), 'questions');
     await page.click('[data-action="ai-draft-context"]');
@@ -1731,7 +2349,7 @@ for (const theme of ['dark', 'light']) {
     await page.evaluate(() => window.__workspace.render());
     const refocused = await page.evaluate(() => ({ option: document.activeElement?.dataset.option, fresh: document.activeElement?.isConnected }));
     assert(refocused.option === "Sorry, I can't make 11:00" && refocused.fresh, `focus moved to ${JSON.stringify(refocused)}`);
-    await page.click('.ws-reply button[type=submit]');
+    await page.click('[data-action="reply-send"]');
     await page.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
     await page.waitForTimeout(250);
     await shot(page, `${theme}-draft-unfinished`);
@@ -1740,39 +2358,89 @@ for (const theme of ['dark', 'light']) {
     await page.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
     const value = await page.locator('#reply-body').inputValue();
     assert(value.startsWith('Yes, 11:00 works for me. If that changes') && !value.includes('['), value);
-    await page.click('.ws-reply button[type=submit]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
-    assert((await lastCall(page, 'action_prepare')).body.startsWith('Yes, 11:00 works for me'), 'review shows the chosen option');
-    await page.click('.ws-modal[open] button:has-text("Cancel")');
-    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-    assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'action_confirm'), 'Cancel sent something');
+    // Teams sends on the click: no dialog, action_prepare then action_confirm with its nonce.
+    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
+    assert(await text(page, '[data-action="reply-send"]') === 'Send to Jordan', `primary reads ${await text(page, '[data-action="reply-send"]')}`);
+    // A double click sends one message.
+    await page.dblclick('[data-action="reply-send"]');
+    await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
+    assert(await page.locator('.ws-modal[open]').count() === 0, 'a Teams send opened a dialog');
+    const sent = (await page.evaluate(() => window.__bridgeCalls)).slice(before).filter(([op]) => op.startsWith('action_'));
+    assert(sent.length === 2 && sent[0][0] === 'action_prepare' && sent[0][1].kind === 'chat_reply' && sent[0][1].body.startsWith('Yes, 11:00 works for me')
+      && sent[1][0] === 'action_confirm' && sent[1][1].actionId === 'action-1' && sent[1][1].nonce === 'nonce-1', JSON.stringify(sent));
+    assert(await page.locator('.ws-reply-status [data-action="source"]:has-text("Open in Teams ↗")').count() === 1, 'no Open in Teams ↗ after the send');
+    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
+    assert(await page.locator('.ws-toasts .ws-toast').count() === 0, 'a Teams send toasts');
+    // No pending autosave brings the sent text back as a saved reply.
+    await page.waitForTimeout(1800);
+    const left = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.kind === 'draft' && r.id === 'manual:c-reply-1')?.data.text);
+    assert(left === undefined, `the sent text is still saved: ${JSON.stringify(left)}`);
+    assert(await page.locator('#reply-body').inputValue() === '', 'the sent text came back');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-reply-sent-teams`);
   });
 
   await check(`${theme}: the user's own brackets send without a warning`, async () => {
+    await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="m-reply-1"] #reply-body');
     await page.fill('#reply-body', 'Merged in [EPMCDME-1234], the rest is [WIP]. [Yes / No] for the demo?');
-    await page.click('.ws-reply button[type=submit]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    assert(await text(page, '[data-action="reply-send"]') === 'Send to Priya…', `primary reads ${await text(page, '[data-action="reply-send"]')}`);
+    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
+    await page.click('[data-action="reply-send"]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Send this reply?")');
     assert(await page.locator('.ws-modal[open]:has-text("Finish your reply first?")').count() === 0, 'warned about hand-written brackets');
     assert(await page.locator('.ws-draft-todo:not([hidden]) .ws-draft-choice').count() === 0, 'hand-written brackets listed as choices');
+    const dialog = await text(page, '.ws-modal[open] .ws-modal-body');
+    assert(dialog.includes('To: priya.n@example.test') && dialog.includes('Signature: none — Connect sends your text as written') && !dialog.includes('(new)'), dialog);
+    assert(/expires in 5 minutes/.test(await text(page, '.ws-modal[open] .ws-modal-header p')), 'no expiry in the subtitle');
+    assert(await page.evaluate(() => document.activeElement?.textContent.trim() === 'Cancel'), 'Cancel is not focused');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-reply-mail-confirm`);
     await page.click('.ws-modal[open] button:has-text("Cancel")');
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    const after = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op);
+    assert(after.includes('action_prepare') && !after.includes('action_confirm'), `Cancel sent something: ${after}`);
+    assert(await page.locator('#reply-body').inputValue().then(v => v.startsWith('Merged in')), 'Cancel emptied the box');
   });
 
   await check(`${theme}: a background sync while replying never blocks Review or Send`, async () => {
     await page.fill('#reply-body', 'Thanks, see you at 11.');
     await page.evaluate(() => { window.__syncBump = true; });
-    await page.click('.ws-reply button[type=submit]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    await page.click('[data-action="reply-send"]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Send this reply?")');
     await page.evaluate(() => { window.__syncBump = true; });
+    // The commit guard ignores a Send right after the dialog opens.
+    await page.waitForTimeout(500);
     await page.click('.ws-modal[open] button[type=submit]');
-    await page.waitForSelector('.ws-toast:has-text("Sent for delivery")');
+    await page.waitForSelector('.ws-reply-status:has-text("Sent to Priya.")', { timeout: 4000 });
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    assert(await page.locator('.ws-reply-status [data-action="source"]:has-text("Open in Outlook ↗")').count() === 1, 'no Open in Outlook ↗ after the send');
     assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, `an error toast appeared: ${await page.locator('.ws-toasts .ws-toast-error').allInnerTexts()}`);
-    assert((await lastCall(page, 'action_confirm'))?.actionId, 'the mock bridge got the confirm');
+    assert((await lastCall(page, 'action_confirm'))?.nonce === 'nonce-1', 'the mock bridge got the confirm');
+    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
+  });
+
+  // The ⌘↩ gate (untouched draft disarmed, a click arms it once, re-armed only by typing, never
+  // after a send) moved to reply-checks.mjs R7 — the single home for reply behaviour.
+
+  await check(`${theme}: a sent reply stays sent after a reload: the box is empty and Send waits for new text`, async () => {
+    // Native keeps the drafts on disk: the mock carries the stored ones over the reload.
+    await page.waitForTimeout(400);
+    await page.evaluate(() => sessionStorage.setItem('e2e.drafts', JSON.stringify(window.__workspace.store.get().snapshot.records.filter(r => r.kind === 'draft'))));
+    await page.reload();
+    await page.waitForSelector('.ws-inbox-row[data-id="c-reply-1"]');
+    await page.click('.ws-inbox-row[data-id="c-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] #reply-body');
+    await page.waitForTimeout(300);
+    const value = await page.locator('#reply-body').inputValue();
+    assert(value === '', `the sent text is back after a reload: ${JSON.stringify(value)}`);
+    assert(await page.locator('.ws-draft-provenance').count() === 0, 'the sent draft still shows Drafted with Claude');
+    assert(await page.locator('[data-action="reply-send"]').isDisabled(), 'Send is enabled on an empty box');
   });
 
   await check(`${theme}: a draft arriving while you type asks first, in the same box; Restore survives edits`, async () => {
     await plan(page, { outcome: 'hold' });
-    await page.click('[data-action="ai-draft-regenerate"]');
+    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
     await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
     // Type in the reply box while Claude writes; the box must stay the same element, focused.
     await page.fill('#reply-body', '');
@@ -1812,6 +2480,23 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('[data-action="ai-draft-restore"]').count() === 0, 'Restore stays after restoring');
   });
 
+  await check(`${theme}: Tell AI what to change sends the words with the current text, and autosaves`, async () => {
+    await page.fill('#reply-body', 'Sure, sending it at 14:30.');
+    await page.waitForSelector('.ws-reply-status:has-text("Saved on this device")', { timeout: 4000 });
+    const saved = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.kind === 'draft' && r.id === 'manual:c-reply-1')?.data.text);
+    assert(saved === 'Sure, sending it at 14:30.', `autosave kept ${JSON.stringify(saved)}`);
+    await plan(page, { outcome: 'hold' });
+    await page.fill('#reply-change', 'make it 15:00');
+    await page.press('#reply-change', 'Enter');
+    await page.waitForSelector('.ws-draft-running', { timeout: 4000 });
+    const call = await lastCall(page, 'ai_draft');
+    assert(call.instructions === 'make it 15:00' && call.revise === 'Sure, sending it at 14:30.', JSON.stringify(call));
+    assert(await page.locator('.ws-modal[open]').count() === 0, 'Return in the change line submitted the reply');
+    assert(await page.inputValue('#reply-change') === '', 'the change line keeps its words');
+    await page.click('.ws-draft-running [data-action="ai-draft-stop"]');
+    await page.waitForSelector('.ws-draft-running', { state: 'detached', timeout: 4000 });
+  });
+
   await check(`${theme}: Stop cancels a running draft`, async () => {
     await plan(page, { outcome: 'hold' });
     await openOptions(page);
@@ -1845,10 +2530,10 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-inbox-row[data-id="m-reply-2"]').count() === 1, 'rendered under the open popover');
     await page.keyboard.press('Escape');
     await page.waitForSelector('.ws-inbox-row[data-id="m-reply-2"]', { state: 'detached', timeout: 3000 });
-    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'focus returns to Draft with AI');
+    assert(await page.evaluate(onMore), 'focus returns to ⋯');
   });
 
-  await check(`${theme}: Today Draft reply opens the conversation and starts a draft`, async () => {
+  await check(`${theme}: Today Draft reply opens the row in place and starts a draft`, async () => {
     await plan(page, { outcome: 'hold' });
     await page.click('.ws-nav button[data-route=today]');
     await page.waitForSelector('.ws-attention [data-action="draft-reply"]');
@@ -1873,11 +2558,12 @@ for (const theme of ['dark', 'light']) {
     assert(geo.card - geo.time <= 12, `the time left the card edge ${JSON.stringify(geo)}`);
     await shot(page, `${theme}-today-draft-reply`);
     await action.click();
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-running');
+    await page.waitForSelector('.ws-attention .ws-crow-body[data-message-id="c-reply-2"] .ws-draft-running');
+    assert(await page.evaluate(() => location.hash) === '#/today', 'Draft reply left Today');
     const call = await lastCall(page, 'ai_draft');
     assert(call.sourceId === 'c-reply-2' && call.intent === 'propose_times' && call.tone === 'friendly', `remembered options not used ${JSON.stringify(call)}`);
     await page.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-provenance', { timeout: 5000 });
+    await page.waitForSelector('.ws-attention .ws-crow-body[data-message-id="c-reply-2"] .ws-draft-provenance', { timeout: 5000 });
   });
 
   await check(`${theme}: ai draft no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
@@ -1888,7 +2574,7 @@ for (const theme of ['dark', 'light']) {
     const cm = await open({ theme, hash: '#/inbox', aiDefault: null });
     const p = cm.page;
     await plan(p, { outcome: 'hold' });
-    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await p.waitForSelector('[data-action="ai-draft-options"]', { state: 'attached' });
     await openOptions(p);
     await p.click('#draft-options [data-action="ai-draft"]');
     await p.waitForSelector('.ws-modal[open] [data-action="ai-choose"]');
@@ -1901,9 +2587,12 @@ for (const theme of ['dark', 'light']) {
     await p.evaluate(() => { navigator.clipboard.writeText = async t => { window.__copied = t; }; });
     await p.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
     await p.waitForSelector('.ws-draft-provenance:has-text("Drafted with CodeMie")', { timeout: 5000 });
-    assert(await p.locator('.ws-reply button[type=submit]').count() === 0, 'Review & send without permission');
+    assert(await p.locator('[data-action="reply-send"]').count() === 0, 'Send without permission');
+    assert(await p.locator('.ws-reply-bar > .ws-btn-primary[data-action="reply-copy"]').count() === 1, 'Copy reply is not the primary');
     await p.click('[data-action="reply-copy"]');
     await p.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
+    // Return cancels this dialog, and its commit guard ignores a click right after it opens.
+    await p.waitForTimeout(450);
     await p.click('.ws-modal[open] button:has-text("Copy anyway")');
     await p.waitForFunction(() => window.__copied?.startsWith('[Yes, 11:00 works for me'));
     await p.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
@@ -1918,7 +2607,7 @@ for (const theme of ['dark', 'light']) {
   for (const [width, height] of [[1000, 760], [1680, 900]]) await check(`${theme} ${width}px: the composer fits the window`, async () => {
     const narrow = await open({ theme, width, height, hash: '#/inbox', enable: ['chat_send'] });
     const p = narrow.page;
-    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await p.waitForSelector('[data-action="ai-draft-options"]', { state: 'attached' });
     await openOptions(p);
     const box = await p.locator('#draft-options').boundingBox();
     assert(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height, `popover ${JSON.stringify(box)}`);
@@ -1941,6 +2630,11 @@ for (const theme of ['dark', 'light']) {
 // Thread summaries (DESIGN 6.5): Summarize on long conversations, progress, the card with its asks,
 // stale and failure.
 const summaryPlan = (page, value) => page.evaluate(v => { window.__summaryPlan = v; }, value);
+/** Summarize is under the action line's ⋯. */
+const summarize = async page => {
+  if (!(await page.locator(`${MORE}[open]`).count())) await page.click(`${MORE} > summary`);
+  await page.click(`${MORE} [data-action="ai-summarize"]`);
+};
 const ASKS = [{ text: 'Send Jordan the roadmap draft', due: '2026-11-20' }, { text: 'Book the review room for Thursday' }];
 for (const theme of ['dark', 'light']) {
   const { page, context, errors } = await open({ theme, hash: '#/inbox', longThread: true });
@@ -1950,13 +2644,14 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-read[data-message-id="m-reply-2"]');
     assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'Summarize on a one-message conversation');
     await page.click('.ws-inbox-row[data-id="m-reply-1"]');
-    await page.waitForSelector('.ws-read[data-message-id="m-reply-1"] .ws-read-actions [data-action="ai-summarize"]');
-    assert(/Summarize/.test(await text(page, '.ws-read-actions [data-action="ai-summarize"]')), 'label');
+    await page.waitForSelector(`.ws-read[data-message-id="m-reply-1"] ${MORE} [data-action="ai-summarize"]`, { state: 'attached' });
+    await page.click(`${MORE} > summary`);
+    assert(/Summarize/.test(await text(page, `${MORE} [data-action="ai-summarize"]`)), 'label');
     await shot(page, `${theme}-summary-button`);
     await page.fill('#reply-body', 'Typing while Claude reads');
     // The route for summaries is CodeMie in this fixture; it started long enough ago to be named.
     await summaryPlan(page, { outcome: 'hold', startedAgo: 20 });
-    await page.click('[data-action="ai-summarize"]');
+    await summarize(page);
     await page.waitForSelector('.ws-summary .ws-draft-running:has-text("Summarizing with CodeMie · Haiku 4.5")', { timeout: 4000 });
     assert((await lastCall(page, 'ai_summarize')).sourceId === 'm-reply-1', 'summarize request');
     assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'a second Summarize while running');
@@ -1964,14 +2659,15 @@ for (const theme of ['dark', 'light']) {
     assert(/\d+ s/.test(await text(page, '.ws-summary .ws-draft-running')), 'elapsed seconds');
     assert(await page.locator('.ws-summary .ws-draft-running [data-action="ai-draft-stop"]').count() === 1, 'Stop');
     await shot(page, `${theme}-summary-running`);
-    await page.evaluate(() => { window.__replyNode = document.getElementById('reply-body'); });
     await page.evaluate(asks => window.__finishSummary({ outcome: 'ok', text: 'Priya asked for roadmap comments before Thursday. You said you would look today; she has since asked for the draft to go to Jordan and for the review room.', asks }), ASKS);
     await page.waitForSelector('.ws-summary .ws-summary-text');
-    assert(await page.evaluate(() => document.getElementById('reply-body') === window.__replyNode && document.getElementById('reply-body').value === 'Typing while Claude reads'), 'the reply box was recreated');
+    // Summarize is under ⋯, so the box was left (and saved on blur) before the summary came: it may
+    // be drawn again, but with the text typed in it.
+    assert(await page.evaluate(() => document.getElementById('reply-body').value === 'Typing while Claude reads'), 'the reply lost its text');
     assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 2, 'asks');
     assert(/Due Fri, Nov 20/.test(await text(page, '.ws-summary')), 'formatted due date');
     assert(/Summarized with CodeMie · Haiku 4\.5 · 3 s · from 5 messages/.test(await text(page, '.ws-summary')), 'provenance');
-    assert(await page.locator('.ws-read-actions [data-action="ai-summarize"]').count() === 0, 'the button stays after a summary');
+    assert(await page.locator(`${MORE} [data-action="ai-summarize"]`).count() === 0, 'Summarize stays after a summary');
     // The card sits above the thread.
     assert(await page.evaluate(() => document.querySelector('.ws-summary').compareDocumentPosition(document.querySelector('.ws-thread')) & Node.DOCUMENT_POSITION_FOLLOWING), 'card below the thread');
     await page.waitForTimeout(250);
@@ -2021,7 +2717,7 @@ for (const theme of ['dark', 'light']) {
     await p.click('.ws-inbox-row[data-id="m-reply-1"]');
     const bell = await p.locator('.ws-bell-dot').count();
     await summaryPlan(p, { outcome: 'error', ms: 300, state: 'failed', errorClass: 'timeout', errorCode: 'timeout' });
-    await p.click('[data-action="ai-summarize"]');
+    await summarize(p);
     await p.waitForSelector('.ws-summary .ws-draft-error:has-text("Claude took too long to answer.")', { timeout: 5000 });
     assert(await p.locator('.ws-summary .ws-draft-error [data-action="ai-summarize-retry"]').count() === 1, 'Try again');
     assert(await p.locator('.ws-bell-dot').count() === bell, 'the failure reached the decisions bell');
@@ -2040,7 +2736,7 @@ for (const theme of ['dark', 'light']) {
     const p = n.page;
     await p.click('.ws-inbox-row[data-id="m-reply-1"]');
     await summaryPlan(p, { outcome: 'ok', ms: 300, asks: ASKS, partialText: true });
-    await p.click('[data-action="ai-summarize"]');
+    await summarize(p);
     await p.waitForSelector('.ws-summary .ws-summary-text', { timeout: 5000 });
     await p.evaluate(() => window.__setSummaryStale(true));
     await p.waitForSelector('.ws-summary-stale-note');
@@ -2509,11 +3205,11 @@ for (const theme of ['dark', 'light']) {
 // Claude set up while Connect is open: Inbox notices when the window gets focus again.
 {
   const { page, context, errors } = await open({ theme: 'dark', hash: '#/inbox', ai: 'none' });
-  await check('Set up Claude turns into Draft with AI once Claude is ready', async () => {
-    await page.waitForSelector('.ws-reply-head [data-action="ai-open-settings"]:has-text("Set up Claude")');
+  await check('✦ set up AI turns into ✦ draft with AI once Claude is ready', async () => {
+    await page.waitForSelector('.ws-reply-hint [data-action="ai-open-settings"]:has-text("✦ set up AI")');
     await page.evaluate(profiles => window.__setAiProfiles(profiles), aiStatus('native').profiles);
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForSelector('.ws-reply-head [data-action="ai-draft-options"]', { timeout: 4000 });
+    await page.waitForSelector('.ws-reply-hint [data-action="ai-draft-quick"]:has-text("✦ draft with AI")', { timeout: 4000 });
     assert(errors.length === 0, errors.join(' | '));
   });
   await context.close().catch(() => {});
@@ -2577,7 +3273,7 @@ for (const theme of ['dark', 'light']) {
     const tag = `${theme}-${width}`;
     const { page, context, errors } = await open({ theme, width, height, hash: '#/automations' });
 
-    await check(`${tag}: automations create from Morning brief, run, show on Today and turn off`, async () => {
+    await check(`${tag}: automations create from Morning briefing, run, show on Today and turn off`, async () => {
       await page.waitForSelector('.ws-page-automations .ws-auto-empty');
       assert(await page.locator('.ws-nav button[data-route=automations][aria-current=page]').count() === 1, 'sidebar entry not current');
       assert(await page.locator('[data-action="automation-new"]').count() === 1, 'New automation offered twice');
@@ -2585,13 +3281,13 @@ for (const theme of ['dark', 'light']) {
       await shot(page, `${tag}-automations-empty`);
       await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.waitForSelector('[data-action="automation-template"][data-id="morning-brief"]');
-      assert(await page.locator('.ws-auto-template').count() === 4, 'four templates');
+      assert(await page.locator('.ws-auto-template').count() === 8, 'eight templates');
       await noOverflow(page, 'templates');
       await shot(page, `${tag}-automations-templates`);
       await page.click('[data-action="automation-template"][data-id="morning-brief"]');
       await editorOpen(page);
-      assert(await page.inputValue('#auto-name') === 'Morning brief', 'name prefilled');
-      assert(await page.inputValue('#auto-time') === '08:45', 'time prefilled');
+      assert(await page.inputValue('#auto-name') === 'Morning briefing', 'name prefilled');
+      assert(await page.inputValue('#auto-time') === '08:07', 'time prefilled');
       assert(await page.locator('[data-day]:checked').count() === 5, 'weekdays');
       assert(await page.locator('[data-deliver="draftReply"]').count() === 0, 'no reply draft for a schedule');
       assert((await text(page, '.ws-modal[open]')).includes('Europe/Kyiv'), 'zone shown');
@@ -2606,10 +3302,10 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-auto-row.ws-auto-highlight');
       await shot(page, `${tag}-automations-created`);
       const row = await text(page, '.ws-auto-row');
-      assert(row.includes('Weekdays at 08:45') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:45/.test(row), row);
+      assert(row.includes('Weekdays at 08:07') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:07/.test(row), row);
       await page.waitForSelector('.ws-auto-row:not(.ws-auto-highlight)', { timeout: 10000 });
       const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
-      assert(saved.trigger.time === '08:45' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply, JSON.stringify(saved));
+      assert(saved.trigger.time === '08:07' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply && !saved.deliver.createTasks, JSON.stringify(saved));
       const layout = await page.evaluate(() => window.__workspace.store.get().snapshot.workspaces[0].layout);
       assert(layout.includes('automations'), `Today card added: ${layout}`);
       assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'layout_save'), 'the card is added by the save itself');
@@ -2705,7 +3401,8 @@ for (const theme of ['dark', 'light']) {
       const output = await text(p, '.ws-run.ws-open .ws-run-detail');
       assert(output.includes('2 replies owed') && output.includes('Answer Ann about the Q3 budget') && output.includes('Send the roadmap'), output);
       assert(await p.locator('.ws-run.ws-open .ws-run-summary-text strong').innerText() === 'Q3 budget', 'bold');
-      assert(await p.locator('.ws-run-detail a[href]').count() === 0, 'a link the window could follow');
+      // The only addresses are Connect's own pages (a task the run made opens on Tasks).
+      assert(await p.locator('.ws-run-detail a[href]:not([href^="#/"])').count() === 0, 'a link the window could follow');
       await p.click('.ws-run.ws-open [data-action="run-link"]');
       await p.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'open_source' && d.kind === 'automation_run' && d.link === 0));
       await noOverflow(p, 'run log');
@@ -3037,9 +3734,78 @@ for (const theme of ['dark', 'light']) {
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
 await meetingChecks({ open, check, assert, shot, settled, OUT });
 
+// Meetings view (Task 7, spec 2026-11-23-meetings-view-design.md), V1–V11: the one meeting
+// section in both views, both themes and three widths, panes and old links, the action items
+// column, pins that vanish, the stored v1 layout, a plugin's minutes rendered safely, Default/
+// Compact markup parity, and nothing sent or written without a click.
+await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// The task provider (task provider design, Task 11), P1–P12: both views and both themes across
+// three widths, Settings › Tasks's copy dialog and token (never leaked to the DOM, storage or a
+// later request — the frame/IPC boundary of spec §8 is native, src-tauri/src/plugins/caller.rs),
+// Late ⋯ over exactly the tasks shown, a check-in row's Nudge and Snooze, Looks handled's Keep
+// open, the meeting column singular wording, Today's widget filtered to the active provider, every
+// state's banner or header line, a real parked sentence, switching back to Local, Default/Compact
+// parity, nothing written by rendering, and Local untouched with no taskProvider at all.
+await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// The habit templates and the create-tasks delivery (2026-11-24-create-tasks-templates), A1–A9:
+// the Templates gallery and the editor's Tasks switch across both views/themes/widths, the
+// backend's "no message" refusal shown inline, the Formal summary editor, the budget template's
+// From field, a triage run's made tasks and a summary run's meeting link, Today's "Made N tasks"
+// line, Default/Compact editor parity, and nothing written or sent by rendering alone.
+await automationsChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// The Menu bar card (Settings › Notifications), seen marks and menu-row routing (2026-11-24
+// menu-bar-count), M1–M8: the card across both views/themes/three widths, the Tasks switch's
+// settings_update and a forced refusal, the amber "Needs fixing" row and its Fix button, "Nothing
+// is counted.", menu_bar_seen marks sent on open (never twice, never unfocused), notification-open
+// routing, Default/Compact parity, and nothing written by rendering alone. Plus two carried review
+// findings: a persistent `storage` refusal with two marks due at once sends at most 2 in 1 s
+// (Task 6 review I1), and the card lists every fix with no cap (Task 5 review).
+await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Profiles and models (2026-11-24-profiles-models), R1–R8: Settings › AI's profile cards and
+// "What each job uses" table across both views/themes/three widths, the working/fallback/broken/
+// unset statuses (a missing profile shown as "not ready"), exactly one save per fallback or
+// plugin-row change with the chip tracking the answer's `chosen`, a kept model while Ollama is
+// down, the first-use chooser's Ollama line, the automation editor's row-aware label and a
+// fallback run's "Ran on …" line, Default/Compact parity, and no `ai_test` from drawing or Check
+// again.
+await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Reply in the user's voice (spec docs/superpowers/specs/2026-11-25-reply-voice-design.md), V1–V13:
+// Settings › Your voice in both views/themes/three widths, every provider state's line, the style
+// card and instruction edits, the provider radio and facts, Refresh and Delete Connect's copy, a
+// draft's voice and facts provenance, the role's sheet line, Default/Compact parity, nothing sent
+// or stored by drawing, and the skill import's pick, preview, Shorten with AI, save and layout.
+await voiceChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Ask and quick capture (spec docs/superpowers/specs/2026-11-26-ask-capture-design.md), Q1–Q11:
+// the Ask page in both views/themes/three widths, the field and its About chip, ⌘K and where it
+// does nothing, a question answered by the job and a follow-up, every state, the actions,
+// history, quick capture with every when-cases.json text, Settings, parity and nothing sent by
+// rendering.
+await askChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// By date (task provider design §9): completions with the footer's Undo, the row controls, one
+// primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
+await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
 // Flexible layout (spec docs/superpowers/specs/2026-11-19-flexible-layout-design.md, E1–E8): Today
 // arranged by pen, mouse, touch and keys, saved layouts, page sections, the folding menus.
 await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
+
+// Compact view (spec docs/superpowers/specs/2026-11-22-compact-view-design.md): C0, Default's
+// computed sizes on ten screens match the committed baseline.
+await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Reply (spec docs/superpowers/specs/2026-11-22-reply-design.md): R1–R12 — the three-control
+// action line in both views/themes/widths, the ✦ link and change line, Draft options, Teams
+// sends on the click (and once on a double click or a re-render), sending not allowed, the mail
+// confirm with Return never confirming it, the ⌘↩ gate, nothing sent without a click, autosave,
+// Today, a critical item's bar and Default/Compact parity.
+await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
@@ -3071,6 +3837,31 @@ for (const width of [1000, 1680]) {
     await shot(page, `light-settings-claude-${width}`);
   });
   await context.close().catch(() => {});
+}
+// Settings › AI's job rows: a table when the card is wide, two lines per job when it is not; never sideways.
+for (const view of ['default', 'compact']) {
+  for (const width of [1000, 1440, 1680]) {
+    const { page, context } = await open({ theme: 'light', width, height: 900, settings: view === 'compact' ? { view: 'compact' } : null, hash: '#/settings/ai' });
+    await check(`layout ${width}px ${view}: Settings › AI job rows fit`, async () => {
+      await page.waitForSelector('[data-ai-route-row="mail_draft"]');
+      await page.waitForTimeout(300);
+      await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+      const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
+      assert(overflow <= 0, `Settings › AI overflows by ${overflow}px`);
+      await shot(page, `light-settings-ai-routes-${view}-${width}`);
+      if (width !== 1680) return;
+      // Even with the Settings menu folded to its rail the panel caps the card below the table's
+      // width, so every job stays two lines: the table head is never shown at these sizes.
+      await page.click('[data-action="settings-menu-toggle"]');
+      await page.waitForTimeout(300);
+      await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+      assert(!(await page.locator('.ws-ai-table thead').isVisible()), 'the job rows are two lines in the widest card');
+      const wide = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
+      assert(wide <= 0, `the table overflows by ${wide}px`);
+      await shot(page, `light-settings-ai-routes-${view}-${width}-rail`);
+    });
+    await context.close().catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------- Settings → CodeMie
@@ -3196,6 +3987,10 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator('select[name=ai-default] option[value="codemie:prod"]').count() === 0, 'routing offers the signed-out profile');
       assert(await fits(page) <= 0, 'the Claude tab overflows');
       await shot(page, `${theme}-merge-claude-expired-${width}`);
+      // Its rows agree with its card: Summaries runs on prod with no fallback, so it is Not working.
+      assert(/Not working/i.test(await text(page, '[data-ai-route-row="summary"]')), 'the summary row on the signed-out profile');
+      await page.evaluate(() => document.querySelector('[data-ai-route-row="summary"]').scrollIntoView({ block: 'center' }));
+      await shot(page, `${theme}-merge-claude-expired-rows-${width}`);
       await page.click(`${aiCard('codemie:prod')} button[data-action=cm-profile-login][data-id=prod]`);
       await page.waitForSelector('.ws-toast:has-text("Signed in again to “prod”")', { timeout: 6000 });
       await page.waitForSelector(`${aiCard('codemie:prod')} .ws-badge-success`);

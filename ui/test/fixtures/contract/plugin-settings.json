@@ -1,0 +1,45 @@
+{
+  "addresses": [],
+  "agreed": [
+    "network",
+    "provides_tasks"
+  ],
+  "client": null,
+  "commit": null,
+  "enabled": true,
+  "hash": "cc1248739331f40a1d9cc6057db67274ca4c92be8ac8144f517c01edbd3e07e8",
+  "id": "todoist",
+  "installedAt": "2026-11-17T09:30:00Z",
+  "market": "local",
+  "name": "Todoist",
+  "problem": null,
+  "settings": [
+    {
+      "help": "Todoist › Settings › Integrations › Developer",
+      "key": "token",
+      "label": "API token",
+      "set": true,
+      "type": "secret"
+    },
+    {
+      "help": null,
+      "key": "project",
+      "label": "Project",
+      "type": "string",
+      "value": "Connect"
+    },
+    {
+      "help": null,
+      "key": "label",
+      "label": "App label",
+      "type": "string",
+      "value": "connect"
+    }
+  ],
+  "signin": [],
+  "source": "/Users/qa/Plugins/acme-market",
+  "summary": "Keeps Connect's tasks in your Todoist",
+  "update": null,
+  "version": "1.0.0",
+  "widgets": []
+}

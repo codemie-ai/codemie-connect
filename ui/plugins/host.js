@@ -134,7 +134,7 @@ export function createPluginHost({
     const rec = {
       id: p.id, name: String(p.name || p.id), version: String(p.version || ''), client: String(p.client), key: keyOf(p),
       el: null, port: null, contrib: EMPTY, calls: new Map(), nextId: 1, height: 0, error: '', errors: [], ready: false, shown: false,
-      paletteAt: 0, generation: 0, slots: null, sheet: false,
+      paletteAt: 0, generation: 0, slots: null, sheet: false, minutesSlot: false,
       storage: Promise.resolve(invoke('plugins_request', { op: 'client_storage', data: { id: p.id } }))
         .then(r => (r && r.items && typeof r.items === 'object' ? r.items : {}), () => ({})),
       // Its own phrases that name Echo, which its frame says in Connect's words.
@@ -167,9 +167,11 @@ export function createPluginHost({
     closePort(rec);
     rec.contrib = EMPTY;
     rec.ready = false;
+    rec.el?.removeAttribute?.('data-plugin-ready');
     rec.error = '';
     rec.slots = null;
     rec.sheet = false;
+    rec.minutesSlot = false;
     const storage = await rec.storage;
     const phrases = await rec.phrases;
     if (generation !== rec.generation || frames.get(rec.id) !== rec || !rec.el?.contentWindow) return;
@@ -285,7 +287,12 @@ export function createPluginHost({
 
   function event(rec, m) {
     switch (m.type) {
-      case 'ready': rec.ready = true; rec.error = ''; return onChange();
+      case 'ready':
+        rec.ready = true;
+        rec.error = '';
+        // On the element too, so a page check (the real-app tour's) can see the frame is up.
+        rec.el?.setAttribute?.('data-plugin-ready', '');
+        return onChange();
       case 'error':
         rec.error = m.message;
         if (rec.errors.length < MAX_ERRORS && !rec.errors.includes(m.message)) rec.errors.push(m.message);
@@ -312,6 +319,9 @@ export function createPluginHost({
         return;
       }
       case 'slots': {
+        // Whether its client declared `call.minutes` at all (Task 6's pinned summary tabs),
+        // regardless of which meeting (if any) the window shows now.
+        rec.minutesSlot = !!m.minutesSlot;
         // The text of its call slots, for the meeting the window shows now only.
         if (m.call !== (call?.name || '')) return;
         const had = JSON.stringify(rec.slots);
@@ -495,6 +505,9 @@ export function createPluginHost({
     activities: () => list('activities'),
     /** Their Settings sections: [{plugin, pluginName, id, label, badge}]. */
     sections: () => list('sections'),
+    /** The plugins installed and on whose client declared `call.minutes` (the meetings page's
+     *  pinned summary tabs, and Settings' "Pin a summary" list): [{id, name}]. */
+    minutesPlugins: () => [...frames.values()].filter(rec => rec.minutesSlot).map(rec => ({ id: rec.id, name: rec.name })),
     /** What one plugin's frame has: {loaded, ready, error (the last), errors (each page error it
      *  reported), height, card, sections, palette, widgets, activities}. */
     status(id) {

@@ -34,7 +34,7 @@ fn matches(q: &[String], text: &str) -> bool {
 
 impl Core {
     /// The signed-in account plugins read through, or "isn't connected".
-    fn plugin_connection(&self) -> Result<Connection> {
+    pub(super) fn plugin_connection(&self) -> Result<Connection> {
         let r = self.repo()?;
         let id = r.settings()?.active_connection.ok_or_else(not_connected)?;
         let c = r.connection(&id).map_err(|_| not_connected())?;

@@ -4,8 +4,9 @@
 /** A record's key, as native keys its change log: kind, id and scope. */
 export const recordKey = r => `${r.kind}|${r.id}|${r.connectionId ?? ''}|${r.workspaceId ?? ''}`;
 
-/** The parts of a snapshot every delta carries whole. */
-const WHOLE = ['settings', 'workspaces', 'connection', 'available', 'meetingsRoot', 'noteTemplates'];
+/** The parts of a snapshot every delta carries whole (the last four filled by native from their
+ *  own stores: the task provider, the menu bar's count, the reply voice and Ask's threads). */
+const WHOLE = ['settings', 'workspaces', 'connection', 'available', 'meetingsRoot', 'noteTemplates', 'taskProvider', 'menuBar', 'replyVoice', 'ask'];
 
 /** The snapshot's order: local records, then automation runs, then the account's; each newest
  *  first (repository.rs `visible_where`). */

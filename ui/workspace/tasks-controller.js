@@ -8,10 +8,13 @@
 // the click; a toast follows native's answer (a step that failed never shows a success), and a
 // refused change comes back with its error.
 import {
-  COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
+  COLUMNS, DEFAULT_FILTERS, activeProvider, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
 } from './tasks-model.js';
-import { field, select, textArea, textInput } from './ui.js';
-import { formatDate } from './format.js';
+import { button, field, select, textArea, textInput } from './ui.js';
+import { dateFromKey, formatDate } from './format.js';
+import { dateGroups, datesTasks, dayFor, rowOf, shownView } from './tasks-dates-model.js';
+import { escapeHtml } from './store.js';
+import { copyDialog } from './settings-tasks.js';
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const short = text => (String(text).length > 40 ? `${String(text).slice(0, 40)}…` : String(text));
@@ -20,17 +23,28 @@ export const quoted = value => String(value).replace(/["\\]/g, '\\$&');
 /** Below this gap between two neighbours a dropped card gets no order of its own (orders near
  *  1.8e9 have about 2^-21 of room), so the column is renumbered first. */
 const MIN_GAP = 1e-3;
+/** Native's `task_bulk` takes at most this many tasks a write. */
+const BULK_MAX = 200;
 
 /**
  * `state.tasks` is the page's view state (`newTasksView()`); `snap()` the current snapshot;
  * `mutate(op, data)` a fenced write that re-renders; `render()` a re-render; `openModal` and `toast`
  * (`toast(message, tone, {label, run})`) the dialogs; `openMeeting(id, tab, line)` and
  * `openMessage(id)` navigation; `focus(selectors)` moves focus after a render to the first of the
- * selectors (a string or a list) that finds a control; `setPref` remembers the board/list choice.
+ * selectors (a string or a list) that finds a control; `setPref` remembers Local's view choice.
+ * By date: `openReply(messageId, text)` opens a conversation in Inbox with its reply box filled
+ * (nothing is sent), `openLink(url, providerName, pluginId)` opens a provider's link through
+ * Connect's link confirmation (Settings › Tasks's token link), `query(op, data)` a read-only
+ * native request (Sync now, and `open_source` for Open in Todoist ↗).
+ * Settings › Tasks: `pluginRequest(op, data)` is `plugins_request` (`set_setting`, `set_enabled`);
+ * `refreshInstalled()` re-reads the installed list after one, so the token's "set" state and the
+ * string settings' values follow; `installed()` is that list (Task 2's `installed[].settings`).
  */
 export function createTasksController({
   state, snap, mutate, render, openModal = () => null, toast = () => {}, openMeeting = () => {}, openMessage = () => {},
   focus = () => {}, setPref = () => {}, now = () => Date.now(),
+  openReply = () => {}, openLink = () => {}, query = async () => null,
+  pluginRequest = async () => null, refreshInstalled = async () => {}, installed = () => [],
 }) {
   const ui = () => state.tasks;
   const find = id => tasksOf(snap()).find(r => r.id === id);
@@ -161,7 +175,8 @@ export function createTasksController({
 
   /** Every card of To review to To do: queued together, each shown at once at the end of To do. */
   async function acceptAll() {
-    const list = shown('review');
+    // By date shows every task to review (it has no filters).
+    const list = shownView(ui(), snap()) === 'dates' ? groups().review : shown('review');
     await Promise.all(list.map(t => move(t.id, 'todo', { log: 'Accepted from review' })));
     if (list.length) toast(`${plural(list.length, 'task')} accepted. They’re on your board.`, 'success');
   }
@@ -171,13 +186,30 @@ export function createTasksController({
     const t = find(id);
     if (!t) throw missing();
     const from = taskStatus(t);
+    // By date's done box finishes as every By date completion does.
+    if (el.type === 'checkbox' && el.checked && el.closest?.('.ws-tdate')) return finish(id, () => move(id, 'done'));
     if (el.type === 'checkbox') return move(id, el.checked ? 'done' : from === 'done' ? 'todo' : from);
     await move(id, 'done');
     toast(`Done: “${short(t.data.text)}”`, 'success', { label: 'Undo', run: () => move(id, from) });
     return undefined;
   }
 
-  async function remove(id) {
+  /** Delete, with Undo saving the body back. With a provider it asks first (ruling 17): the
+   *  delete reaches the provider, and Undo makes the task there again as a new one. */
+  function remove(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const s = snap();
+    if (activeProvider(s) === 'local') return removeNow(id);
+    const name = s.taskProvider?.name || 'your task app';
+    return openModal({
+      title: 'Delete this task?', size: 'sm', submit: 'Delete', variant: 'danger', initialFocus: 'cancel',
+      body: `<p class="ws-modal-text">Delete “${escapeHtml(t.data.text)}” in ${escapeHtml(name)} too? Undo makes it again as a new task.</p>`,
+      onSubmit: () => removeNow(id),
+    });
+  }
+
+  async function removeNow(id) {
     const t = find(id);
     if (!t) throw missing();
     const landing = landingAfter(id);
@@ -247,16 +279,284 @@ export function createTasksController({
     });
   }
 
+  // ---------------------------------------------------------------- By date (design §9)
+
+  /** By date's groups over the tasks it shows: one meeting's while its chip is on. */
+  const groups = () => dateGroups(datesTasks(tasksOf(snap()), ui().filters), { now: now(), zone: zone(), me: me() });
+  const dayLabel = key => formatDate(dateFromKey(key), undefined, { month: 'short', day: 'numeric' });
+
+  /** Asks for a day (Pick date…), then runs `save(day)`. */
+  function pickDate(title, save) {
+    return openModal({
+      title, size: 'sm', submit: 'Move',
+      body: field('Date', textInput({ name: 'due', type: 'date', required: true })),
+      onSubmit: async f => {
+        const day = String(f.get('due') || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Choose a date.');
+        await save(day);
+      },
+    });
+  }
+
+  /** By date's footer: the last action, with Undo sending `undo` back (the active provider's). */
+  const setFooter = (text, undo) => { ui().footer = { text, undo, provider: activeProvider(snap()) }; };
+
+  /** `task_bulk` over `items`, at most 200 a write (native's limit): `{done, failed, before}`. */
+  async function bulk(items) {
+    const all = { done: 0, failed: 0, before: [] };
+    for (let i = 0; i < items.length; i += BULK_MAX) {
+      const answer = await mutate('task_bulk', { items: items.slice(i, i + BULK_MAX) });
+      all.done += Number(answer?.done) || 0;
+      all.failed += Number(answer?.failed) || 0;
+      if (Array.isArray(answer?.before)) all.before.push(...answer.before);
+    }
+    return all;
+  }
+
+  /** A By date completion (the done box, Looks handled › Done): the row leaves and the footer
+   *  says "Marked 1 done · Undo", Undo putting back its date and status. */
+  async function finish(id, write) {
+    const t = find(id);
+    if (!t) throw missing();
+    const before = { id, due: t.data.due ?? null, status: taskStatus(t) };
+    if (ui().rowOpen === id) ui().rowOpen = null;
+    await write();
+    setFooter('Marked 1 done', [before]);
+    return render();
+  }
+
+  /** The Late tasks the screen showed (the menu item's `data-ids`), else the Late tasks now. */
+  function shownLate(el) {
+    try {
+      const ids = JSON.parse(el.dataset?.ids || 'null');
+      if (Array.isArray(ids)) return ids.map(String);
+    } catch { /* drawn without ids */ }
+    return groups().late.map(r => r.id);
+  }
+
+  /** One Late ⋯ action over the tasks shown; the footer says what happened, with Undo. */
+  async function bulkLate(ids, item, say) {
+    if (!ids.length) return null;
+    const answer = await bulk(ids.map(id => ({ id, ...item })));
+    if (answer.done) setFooter(say(answer.done), answer.before);
+    else ui().footer = null;
+    if (answer.failed) toast(`${plural(answer.failed, 'task')} couldn’t be changed.`, 'error');
+    return render();
+  }
+
+  function moveLate(el) {
+    const ids = shownLate(el);
+    const to = el.dataset?.to;
+    if (to === 'pick') return pickDate('Move late tasks to', day => bulkLate(ids, { due: day }, n => `Moved ${n} to ${dayLabel(day)}`));
+    // The day the menu was drawn with: a page left open past midnight moves what it said.
+    const day = el.dataset?.day || dayFor(to, now(), zone());
+    if (!day || !['tomorrow', 'monday'].includes(to)) return null;
+    return bulkLate(ids, { due: day }, n => `Moved ${n} to ${to === 'monday' ? 'Monday' : 'Tomorrow'}`);
+  }
+
+  /** The footer's Undo; it stays (to try again) until the write went through. */
+  async function undoLast() {
+    const f = ui().footer;
+    if (!f?.undo?.length) return null;
+    await bulk(f.undo);
+    ui().footer = null;
+    return render();
+  }
+
+  /** Nudge: the source conversation in Inbox, its reply box holding a plain line. Only for a
+   *  check-in row whose source is a synced mail thread or Teams chat; nothing is sent. */
+  function nudge(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const row = rowOf(t, { me: me(), s: snap(), now: now(), zone: zone() });
+    if (!row.nudge || !row.checkWith) return null;
+    const what = row.text.trim().replace(/[.!?]+$/, '');
+    return openReply(row.source.id, `Hi ${row.checkWith.first}, any news on ${what}?`);
+  }
+
+  /** Open in Todoist ↗: the task's own link, opened by Connect (`open_source`, which reads it
+   *  from the stored task and checks its host again), not a plugin's link confirmation. */
+  function openRemote(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const row = rowOf(t, { me: me(), s: snap(), now: now(), zone: zone() });
+    if (!row.url) return null;
+    return query('open_source', { kind: 'task', id });
+  }
+
+  // ---------------------------------------------------------------- Settings › Tasks (design §11)
+
+  /** To do, In progress or Waiting (not To review, done or dismissed): what a copy sends
+   *  (`tasks.rs`'s own `is_open`, narrower than the "Whose tasks" filter's `OPEN`). */
+  const COPYABLE = ['todo', 'doing', 'waiting'];
+  /** The open Local tasks (whatever the active provider is): the copy dialog's count. */
+  const localOpenCount = () => tasksOf({ ...snap(), taskProvider: undefined }).filter(r => COPYABLE.includes(taskStatus(r))).length;
+  const providerOf = id => snap().taskProvider?.available?.find(a => a.id === id);
+  const pluginIdOf = id => String(id).replace(/^plugin:/, '');
+  const settingOf = (pluginId, key) => (installed().find(x => x.id === pluginId)?.settings || []).find(s => s.key === key);
+
+  /** A stale Check answer belongs to the provider and the token it was asked of; a switch or a
+   *  token change starts the card without one again. */
+  const clearCheck = () => { ui().provider.check = null; };
+
+  /** The copy dialog (ruling 16): shown once, the first time `id` is chosen while Local has open
+   *  tasks (`settings.tasks.copyOffered` names every provider already offered, design §13). Its
+   *  own two buttons send the one `task_provider_set` that switches, with `copy` either way. */
+  function copyThenSwitch(id, count) {
+    const name = providerOf(id)?.name || 'it';
+    const project = settingOf(pluginIdOf(id), 'project')?.value || name;
+    const decide = (label, decision, variant) => button(label, { type: 'submit', variant, attrs: { name: 'decision', value: decision } });
+    return openModal({
+      title: `Copy your open tasks to ${name}?`, size: 'sm', submit: '', cancel: '',
+      body: `${copyDialog({ count, project })}<div class="ws-modal-footer" style="padding:0"><span class="ws-spacer"></span>${decide('Not now', 'skip', 'secondary')}${decide(`Copy ${plural(count, 'task')}`, 'copy', 'primary')}</div>`,
+      onSubmit: f => {
+        clearCheck();
+        return mutate('task_provider_set', { provider: id, copy: f.get('decision') === 'copy' });
+      },
+    });
+  }
+
+  /** `tasks-provider-choose`: switches at once, unless this is the first time `id` is chosen
+   *  while Local has open tasks, which asks first (`copyThenSwitch`). Choosing Local again, or a
+   *  provider already offered, needs no dialog (ruling 16). */
+  function chooseProvider(id) {
+    const s = snap();
+    if (id === activeProvider(s)) return null;
+    if (id !== 'local') {
+      const offered = (s.settings?.tasks?.copyOffered || []).includes(id);
+      const count = localOpenCount();
+      if (!offered && count > 0) return copyThenSwitch(id, count);
+    }
+    clearCheck();
+    return mutate('task_provider_set', { provider: id });
+  }
+
+  /** `tasks-provider-turn-on`: `set_enabled` for the plugin behind the radio that reads "Turned
+   *  off in Settings › Plugins". A sheet that changed is left to Settings › Plugins to review. */
+  async function turnOnProvider(id) {
+    const v = ui().provider;
+    v.busy = { ...v.busy, [id]: true };
+    await render();
+    try {
+      const answer = await pluginRequest('set_enabled', { id: pluginIdOf(id), enabled: true });
+      if (answer?.status === 'needs_consent') toast('Its permissions changed. Turn it on from Settings › Plugins to review them.', 'info');
+      else await refreshInstalled();
+    } finally {
+      delete v.busy[id];
+      await render();
+    }
+  }
+
+  /** `tasks-provider-check`: the active plugin's `status` (design §11 "Check"). */
+  async function checkProvider() {
+    const v = ui().provider;
+    v.checking = true;
+    await render();
+    try {
+      const answer = await query('task_provider_check', {});
+      v.check = { ok: true, account: answer?.account, project: answer?.project, message: answer?.message };
+    } catch (err) {
+      v.check = { ok: false, message: err?.message || String(err) };
+    } finally {
+      v.checking = false;
+      await render();
+    }
+  }
+
+  /** The secret field's wrapper an action button sits in (its password input is a sibling). */
+  const secretWrapOf = el => el.closest('[data-provider-secret]');
+
+  /** `tasks-provider-secret-save`: reads the field, sends `set_setting`, and clears it at once
+   *  (ruling 2: the token is never kept in the window). */
+  async function saveSecret(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    const input = secretWrapOf(el)?.querySelector('input[type=password]');
+    const value = input?.value ?? '';
+    if (input) input.value = '';
+    const v = ui().provider;
+    v.savingSecret = true;
+    await render();
+    try {
+      await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value });
+      clearCheck();
+      await refreshInstalled();
+    } finally {
+      v.savingSecret = false;
+      await render();
+    }
+  }
+
+  /** `tasks-provider-secret-remove`: the same `set_setting`, with an empty value. */
+  async function removeSecret(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value: '' });
+    clearCheck();
+    return refreshInstalled().then(render);
+  }
+
+  /** `tasks-provider-setting`: a string setting (Project, App label), on change. */
+  async function saveProviderSetting(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value: el.value });
+    return refreshInstalled().then(render);
+  }
+
+  /** The quiet "Copy open tasks from Connect…" link (ruling 16): no dialog, a key already copied
+   *  makes nothing new. */
+  async function copyQuietly() {
+    const id = activeProvider(snap());
+    const name = providerOf(id)?.name || 'it';
+    const answer = await mutate('task_provider_set', { provider: id, copy: true });
+    const n = Number(answer?.copied) || 0;
+    return toast(n ? `Copied ${plural(n, 'task')} to ${name}.` : `Nothing new to copy to ${name}.`, 'success');
+  }
+
   /** The `task-*` and `tasks-*` actions; `el` is the control (its dataset, value, checked). */
   async function handle(action, el) {
     const id = el.dataset?.id;
     el.closest?.('details')?.removeAttribute('open');
     const v = ui();
+    // The footer's Undo belongs to the provider it was made with.
+    if (v.footer && v.footer.provider !== activeProvider(snap())) v.footer = null;
     switch (action) {
-      case 'tasks-view':
-        v.view = el.dataset.view === 'list' ? 'list' : 'board';
-        setPref('codemie.tasks.view', v.view);
+      case 'tasks-view': {
+        // Local remembers its choice; a provider's lasts this session (By date first, no Board).
+        const view = ['board', 'list', 'dates'].includes(el.dataset.view) ? el.dataset.view : 'board';
+        if (activeProvider(snap()) === 'local') {
+          v.view = view;
+          setPref('codemie.tasks.view', v.view);
+        } else if (view !== 'board') v.providerView = view;
         return render();
+      }
+      case 'tasks-fold': v.folds = { ...v.folds, [el.dataset.fold]: !v.folds?.[el.dataset.fold] }; return render();
+      case 'task-row-open': v.rowOpen = v.rowOpen === id ? null : id; return render();
+      case 'task-snooze': return mutate('task_save', { id, due: el.dataset.value || null });
+      case 'task-pick-date': {
+        const t = find(id);
+        if (!t) throw missing();
+        return pickDate(`Move “${short(t.data.text)}” to`, day => mutate('task_save', { id, due: day }));
+      }
+      case 'tasks-late-move': return moveLate(el);
+      case 'tasks-late-done': return bulkLate(shownLate(el), { status: 'done' }, n => `Marked ${n} done`);
+      case 'tasks-undo': return undoLast();
+      case 'task-handled':
+        if (el.dataset.act === 'done') return finish(id, () => mutate('task_handled', { id, action: 'done' }));
+        return mutate('task_handled', { id, action: 'keep' });
+      case 'task-parked': return mutate('task_parked', { id, action: el.dataset.act === 'discard' ? 'discard' : 'retry' });
+      case 'task-nudge': return nudge(id);
+      case 'task-open-remote': return openRemote(id);
+      case 'tasks-sync': return query('task_sync_now', { full: true });
+      case 'tasks-meeting-clear': v.filters = { ...v.filters, meeting: '' }; return render();
+      // Settings › Tasks (design §11).
+      case 'tasks-provider-choose': return chooseProvider(el.dataset.provider);
+      case 'tasks-provider-turn-on': return turnOnProvider(el.dataset.provider);
+      case 'tasks-provider-check': return checkProvider();
+      case 'tasks-provider-sync': return query('task_sync_now', { full: true });
+      case 'tasks-provider-copy': return copyQuietly();
+      case 'tasks-provider-secret-save': return saveSecret(el);
+      case 'tasks-provider-secret-remove': return removeSecret(el);
+      case 'tasks-provider-setting': return saveProviderSetting(el);
+      case 'tasks-provider-token-link': return openLink(el.dataset.url, el.dataset.name, el.dataset.pluginId);
       case 'tasks-who': v.filters.who = el.dataset.who || 'all'; return render();
       case 'tasks-filter': v.filters[el.dataset.filter] = el.value; return render();
       case 'tasks-clear': v.filters = { ...DEFAULT_FILTERS }; return render();
@@ -308,7 +608,7 @@ export function createTasksController({
         if (!t) throw missing();
         return openMeeting(t.data.meetingId, 'transcript', t.data.line ?? null);
       }
-      case 'task-open-meeting': return openMeeting(id, 'notes', null);
+      case 'task-open-meeting': return openMeeting(id);
       case 'task-open-message': return openMessage(id);
       case 'task-quick':
         v.quickAdd = el.dataset.col;

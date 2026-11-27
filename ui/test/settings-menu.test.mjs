@@ -1,8 +1,9 @@
 // The Settings menu: groups that fold, the menu shrunk to icons, Find a setting, and the Layout page.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { settings, SETTINGS_TABS } from '../workspace/view-settings.js';
+import { settings, SETTINGS_TABS, SETTINGS_GROUPS, settingsTabFor } from '../workspace/view-settings.js';
 import { layoutPanel } from '../workspace/settings-layout.js';
+import { NAV } from '../workspace/shell.js';
 import { PRESETS } from '../workspace/today-grid.js';
 import { normalizeDock } from '../workspace/dock-model.js';
 import { INBOX_DOCK } from '../workspace/view-inbox.js';
@@ -20,7 +21,7 @@ const drawn = (html, id) => new RegExp(`data-action="settings-tab" data-tab="${i
 test('a folded group hides its items but keeps the current one, with its count', () => {
   const html = page('meetings-templates', { folded: ['Meetings'] });
   assert.match(group(html, 'Meetings'), /aria-expanded="false"/);
-  assert.match(group(html, 'Meetings'), /<small class="ws-count">5<\/small>/);
+  assert.match(group(html, 'Meetings'), /<small class="ws-count">4<\/small>/);
   assert.ok(drawn(html, 'meetings-templates'), 'the current page stays');
   assert.ok(!drawn(html, 'meetings-rules'), 'the others fold away');
   assert.ok(drawn(html, 'general'), 'other groups stay open');
@@ -82,10 +83,35 @@ test('the menu edge is a separator with its width and a toggle button names the 
   assert.match(html, /data-action="settings-menu-toggle"[^>]*⌘⇧\\/);
 });
 
+test('Appearance shows the View card with Compact and Default', () => {
+  const compact = { ...s, settings: { ...s.settings, view: 'compact' } };
+  const html = settings(compact, { state: { settingsTab: 'appearance' }, auth: {}, now: NOW, menu: menu() });
+  assert.match(html, /<h2 class="ws-card-title">[^]*?View<\/h2>/);
+  assert.match(html, /data-action="view-set" data-view="compact" aria-selected="true">Compact/);
+  assert.match(html, /data-action="view-set" data-view="default" aria-selected="false">Default/);
+  assert.match(html, /Compact uses smaller text and opens messages in place\./);
+});
+
 test('Layout is the tab after Appearance', () => {
   const ids = SETTINGS_TABS.map(t => t[1]);
   assert.equal(ids[ids.indexOf('appearance') + 1], 'layout');
   assert.deepEqual(SETTINGS_TABS[ids.indexOf('layout')], ['', 'layout', 'Layout', 'layout']);
+});
+
+test('the Tasks tab sits in the Workspace group after Notifications; #/settings/meetings-tasks still opens it', () => {
+  const ids = SETTINGS_TABS.map(t => t[1]);
+  assert.equal(ids[ids.indexOf('notifications') + 1], 'meetings-tasks', 'right after Notifications');
+  // The id (and so its links) is unchanged.
+  assert.deepEqual(SETTINGS_TABS[ids.indexOf('meetings-tasks')], ['', 'meetings-tasks', 'Tasks', 'tasks']);
+  assert.equal(settingsTabFor('meetings-tasks'), 'meetings-tasks');
+  const workspace = SETTINGS_GROUPS.find(g => g.name === 'Workspace');
+  assert.ok(workspace.items.some(([id]) => id === 'meetings-tasks'), 'now in the Workspace group');
+  const meetingsGroup = SETTINGS_GROUPS.find(g => g.name === 'Meetings');
+  assert.ok(!meetingsGroup.items.some(([id]) => id === 'meetings-tasks'), 'no longer in the Meetings group');
+  // The panel draws "Where your tasks live" first, its own content unchanged below it.
+  const html = page('meetings-tasks');
+  assert.match(html, /<h2[^>]*>Tasks<\/h2>/);
+  assert.ok(html.indexOf('Where your tasks live') < html.indexOf('Tasks from notes'), 'drawn first');
 });
 
 // ---------------------------------------------------------------- Settings → Layout
@@ -134,8 +160,56 @@ test('Settings → Layout shows the preferences and the shortcuts', () => {
   assert.match(off, /⌘⇧\\/);
 });
 
+test('Settings → Layout: the Menu card sits above Side menus with one switch per page; the last one is kept', () => {
+  const hiddenPages = NAV.map(([id]) => id).filter(id => id !== 'inbox');
+  const withHiddenPages = { ...s, settings: { ...s.settings, hiddenPages } };
+  const html = layoutPanel(withHiddenPages, sample());
+  assert.ok(html.indexOf('>Menu</h2>') < html.indexOf('>Side menus</h2>'));
+  assert.equal([...html.matchAll(/data-action="menu-page"/g)].length, 7);
+  assert.match(html, /Hidden pages leave the menu\. Links and notifications still open them\./);
+  assert.match(html, /<span title="Keep one page in the menu\.">[^]*?data-page="inbox"[^>]*disabled/);
+});
+
+test('Settings → Layout: "Ask in the menu" is on by default; turning it off sends settings_update {askInMenu:false}', () => {
+  // The panel only draws the switch; app.js's generic `setting-toggle` action (ai-settings.test.mjs
+  // and settings-menu.test.mjs cover the draw, the browser's layout-checks.mjs the actual mutate
+  // and the field hiding, Task 9's interface) sends `settings_update {[data-key]: checked}`.
+  const on = layoutPanel(s, sample());
+  assert.ok(on.indexOf('>Menu</h2>') < on.indexOf('Ask in the menu'), 'the switch is in the Menu card');
+  assert.match(on, /Ask in the menu/);
+  assert.match(on, /⌘K works either way\./);
+  assert.match(on, /<input[^>]*checked[^>]*data-action="setting-toggle"[^>]*data-key="askInMenu"[^>]*data-setting="askInMenu"/);
+  const off = layoutPanel({ ...s, settings: { ...s.settings, askInMenu: false } }, sample());
+  assert.doesNotMatch(off, /<input[^>]*checked[^>]*data-key="askInMenu"/);
+  assert.match(off, /<input[^>]*data-action="setting-toggle"[^>]*data-key="askInMenu"[^>]*data-setting="askInMenu"/);
+});
+
+test('Settings → Layout: the Keyboard shortcuts list gains the Ask shortcuts and keeps every existing line', () => {
+  const html = layoutPanel(s, sample());
+  for (const line of ['Collapse or expand the main menu', 'Shrink or expand the Settings menu', 'Undo or redo a change to Today while customizing', 'Move a focused widget or section header', 'Resize it', 'Keep only that group open']) {
+    assert.match(html, new RegExp(`<strong>${line}</strong>`), `kept: ${line}`);
+  }
+  assert.match(html, /<strong>Ask<\/strong>[^]*?<kbd class="ws-kbd">⌘K<\/kbd>/);
+  assert.match(html, /<strong>Quick capture<\/strong>[^]*?<kbd class="ws-kbd">⌘N<\/kbd>/);
+  assert.match(html, /<strong>Stop an answer<\/strong>[^]*?<kbd class="ws-kbd">⌘\.<\/kbd>/);
+});
+
 test('the Layout tab draws its panel in Settings', () => {
   const html = page('layout', {}, { layout: sample() });
   assert.match(html, /<h2>Layout<\/h2>/);
   assert.match(html, /Today layouts/);
+});
+
+test('Allow actions says a Teams reply goes on the click', () => {
+  const html = page('microsoft');
+  assert.match(html, /Connect reads only by default\. Turn on an action and Microsoft asks you to approve it once\. Nothing is sent without your click\./);
+  assert.match(html, /Send Outlook replies from Connect\. You see To, Cc and the subject before each one goes\./);
+  assert.match(html, /Send Teams replies from Connect when you click Send\. They go at once\./);
+  assert.doesNotMatch(html, /Every action is shown for review before anything is sent/);
+});
+
+test('General › AI reply drafts says nothing is sent without your click', () => {
+  const html = page('general');
+  assert.match(html, /Choose Claude Code or a CodeMie profile for drafts and summaries\. Nothing is sent without your click\./);
+  assert.doesNotMatch(html, /never sends without your review/);
 });

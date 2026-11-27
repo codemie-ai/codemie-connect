@@ -4,8 +4,11 @@
 //! - `status`: Connect boots as the user's own launch does (their data folder, unless
 //!   `CODEMIE_WORKSPACE_TEST_DIR` names another), waits for the workspace, the first sync and the
 //!   plugin manager, and reports what it found: the version, the Claude profiles and routes, the
-//!   data folder, the plugins and whether they loaded, the workspace's counts, what needs
-//!   attention and whether the CodeMie setup sheet would open (`ui/workspace/status-smoke.js`).
+//!   data folder, the plugins and whether they loaded, the workspace's counts, the voice copy's
+//!   counts and state (reply-voice design ruling 22: never its style, rule or people text), the
+//!   Ask route's state and its thread/turn counts (ask-capture design § 6: never a question or an
+//!   answer), what needs attention and whether the CodeMie setup sheet would open
+//!   (`ui/workspace/status-smoke.js`).
 //! - `live`: the same report, then the checks the owner approved, through the workspace ops the
 //!   UI uses: one AI draft (discarded), one thread summary (removed) and one Morning brief run.
 //!   Nothing is sent, posted or written to the calendar.
@@ -285,7 +288,40 @@ fn folder_change(app: &AppHandle, mode: &Mode) -> Value {
     out
 }
 
-/// What Rust knows: whether the workspace opened, the data folder, its rows, the plugins.
+/// The tray's menu-bar count, checked against a forced recount (ruling: the status smoke checks
+/// the tray, not just the workspace). Forces a refresh first (off the main thread: the caller
+/// runs this under `spawn_blocking`), then reads whether the tray with id `main` exists and the
+/// view it last applied. `None` title compares as `""`.
+pub(crate) fn menu_bar_facts(app: &AppHandle, core: &crate::workspace::Core) -> Value {
+    let computed = core.refresh_menu_bar_now().ok();
+    let tray = app.tray_by_id("main").is_some();
+    let applied = core.menu_bar.last();
+    let label_of = |title: &Option<String>| title.clone().unwrap_or_default();
+    // The label parses back to the raw count, except capped at 99 ("99+" never ran further).
+    let count_of = |label: &str| -> u64 {
+        match label {
+            "" => 0,
+            "99+" => 100,
+            n => n.parse().unwrap_or(0),
+        }
+    };
+    let applied = applied.map(|v| {
+        json!({
+            "title": label_of(&v.title),
+            "amber": v.amber,
+            "tooltipLength": v.tooltip.chars().count(),
+            "rows": v.rows.len(),
+        })
+    });
+    let computed = computed.map(|v| {
+        let label = label_of(&v.title);
+        json!({"count": count_of(&label), "label": label, "amber": v.amber})
+    });
+    json!({"tray": tray, "applied": applied, "computed": computed})
+}
+
+/// What Rust knows: whether the workspace opened, the data folder, its rows, the plugins, the
+/// menu-bar tray.
 fn facts(app: &AppHandle) -> Value {
     let state = app.state::<WorkspaceState>();
     let core = state.core.clone();
@@ -310,12 +346,62 @@ fn facts(app: &AppHandle) -> Value {
         }
         None => json!({"settled": core.is_none(), "running": false}),
     };
+    let menu_bar = core.as_ref().map(|c| menu_bar_facts(app, c));
+    let voice = core.as_ref().map(|c| voice_facts(c));
+    let ask = core.as_ref().map(|c| ask_facts(c));
     json!({
         "workspaceOpen": core.is_some(),
         "storage": storage,
         "location": location,
         "rows": rows,
         "plugins": plugins,
+        "menuBar": menu_bar,
+        "voice": voice,
+        "ask": ask,
+    })
+}
+
+/// The report's `voice` part (reply-voice design ruling 22, task 8): the snapshot's
+/// `replyVoice`, cut to counts and bools only — never the style, rule or people text it carries
+/// for Settings › Your voice and the composer.
+pub(crate) fn voice_facts(core: &crate::workspace::Core) -> Value {
+    let Ok(settings) = core.repo().and_then(|r| r.settings()) else {
+        return Value::Null;
+    };
+    let v = core.voice_snapshot(&settings);
+    json!({
+        "provider": v["provider"],
+        "state": v["state"],
+        "copy": v["copy"],
+        "people": v["people"].as_array().map_or(0, Vec::len),
+        "rules": v["rules"].as_array().map_or(0, Vec::len),
+        "style": v["style"].is_object(),
+        "facts": v["facts"]["on"],
+        "refreshedAt": v["refreshedAt"],
+    })
+}
+
+/// The report's `ask` part (ask-capture design § 6, task 8): the Ask route's state (task 7's
+/// `resolve_key`, never a profile id) and the thread and turn counts and whether a turn runs now
+/// (`ask::store::list`, task 4) — never a question, an answer or a context item.
+pub(crate) fn ask_facts(core: &crate::workspace::Core) -> Value {
+    use crate::workspace::ask::store::{self, TurnState};
+    let threads = core
+        .repo()
+        .ok()
+        .and_then(|r| store::list(&r).ok())
+        .unwrap_or_default();
+    let turns: usize = threads.iter().map(|t| t.turns.len()).sum();
+    let running = threads.iter().any(|t| {
+        t.turns
+            .iter()
+            .any(|turn| matches!(turn.state, TurnState::Queued | TurnState::Running))
+    });
+    json!({
+        "route": tauri::async_runtime::block_on(core.ask_route_state()),
+        "threads": threads.len(),
+        "turns": turns,
+        "running": running,
     })
 }
 
@@ -639,12 +725,14 @@ fn ai_summary(status: &Value) -> Value {
                 "id": p["id"],
                 "type": p["kind"]["type"],
                 "label": p["label"],
+                "provider": p["provider"],
                 "state": p["state"],
                 "message": p["message"],
                 "version": p["version"],
                 "defaultModel": p["defaultModel"],
                 "models": p["models"].as_array().map_or(0, Vec::len),
                 "account": account,
+                "local": p["local"],
             })
         })
         .collect();
@@ -658,7 +746,30 @@ fn ai_summary(status: &Value) -> Value {
         "ready": ready,
         "defaultProfile": status["settings"]["defaultProfile"],
         "routes": status["settings"]["routes"],
+        "chosen": status["chosen"],
+        "ollama": ollama_facts(&profiles),
     })
+}
+
+/// Ollama facts for the smoke, from the profiles [`ai_summary`] already redacted of any
+/// `baseUrl`/`apiKey`: `probed` is whether a *local* Ollama profile was found (`local ==
+/// true`, ruling 10 — a remote Ollama is never probed and must not count, even though it
+/// also reports `state: "ready"`), `running` whether one of them answers, `models` the most
+/// models any of them offers.
+fn ollama_facts(profiles: &[Value]) -> Value {
+    let ollama: Vec<&Value> = profiles
+        .iter()
+        .filter(|p| p["provider"] == "ollama" && p["local"] == true)
+        .collect();
+    let running = ollama
+        .iter()
+        .any(|p| !matches!(p["state"].as_str(), Some("not_running" | "not_installed")));
+    let models = ollama
+        .iter()
+        .map(|p| p["models"].as_u64().unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    json!({"probed": !ollama.is_empty(), "running": running, "models": models})
 }
 
 pub struct Inputs<'a> {
@@ -708,6 +819,27 @@ fn build_report(i: Inputs) -> Value {
             .flatten()
             .map(|f| f.as_str().map_or_else(|| f.to_string(), String::from)),
     );
+    // menuBar is absent when the workspace never opened; present otherwise (facts always adds
+    // it once a Core exists). The tray must exist, and what it shows must match a forced count.
+    if let Some(menu_bar) = i.facts.get("menuBar").filter(|m| !m.is_null()) {
+        if menu_bar["tray"] != true {
+            failed.push("menuBar: no tray icon".into());
+        } else if menu_bar["computed"].is_null() {
+            // T4/M3: a compute error folds into `computed: null`, which must not be read as an
+            // empty, non-amber view that happens to match a quiet tray.
+            failed.push("menuBar: the count could not be computed".into());
+        } else {
+            let applied_title = menu_bar["applied"]["title"].as_str().unwrap_or_default();
+            let applied_amber = menu_bar["applied"]["amber"] == true;
+            let computed_label = menu_bar["computed"]["label"].as_str().unwrap_or_default();
+            let computed_amber = menu_bar["computed"]["amber"] == true;
+            if applied_title != computed_label || applied_amber != computed_amber {
+                failed.push(format!(
+                    "menuBar: the tray shows {applied_title} but the count is {computed_label}"
+                ));
+            }
+        }
+    }
     let report = json!({
         "mode": i.mode.name(),
         "runId": i.run.map(|r| &r.run_id),
@@ -720,6 +852,9 @@ fn build_report(i: Inputs) -> Value {
         "location": i.facts["location"],
         "rows": i.facts["rows"],
         "plugins": i.facts["plugins"],
+        "menuBar": i.facts["menuBar"],
+        "voice": i.facts["voice"],
+        "ask": i.facts["ask"],
         "ai": ai_summary(&i.ai),
         "window": window,
         "pass": failed.is_empty(),
@@ -884,6 +1019,75 @@ mod tests {
         assert_eq!(failed["error"], "Workspace storage is unavailable");
     }
 
+    #[test]
+    fn status_smoke_reports_rows_and_ollama_without_urls() {
+        let status = json!({
+            "profiles": [
+                {"id": "claude", "kind": {"type": "native"}, "label": "Claude Code · your subscription",
+                 "state": "ready", "version": "2.1.150", "message": null, "defaultModel": null,
+                 "models": [], "account": null},
+                {"id": "codemie:ol", "kind": {"type": "code_mie", "name": "ol"}, "label": "CodeMie \u{b7} ol",
+                 "provider": "ollama", "state": "not_running", "message": "Ollama isn't running.",
+                 "account": null, "defaultModel": "llama3.2", "models": [], "version": null,
+                 "local": true}
+            ],
+            "chosen": {
+                "default": {"profile": "claude", "model": null, "fallback": null, "group": null},
+                "triage": {"profile": "codemie:ol", "model": null, "fallback": "claude", "group": "automation"},
+                // A broken row: it names a profile nothing detected. Reporting it is not
+                // evaluating it, so it must not turn the smoke's own pass/fail.
+                "commitments": {"profile": "codemie:missing", "model": null, "fallback": null, "group": "automation"},
+            },
+            "settings": {"defaultProfile": "claude", "routes": {}},
+        });
+        let window = json!({"runId": "run-1", "failed": []});
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: facts(),
+            ai: status,
+            window,
+        });
+        assert_eq!(report["pass"], true, "{report:#}");
+        assert_eq!(report["failed"], json!([]));
+        assert_eq!(report["ai"]["chosen"]["triage"]["fallback"], "claude");
+        assert_eq!(report["ai"]["chosen"]["triage"]["profile"], "codemie:ol");
+        assert_eq!(
+            report["ai"]["chosen"]["commitments"]["profile"],
+            "codemie:missing"
+        );
+        assert_eq!(report["ai"]["profiles"][1]["provider"], "ollama");
+        assert_eq!(
+            report["ai"]["ollama"],
+            json!({"probed": true, "running": false, "models": 0})
+        );
+        let dump = report.to_string();
+        assert!(!dump.contains("http"), "{dump}");
+        assert!(!dump.contains("apiKey"), "{dump}");
+
+        // A remote Ollama (ruling 10: never probed, its own `ollama list` was never run)
+        // reports `state: "ready"` too, same as a working local one — only `local` tells them
+        // apart. It must not count as probed.
+        let remote = ai_summary(&json!({
+            "profiles": [
+                {"id": "codemie:remote-ol", "kind": {"type": "code_mie", "name": "remote-ol"},
+                 "label": "CodeMie \u{b7} remote-ol", "provider": "ollama", "state": "ready",
+                 "message": null, "account": null, "defaultModel": "llama3.2",
+                 "models": [{"id": "llama3.2:latest"}], "version": null, "local": false}
+            ],
+            "chosen": {},
+            "settings": {"defaultProfile": null, "routes": {}},
+        }));
+        assert_eq!(
+            remote["ollama"],
+            json!({"probed": false, "running": false, "models": 0})
+        );
+        let remote_dump = remote.to_string();
+        assert!(!remote_dump.contains("http"), "{remote_dump}");
+        assert!(!remote_dump.contains("example.test"), "{remote_dump}");
+    }
+
     fn facts() -> Value {
         json!({
             "workspaceOpen": true,
@@ -892,6 +1096,191 @@ mod tests {
             "rows": {"records.message": 120, "jobs": 9},
             "plugins": {"settled": true, "installed": [], "loaded": [], "problems": {}},
         })
+    }
+
+    /// Task 8 (ruling 22): a ready copy's `voice` part is counts and bools only — a profile's
+    /// name/about, a rule's text and the style's text all carry the sentinel, yet neither it nor
+    /// an `@` reaches `voice_facts` or the whole report.
+    #[test]
+    fn status_smoke_reports_voice_counts_only() {
+        use crate::testing::{claude_profile, core as test_core, FakeRunner};
+        use crate::workspace::voice::{copy, fake::FakeVoice, VoiceInfo, VoiceState};
+        const SENTINEL: &str = "VOICE_SENTINEL_9f3a";
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            vec![claude_profile()],
+        );
+
+        let person = |n: usize| copy::Person {
+            id: format!("p{n}"),
+            name: format!("Person {n} {SENTINEL}"),
+            names: Vec::new(),
+            addresses: vec![format!("p{n}@example.test")],
+            ids: Vec::new(),
+            text: format!("Role notes. {SENTINEL}"),
+            about: format!("Prefers mornings. {SENTINEL}"),
+            updated_at: "2026-11-24T09:00:00Z".into(),
+            source: "People/p.md".into(),
+        };
+        let rule = |n: usize| copy::Rule {
+            id: format!("r{n}"),
+            applies: copy::Applies {
+                kind: copy::AppliesKind::Everyone,
+                value: None,
+                channel: None,
+            },
+            text: format!("Rule {n}. {SENTINEL}"),
+            source: "Voice/rules.md".into(),
+            editable: true,
+        };
+        let c = copy::Copy {
+            provider: "plugin:knowledge".into(),
+            refreshed_at: 1_764_000_000,
+            state: VoiceState::Ready,
+            style: Some(copy::Style {
+                text: format!("Short and direct. {SENTINEL}"),
+                updated_at: "2026-11-24T09:00:00Z".into(),
+                source: "Voice/style.md".into(),
+                based_on: None,
+                head: None,
+            }),
+            rules: (0..6).map(rule).collect(),
+            people: (0..3).map(person).collect(),
+        };
+        copy::replace(
+            &mut core.repo().unwrap(),
+            "plugin:knowledge",
+            &c,
+            1_764_000_000,
+        )
+        .unwrap();
+
+        let mut r = core.repo().unwrap();
+        let mut settings = r.settings().unwrap();
+        settings.voice.provider = "plugin:knowledge".into();
+        r.settings_update(&settings).unwrap();
+        drop(r);
+
+        let fake = Arc::new(FakeVoice::new());
+        fake.set_available(vec![VoiceInfo {
+            id: "plugin:knowledge".into(),
+            name: "Knowledge".into(),
+            on: true,
+            ready: true,
+            facts: true,
+        }]);
+        core.set_voice_providers(fake);
+
+        let voice = voice_facts(&core);
+        assert_eq!(
+            voice,
+            json!({
+                "provider": "plugin:knowledge",
+                "state": "ready",
+                "copy": true,
+                "people": 3,
+                "rules": 6,
+                "style": true,
+                "facts": true,
+                "refreshedAt": 1_764_000_000,
+            }),
+            "{voice:#}"
+        );
+        let voice_dump = voice.to_string();
+        assert!(!voice_dump.contains(SENTINEL), "{voice_dump}");
+        assert!(!voice_dump.contains('@'), "{voice_dump}");
+
+        let mut f = facts();
+        f["voice"] = voice;
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        });
+        let dump = report.to_string();
+        assert!(!dump.contains(SENTINEL), "{dump}");
+        assert!(!dump.contains('@'), "{dump}");
+    }
+
+    /// Task 8 (ask-capture design § 6): the `ask` part is the route's state and counts and a
+    /// bool only — two threads with 3 turns, one running, a sentinel in every question and
+    /// answer, yet it reaches neither `ask_facts` nor the whole report.
+    #[test]
+    fn status_smoke_reports_ask_counts_only() {
+        use crate::testing::{choose_profile, claude_profile, core as test_core, FakeRunner};
+        use crate::workspace::ask::store::{
+            self,
+            tests::{thread, turn},
+            TurnState,
+        };
+        const SENTINEL: &str = "ASK_SENTINEL_5c1e";
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            vec![claude_profile()],
+        );
+        choose_profile(&core, "claude");
+
+        let mut first_done = turn(
+            1,
+            1_795_000_000,
+            &format!("First? {SENTINEL}"),
+            TurnState::Done,
+        );
+        first_done.answer = Some(format!("Answer one. {SENTINEL}"));
+        let mut running = turn(
+            2,
+            1_795_000_010,
+            &format!("Second? {SENTINEL}"),
+            TurnState::Running,
+        );
+        running.job_id = Some("job-2".into());
+        let mut second_done = turn(
+            3,
+            1_795_000_020,
+            &format!("Third? {SENTINEL}"),
+            TurnState::Done,
+        );
+        second_done.answer = Some(format!("Answer two. {SENTINEL}"));
+
+        let mut r = core.repo().unwrap();
+        store::write(
+            &mut r,
+            &thread("ask-1", 1_795_000_010, vec![first_done, running]),
+        )
+        .unwrap();
+        store::write(&mut r, &thread("ask-2", 1_795_000_020, vec![second_done])).unwrap();
+        drop(r);
+
+        let ask = ask_facts(&core);
+        assert_eq!(
+            ask,
+            json!({"route": "ready", "threads": 2, "turns": 3, "running": true}),
+            "{ask:#}"
+        );
+        let ask_dump = ask.to_string();
+        assert!(!ask_dump.contains(SENTINEL), "{ask_dump}");
+
+        let mut f = facts();
+        f["ask"] = ask;
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        });
+        let dump = report.to_string();
+        assert!(!dump.contains(SENTINEL), "{dump}");
     }
 
     #[test]
@@ -968,6 +1357,102 @@ mod tests {
             window: ok,
         });
         assert_eq!(unprepared["pass"], false);
+    }
+
+    fn menu_bar(tray: bool, applied: Value, computed: Value) -> Value {
+        json!({"tray": tray, "applied": applied, "computed": computed})
+    }
+
+    fn report_with_menu_bar(menu_bar: Value) -> Value {
+        let mut f = facts();
+        f["menuBar"] = menu_bar;
+        build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        })
+    }
+
+    #[test]
+    fn the_report_checks_the_tray() {
+        let no_tray = report_with_menu_bar(menu_bar(
+            false,
+            json!({"title": "", "amber": false, "tooltipLength": 18, "rows": 0}),
+            json!({"count": 0, "label": "", "amber": false}),
+        ));
+        assert_eq!(no_tray["pass"], false, "{no_tray:#}");
+        assert!(
+            no_tray["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: no tray icon"),
+            "{no_tray:#}"
+        );
+
+        let mismatch = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "2", "amber": false, "tooltipLength": 40, "rows": 1}),
+            json!({"count": 3, "label": "3", "amber": false}),
+        ));
+        assert!(
+            mismatch["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: the tray shows 2 but the count is 3"),
+            "{mismatch:#}"
+        );
+
+        let equal = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "3", "amber": false, "tooltipLength": 40, "rows": 1}),
+            json!({"count": 3, "label": "3", "amber": false}),
+        ));
+        assert_eq!(equal["pass"], true, "{equal:#}");
+        assert!(
+            !equal["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap_or_default().starts_with("menuBar")),
+            "{equal:#}"
+        );
+        // No string in the report's menuBar is longer than the label; tooltipLength is a number.
+        assert!(equal["menuBar"]["applied"]["tooltipLength"].is_number());
+        assert!(equal["menuBar"]["applied"]["rows"].is_number());
+        assert!(equal["menuBar"]["computed"]["count"].is_number());
+        for v in [
+            &equal["menuBar"]["applied"]["title"],
+            &equal["menuBar"]["computed"]["label"],
+        ] {
+            let s = v.as_str().expect("a string");
+            assert!(s.chars().count() <= 1, "{equal:#}");
+        }
+    }
+
+    #[test]
+    fn a_failed_recount_fails_the_check_instead_of_matching_a_quiet_tray() {
+        // T4/M3: `computed` folds a compute error into `null`. Indexing into it reads back as
+        // "" and `false`, which must not be allowed to match a tray that happens to show
+        // nothing right now.
+        let null_computed = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "", "amber": false, "tooltipLength": 18, "rows": 0}),
+            Value::Null,
+        ));
+        assert_eq!(null_computed["pass"], false, "{null_computed:#}");
+        assert!(
+            null_computed["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: the count could not be computed"),
+            "{null_computed:#}"
+        );
     }
 
     #[test]

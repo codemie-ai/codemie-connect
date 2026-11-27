@@ -1,7 +1,7 @@
 // Settings. Microsoft 365 is one sign-in: every source syncs automatically.
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
-import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
+import { avatar, badge, button, card, emptyState, field, segmented, select, settingRow, toggle, textInput, spinner } from './ui.js';
 import { records, syncShown, SYNC_EVERY, sourceCounts, chatCatalog, connectionState, tasksDueJob } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
@@ -10,15 +10,21 @@ import { storageCard } from './settings-storage.js';
 import { pluginsPage } from './settings-plugins.js';
 import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
+import { viewOf } from './view-mode.js';
+import { providerSettings, whereTasksLive } from './settings-tasks.js';
+import { menuBarCard } from './menu-bar.js';
+import { voiceCard } from './settings-voice.js';
 import { MOD_THEN_SHIFT } from './platform.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
-  ['', 'ai', 'Claude', 'spark'],
+  ['', 'ai', 'AI', 'spark'],
   ['', 'microsoft', 'Microsoft 365', 'link'],
   ['', 'appearance', 'Appearance', 'palette'],
   ['', 'layout', 'Layout', 'layout'],
   ['', 'notifications', 'Notifications', 'bell'],
+  ['', 'meetings-tasks', 'Tasks', 'tasks'],
+  ['', 'voice', 'Your voice', 'reply'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
   ['', 'plugins', 'Plugins', 'puzzle'],
@@ -26,7 +32,6 @@ export const SETTINGS_TABS = [
   ['', 'meetings-templates', 'Note templates', 'note'],
   ['', 'meetings-rules', 'Automatic rules', 'automations'],
   ['', 'meetings-glossary', 'Glossary & tags', 'book'],
-  ['', 'meetings-tasks', 'Tasks', 'tasks'],
   ['CodeMie', 'cm-overview', 'Overview', 'spark'],
   ['', 'cm-profiles', 'Profiles', 'user'],
   ['', 'cm-agents', 'Coding agents', 'terminal'],
@@ -60,10 +65,11 @@ const TAB_DESCRIPTIONS = {
   'cm-apps': 'Let the apps you already use answer with CodeMie models.',
   'cm-health': 'Checks in plain language with a fix for each problem — and every command CodeMie ran.',
   general: 'Time zone, background behaviour, optional AI and where your data is kept.',
-  ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
+  ai: 'Which profile and model does each job, a fallback for each, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
-  notifications: 'Desktop reminders, critical alerts and quiet hours.',
+  notifications: 'Desktop reminders, critical alerts, quiet hours and the menu-bar count.',
+  voice: 'What Connect adds to your AI reply drafts so they sound like you.',
   queues: 'Critical keywords and scheduled reminders.',
   privacy: 'What is stored on this device and how to remove it.',
   activity: 'Background work: synchronization, reminders and drafts.',
@@ -77,19 +83,23 @@ export function settings(s, ctx) {
   const panels = {
     general: () => generalPanel(s, state.storage),
     // A CodeMie profile's sign-in as Settings → CodeMie read it (one readiness per profile).
-    ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn }),
+    ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn, plugins: ctx.plugins?.ui?.installed || [] }),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
     layout: () => layoutPanel(s, ctx.layout),
     notifications: () => notificationsPanel(s),
+    // Settings › Your voice (reply voice design §5): the controller's view state and the
+    // installed plugins (a provider's name while it loads).
+    voice: () => voiceCard(s, { ...(state.voice || {}), now: ctx.now ?? Date.now(), plugins: ctx.plugins?.ui?.installed || [] }),
     queues: () => queuesPanel(s),
     privacy: () => privacyPanel(s),
     activity: () => activityPanel(s),
     updates: () => updatesPanel(state),
   };
   // Settings → Plugins, a plugin's page there, or one of its own sections (drawn in its frame).
+  const providesTasks = id => (s.taskProvider?.available || []).some(a => a.id === `plugin:${id}`);
   const plugins = tab === 'plugins' && ctx.plugins
-    ? pluginsPage(ctx.plugins.ui, ctx.plugins.path, { status: ctx.plugins.status, sections: ctx.plugins.sections })
+    ? pluginsPage(ctx.plugins.ui, ctx.plugins.path, { status: ctx.plugins.status, sections: ctx.plugins.sections, providesTasks })
     : null;
   // Settings → CodeMie: panels, dots and header actions come from codemie/controller.js.
   const codemie = ctx.codemie;
@@ -99,7 +109,7 @@ export function settings(s, ctx) {
   const msView = meetingsTab ? state.meetingsSettings || newMeetingsSettingsView() : null;
   const ms = meetingsTab ? meetingsSettingsHeader(tab, s, msView) : null;
   const content = plugins ? plugins.content : tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '')
-    : meetingsTab ? meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now() }) : (panels[tab] || panels.general)();
+    : meetingsTab ? (tab === 'meetings-tasks' ? taskProviderCards(s, ctx) : '') + meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now(), plugins: ctx.minutesPlugins || [] }) : (panels[tab] || panels.general)();
   const label = plugins ? plugins.label : ms?.label || SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
   const description = plugins ? plugins.description : ms ? ms.description : TAB_DESCRIPTIONS[tab];
   const path = ctx.plugins?.path;
@@ -147,6 +157,31 @@ export function settings(s, ctx) {
   </div>`;
 }
 
+// ---------------------------------------------------------------- Tasks (task-provider design §11)
+
+/** Settings › Tasks's own cards, drawn before the tab's existing content (ruling 1): "Where your
+ *  tasks live" and, under the chosen plugin, its settings. `ctx.state.tasks.provider` holds the
+ *  Check answer and the busy flags (`tasks-controller.js`'s own view state); `ctx.plugins.ui.installed`
+ *  is Task 2's `installed[].settings`. */
+function taskProviderCards(s, ctx) {
+  const tp = s.taskProvider;
+  const active = tp?.active || 'local';
+  const available = tp?.available || [{ id: 'local', name: 'Connect' }];
+  const now = ctx.now ?? Date.now();
+  const zone = s.settings.timeZone;
+  const v = ctx.state?.tasks?.provider || { busy: {}, check: null, checking: false, savingSecret: false };
+  const where = whereTasksLive({ active, available, tp, now, zone, busy: v.busy });
+  if (active === 'local') return where;
+  const pluginId = active.replace(/^plugin:/, '');
+  const plugin = (ctx.plugins?.ui?.installed || []).find(p => p.id === pluginId);
+  const under = providerSettings({
+    providerId: active, pluginId, name: available.find(a => a.id === active)?.name || pluginId,
+    settings: plugin?.settings || [], tp, now, zone, check: v.checking ? null : v.check, checking: v.checking,
+    savingSecret: v.savingSecret, copyOffered: !!tp?.copyOffered,
+  });
+  return where + under;
+}
+
 // ---------------------------------------------------------------- General
 
 function generalPanel(s, storage = {}) {
@@ -160,7 +195,7 @@ function generalPanel(s, storage = {}) {
       </form>
       ${settingRow({ title: 'Keep running in the menu bar', text: 'Closing the window keeps Connect syncing and reminding. Quit from the menu bar stops it.', control: toggle({ action: 'setting-toggle', checked: s.settings.background, attrs: { 'data-key': 'background', 'aria-label': 'Keep running in the menu bar' } }) })}
       ${settingRow({ title: 'Launch at login', text: 'Start Connect when you sign in to your computer.', control: toggle({ action: 'setting-toggle', checked: s.settings.launchAtLogin, attrs: { 'data-key': 'launchAtLogin', 'aria-label': 'Launch at login' } }) })}
-      ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Connect never sends without your review.', control: button('Claude settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
+      ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Nothing is sent without your click.', control: button('AI settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
   }) + storageCard(storage.info, storage);
 }
 
@@ -168,8 +203,8 @@ function generalPanel(s, storage = {}) {
 
 const WRITE_CAPS = [
   ['calendar_write', 'Create calendar events', 'Schedule events from Connect. You review every event before it is created.', 'calendar'],
-  ['mail_send', 'Reply in Outlook', 'Send Outlook replies you wrote and reviewed in Connect.', 'mail'],
-  ['chat_send', 'Reply in Teams', 'Reply in existing Teams chats after review.', 'chat'],
+  ['mail_send', 'Reply in Outlook', 'Send Outlook replies from Connect. You see To, Cc and the subject before each one goes.', 'mail'],
+  ['chat_send', 'Reply in Teams', 'Send Teams replies from Connect when you click Send. They go at once.', 'chat'],
 ];
 
 function microsoftPanel(s, auth) {
@@ -226,7 +261,7 @@ function microsoftPanel(s, auth) {
   });
   const permissions = card({
     title: 'Allow actions', iconName: 'shield',
-    body: `<p class="ws-muted ws-hint">Connect reads only by default. Turn on an action and Microsoft asks you to approve it once. Every action is shown for review before anything is sent.</p>
+    body: `<p class="ws-muted ws-hint">Connect reads only by default. Turn on an action and Microsoft asks you to approve it once. Nothing is sent without your click.</p>
       ${WRITE_CAPS.map(([cap, title, text, ico]) => settingRow({ iconName: ico, title, text, control: toggle({ action: 'graph-permission', checked: c.enabled.includes(cap), attrs: { 'data-cap': cap, 'aria-label': title, disabled: needsLogin || pending } }) })).join('')}`,
   });
   return account + synced + permissions + advancedRegistration(s);
@@ -265,7 +300,8 @@ function appearancePanel(s) {
     <span class="ws-theme-preview${theme === 'system' ? ' ws-theme-preview-system' : ''}">${theme === 'system' ? '<img src="workspace/assets/light-theme-card.svg" alt=""><img src="workspace/assets/dark-theme-card.svg" alt="">' : `<img src="workspace/assets/${theme}-theme-card.svg" alt="">`}</span>
     <span class="ws-theme-label"><span class="ws-radio-dot" aria-hidden="true"></span>${theme[0].toUpperCase() + theme.slice(1)}</span>
   </button>`;
-  return card({ title: 'Theme', iconName: 'palette', body: `<div class="ws-theme-options">${['light', 'dark', 'system'].map(choice).join('')}</div><p class="ws-muted ws-hint">System follows your operating-system appearance.</p>` });
+  return card({ title: 'Theme', iconName: 'palette', body: `<div class="ws-theme-options">${['light', 'dark', 'system'].map(choice).join('')}</div><p class="ws-muted ws-hint">System follows your operating-system appearance.</p>` })
+    + card({ title: 'View', iconName: 'layout', body: `${segmented([['compact', 'Compact'], ['default', 'Default']], viewOf(s.settings), 'view-set', 'view', 'View')}<p class="ws-muted ws-hint">Compact uses smaller text and opens messages in place.</p>` });
 }
 
 // ---------------------------------------------------------------- Notifications
@@ -285,7 +321,7 @@ function notificationsPanel(s) {
         ${button('Save', { type: 'submit' })}
       </form>
       <p class="ws-muted ws-hint">Critical alerts can bypass Connect’s quiet hours, never macOS Focus.</p>`,
-  });
+  }) + menuBarCard(s);
 }
 
 // ---------------------------------------------------------------- Rules & schedules

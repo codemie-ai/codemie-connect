@@ -1,0 +1,294 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "actions": [
+          {
+            "kind": "open",
+            "label": "Event · Fri 27 Nov 10:00 · QBR",
+            "recordId": "evt-qbr",
+            "ref": "e11"
+          },
+          {
+            "hint": "Say the budget goes out on Thursday.",
+            "kind": "draft",
+            "label": "Priya N. · mail · Tue 24 Nov",
+            "recordId": "msg-priya",
+            "ref": "m9"
+          },
+          {
+            "due": "2026-11-26",
+            "kind": "task",
+            "text": "Send Priya the Atlas budget"
+          }
+        ],
+        "answer": "The QBR is on Fri 27 Nov at 10:00 [e11]. Priya N. asked for the budget first [m9].",
+        "cites": [
+          {
+            "id": "e11",
+            "kind": "event",
+            "label": "Event · Fri 27 Nov 10:00 · QBR",
+            "recordId": "evt-qbr",
+            "title": null
+          },
+          {
+            "id": "m9",
+            "kind": "message",
+            "label": "Priya N. · mail · Tue 24 Nov",
+            "recordId": "msg-priya",
+            "title": null
+          }
+        ],
+        "droppedActions": 0,
+        "droppedCites": 0
+      },
+      "name": "clean answer",
+      "raw": {
+        "actions": [
+          {
+            "kind": "open",
+            "ref": "e11"
+          },
+          {
+            "hint": "Say the budget goes out on Thursday.",
+            "kind": "draft",
+            "ref": "m9"
+          },
+          {
+            "due": "2026-11-26",
+            "kind": "task",
+            "text": "Send Priya the Atlas budget"
+          }
+        ],
+        "answer": "The QBR is on Fri 27 Nov at 10:00 [e11]. Priya N. asked for the budget first [m9].",
+        "cites": [
+          "e11",
+          "m9"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "actions": [],
+        "answer": "Marek Novak owns the rollout [p13], as agreed before.\nThe plan is set [f14] [x].",
+        "cites": [
+          {
+            "id": "p13",
+            "kind": "person",
+            "label": "Person · Marek Novak",
+            "recordId": "person-marek",
+            "title": null
+          },
+          {
+            "id": "f14",
+            "kind": "fact",
+            "label": null,
+            "recordId": null,
+            "title": "Atlas rollout"
+          }
+        ],
+        "droppedActions": 0,
+        "droppedCites": 2
+      },
+      "name": "a cite the context never gave",
+      "raw": {
+        "actions": [],
+        "answer": "Marek Novak owns the rollout [p13], as agreed before [m3].\nThe plan is set [f14] [x].",
+        "cites": [
+          "p13",
+          "m3",
+          "f14",
+          7
+        ]
+      }
+    },
+    {
+      "expected": {
+        "actions": [],
+        "answer": "Jordan Lee is waiting on the report [m9].",
+        "cites": [
+          {
+            "id": "m9",
+            "kind": "message",
+            "label": "Priya N. · mail · Tue 24 Nov",
+            "recordId": "msg-priya",
+            "title": null
+          }
+        ],
+        "droppedActions": 5,
+        "droppedCites": 0
+      },
+      "name": "a bad action",
+      "raw": {
+        "actions": [
+          {
+            "kind": "send",
+            "ref": "m9",
+            "text": "Done"
+          },
+          {
+            "kind": "open",
+            "ref": "m2"
+          },
+          {
+            "kind": "open",
+            "ref": "f14"
+          },
+          {
+            "kind": "task",
+            "text": "   "
+          },
+          "open m9"
+        ],
+        "answer": "Jordan Lee is waiting on the report [m9].",
+        "cites": [
+          "m9"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "actions": [],
+        "answer": "The budget task is open [t10].",
+        "cites": [
+          {
+            "id": "t10",
+            "kind": "task",
+            "label": "Task · Send the Atlas budget",
+            "recordId": "task-atlas",
+            "title": null
+          }
+        ],
+        "droppedActions": 1,
+        "droppedCites": 0
+      },
+      "name": "a draft on a task ref",
+      "raw": {
+        "actions": [
+          {
+            "hint": "Remind them.",
+            "kind": "draft",
+            "ref": "t10"
+          }
+        ],
+        "answer": "The budget task is open [t10].",
+        "cites": [
+          "t10"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "actions": [],
+        "answer": "Line 000 of the Atlas notes, cited once [m9].\nLine 001 of the Atlas notes, cited once [m9].\nLine 002 of the Atlas notes, cited once [m9].\nLine 003 of the Atlas notes, cited once [m9].\nLine 004 of the Atlas notes, cited once [m9].\nLine 005 of the Atlas notes, cited once [m9].\nLine 006 of the Atlas notes, cited once [m9].\nLine 007 of the Atlas notes, cited once [m9].\nLine 008 of the Atlas notes, cited once [m9].\nLine 009 of the Atlas notes, cited once [m9].\nLine 010 of the Atlas notes, cited once [m9].\nLine 011 of the Atlas notes, cited once [m9].\nLine 012 of the Atlas notes, cited once [m9].\nLine 013 of the Atlas notes, cited once [m9].\nLine 014 of the Atlas notes, cited once [m9].\nLine 015 of the Atlas notes, cited once [m9].\nLine 016 of the Atlas notes, cited once [m9].\nLine 017 of the Atlas notes, cited once [m9].\nLine 018 of the Atlas notes, cited once [m9].\nLine 019 of the Atlas notes, cited once [m9].\nLine 020 of the Atlas notes, cited once [m9].\nLine 021 of the Atlas notes, cited once [m9].\nLine 022 of the Atlas notes, cited once [m9].\nLine 023 of the Atlas notes, cited once [m9].\nLine 024 of the Atlas notes, cited once [m9].\nLine 025 of the Atlas notes, cited once [m9].\nLine 026 of the Atlas notes, cited once [m9].\nLine 027 of the Atlas notes, cited once [m9].\nLine 028 of the Atlas notes, cited once [m9].\nLine 029 of the Atlas notes, cited once [m9].\nLine 030 of the Atlas notes, cited once [m9].\nLine 031 of the Atlas notes, cited once [m9].\nLine 032 of the Atlas notes, cited once [m9].\nLine 033 of the Atlas notes, cited once [m9].\nLine 034 of the Atlas notes, cited once [m9].\nLine 035 of the Atlas notes, cited once [m9].\nLine 036 of the Atlas notes, cited once [m9].\nLine 037 of the Atlas notes, cited once [m9].\nLine 038 of the Atlas notes, cited once [m9].\nLine 039 of the Atlas notes, cited once [m9].\nLine 040 of the Atlas notes, cited once [m9].\nLine 041 of the Atlas notes, cited once [m9].\nLine 042 of the Atlas notes, cited once [m9].\nLine 043 of the Atlas notes, cited once [m9].\nLine 044 of the Atlas notes, cited once [m9].\nLine 045 of the Atlas notes, cited once [m9].\nLine 046 of the Atlas notes, cited once [m9].\nLine 047 of the Atlas notes, cited once [m9].\nLine 048 of the Atlas notes, cited once [m9].\nLine 049 of the Atlas notes, cited once [m9].\nLine 050 of the Atlas notes, cited once [m9].\nLine 051 of the Atlas notes, cited once [m9].\nLine 052 of the Atlas notes, cited once [m9].\nLine 053 of the Atlas notes, cited once [m9].\nLine 054 of the Atlas notes, cited once [m9].\nLine 055 of the Atlas notes, cited once [m9].\nLine 056 of the Atlas notes, cited once [m9].\nLine 057 of the Atlas notes, cited once [m9].\nLine 058 of the Atlas notes, cited once [m9].\nLine 059 of the Atlas notes, cited once [m9].\nLine 060 of the Atlas notes, cited once [m9].\nLine 061 of the Atlas notes, cited once [m9].\nLine 062 of the Atlas notes, cited once [m9].\nLine 063 of the Atlas notes, cited once [m9].\nLine 064 of the Atlas notes, cited once [m9].\nLine 065 of the Atlas notes, cited once [m9].\nLine 066 of the Atlas notes, cited once [m9].\nLine 067 of the Atlas notes, cited once [m9].\nLine 068 of the Atlas notes, cited once [m9].\nLine 069 of the Atlas notes, cited once [m9].\nLine 070 of the Atlas notes, cited once [m9].\nLine 071 of the Atlas notes, cited once [m9].\nLine 072 of the Atlas notes, cited once [m9].\nLine 073 of the Atlas notes, cited once [m9].\nLine 074 of the Atlas notes, cited once [m9].\nLine 075 of the Atlas notes, cited once [m9].\nLine 076 of the Atlas notes, cited once [m9].\nLine 077 of the Atlas notes, cited once [m9].\nLine 078 of the Atlas notes, cited once [m9].\nLine 079 of the Atlas notes, cited once [m9].\nLine 080 of the Atlas notes, cited once [m9].\nLine 081 of the Atlas notes, cited once [m9].\nLine 082 of the Atlas notes, cited once [m9].\nLine 083 of the Atlas notes, cited once [m9].\nLine 084 of the Atlas notes, cited once [m9].\nLine 085 of the Atlas notes, cited once [m9].\nLine 086 of the Atlas notes, cited once [m9].\nLine 087 of the Atlas notes, cited once [m9].\nLine 088 of the Atlas notes, cited once [m9].\nLine 089 of the Atlas notes, cited once [m9].\nLine 090 of the Atlas notes, cited once [m9].\nLine 091 of the Atlas notes, cited once [m9].\nLine 092 of the Atlas notes, cited once [m9].\nLine 093 of the Atlas notes, cited once [m9].\nLine 094 of the Atlas notes, cited once [m9].\nLine 095 of the Atlas notes, cited once [m9].\nLine 096 of the Atlas notes, cited once [m9].\nLine 097 of the Atlas notes, cited once [m9].\nLine 098 of the Atlas notes, cited once [m9].\nLine 099 of the Atlas notes, cited once [m9].\nLine 100 of the Atlas notes, cited once [m9].\nLine 101 of the Atlas notes, cited once [m9].\nLine 102 of the Atlas notes, cited once [m9].\nLine 103 of the Atlas notes, cited once [m9].\nLine 104 of the Atlas notes, cited once [m9].\nLine 105 of the Atlas notes, cited once [m9].\nLine 106 of the Atlas notes, cited once [m9].\nLine 107 of the Atlas notes, cited once [m9].\nLine 108 of the Atlas notes, cited once [m9].\nLine 109 of the Atlas notes, cited once [m9].\nLine 110 of the Atlas notes, cited once [m9].\nLine 111 of the Atlas notes, cited once [m9].\nLine 112 of the Atlas notes, cited once [m9].\nLine 113 of the Atlas notes, cited once [m9].\nLine 114 of the Atlas notes, cited once [m9].\nLine 115 of the Atlas notes, cited once [m9].\nLine 116 of the Atlas notes, cited once [m9].\nLine 117 of the Atlas notes, cited once [m9].\nLine 118 of the Atlas notes, cited once [m9].\nLine 119 of the Atlas notes, cited once [m9].\nLine 120 of the Atlas notes, cited once [m9].\nLine 121 of the Atlas notes, cited once [m9].\nLine 122 of the Atlas notes, cited once [m9].\nLine 123 of the Atlas notes, cited once [m9].\nLine 124 of the Atlas notes, cited once [m9].\nLine 125 of the Atlas notes, cited once [m9].\nLine 126 of the Atlas notes, cited once [m9].\nLine 127 of the Atlas notes, cited once [m9].\nLine 128 of the Atlas notes, cited once [m9].\nLine 129 of the Atlas notes, cited once [m9].…",
+        "cites": [
+          {
+            "id": "m9",
+            "kind": "message",
+            "label": "Priya N. · mail · Tue 24 Nov",
+            "recordId": "msg-priya",
+            "title": null
+          }
+        ],
+        "droppedActions": 0,
+        "droppedCites": 0
+      },
+      "name": "an over-long answer",
+      "raw": {
+        "actions": [],
+        "answer": "Line 000 of the Atlas notes, cited once [m9].\nLine 001 of the Atlas notes, cited once [m9].\nLine 002 of the Atlas notes, cited once [m9].\nLine 003 of the Atlas notes, cited once [m9].\nLine 004 of the Atlas notes, cited once [m9].\nLine 005 of the Atlas notes, cited once [m9].\nLine 006 of the Atlas notes, cited once [m9].\nLine 007 of the Atlas notes, cited once [m9].\nLine 008 of the Atlas notes, cited once [m9].\nLine 009 of the Atlas notes, cited once [m9].\nLine 010 of the Atlas notes, cited once [m9].\nLine 011 of the Atlas notes, cited once [m9].\nLine 012 of the Atlas notes, cited once [m9].\nLine 013 of the Atlas notes, cited once [m9].\nLine 014 of the Atlas notes, cited once [m9].\nLine 015 of the Atlas notes, cited once [m9].\nLine 016 of the Atlas notes, cited once [m9].\nLine 017 of the Atlas notes, cited once [m9].\nLine 018 of the Atlas notes, cited once [m9].\nLine 019 of the Atlas notes, cited once [m9].\nLine 020 of the Atlas notes, cited once [m9].\nLine 021 of the Atlas notes, cited once [m9].\nLine 022 of the Atlas notes, cited once [m9].\nLine 023 of the Atlas notes, cited once [m9].\nLine 024 of the Atlas notes, cited once [m9].\nLine 025 of the Atlas notes, cited once [m9].\nLine 026 of the Atlas notes, cited once [m9].\nLine 027 of the Atlas notes, cited once [m9].\nLine 028 of the Atlas notes, cited once [m9].\nLine 029 of the Atlas notes, cited once [m9].\nLine 030 of the Atlas notes, cited once [m9].\nLine 031 of the Atlas notes, cited once [m9].\nLine 032 of the Atlas notes, cited once [m9].\nLine 033 of the Atlas notes, cited once [m9].\nLine 034 of the Atlas notes, cited once [m9].\nLine 035 of the Atlas notes, cited once [m9].\nLine 036 of the Atlas notes, cited once [m9].\nLine 037 of the Atlas notes, cited once [m9].\nLine 038 of the Atlas notes, cited once [m9].\nLine 039 of the Atlas notes, cited once [m9].\nLine 040 of the Atlas notes, cited once [m9].\nLine 041 of the Atlas notes, cited once [m9].\nLine 042 of the Atlas notes, cited once [m9].\nLine 043 of the Atlas notes, cited once [m9].\nLine 044 of the Atlas notes, cited once [m9].\nLine 045 of the Atlas notes, cited once [m9].\nLine 046 of the Atlas notes, cited once [m9].\nLine 047 of the Atlas notes, cited once [m9].\nLine 048 of the Atlas notes, cited once [m9].\nLine 049 of the Atlas notes, cited once [m9].\nLine 050 of the Atlas notes, cited once [m9].\nLine 051 of the Atlas notes, cited once [m9].\nLine 052 of the Atlas notes, cited once [m9].\nLine 053 of the Atlas notes, cited once [m9].\nLine 054 of the Atlas notes, cited once [m9].\nLine 055 of the Atlas notes, cited once [m9].\nLine 056 of the Atlas notes, cited once [m9].\nLine 057 of the Atlas notes, cited once [m9].\nLine 058 of the Atlas notes, cited once [m9].\nLine 059 of the Atlas notes, cited once [m9].\nLine 060 of the Atlas notes, cited once [m9].\nLine 061 of the Atlas notes, cited once [m9].\nLine 062 of the Atlas notes, cited once [m9].\nLine 063 of the Atlas notes, cited once [m9].\nLine 064 of the Atlas notes, cited once [m9].\nLine 065 of the Atlas notes, cited once [m9].\nLine 066 of the Atlas notes, cited once [m9].\nLine 067 of the Atlas notes, cited once [m9].\nLine 068 of the Atlas notes, cited once [m9].\nLine 069 of the Atlas notes, cited once [m9].\nLine 070 of the Atlas notes, cited once [m9].\nLine 071 of the Atlas notes, cited once [m9].\nLine 072 of the Atlas notes, cited once [m9].\nLine 073 of the Atlas notes, cited once [m9].\nLine 074 of the Atlas notes, cited once [m9].\nLine 075 of the Atlas notes, cited once [m9].\nLine 076 of the Atlas notes, cited once [m9].\nLine 077 of the Atlas notes, cited once [m9].\nLine 078 of the Atlas notes, cited once [m9].\nLine 079 of the Atlas notes, cited once [m9].\nLine 080 of the Atlas notes, cited once [m9].\nLine 081 of the Atlas notes, cited once [m9].\nLine 082 of the Atlas notes, cited once [m9].\nLine 083 of the Atlas notes, cited once [m9].\nLine 084 of the Atlas notes, cited once [m9].\nLine 085 of the Atlas notes, cited once [m9].\nLine 086 of the Atlas notes, cited once [m9].\nLine 087 of the Atlas notes, cited once [m9].\nLine 088 of the Atlas notes, cited once [m9].\nLine 089 of the Atlas notes, cited once [m9].\nLine 090 of the Atlas notes, cited once [m9].\nLine 091 of the Atlas notes, cited once [m9].\nLine 092 of the Atlas notes, cited once [m9].\nLine 093 of the Atlas notes, cited once [m9].\nLine 094 of the Atlas notes, cited once [m9].\nLine 095 of the Atlas notes, cited once [m9].\nLine 096 of the Atlas notes, cited once [m9].\nLine 097 of the Atlas notes, cited once [m9].\nLine 098 of the Atlas notes, cited once [m9].\nLine 099 of the Atlas notes, cited once [m9].\nLine 100 of the Atlas notes, cited once [m9].\nLine 101 of the Atlas notes, cited once [m9].\nLine 102 of the Atlas notes, cited once [m9].\nLine 103 of the Atlas notes, cited once [m9].\nLine 104 of the Atlas notes, cited once [m9].\nLine 105 of the Atlas notes, cited once [m9].\nLine 106 of the Atlas notes, cited once [m9].\nLine 107 of the Atlas notes, cited once [m9].\nLine 108 of the Atlas notes, cited once [m9].\nLine 109 of the Atlas notes, cited once [m9].\nLine 110 of the Atlas notes, cited once [m9].\nLine 111 of the Atlas notes, cited once [m9].\nLine 112 of the Atlas notes, cited once [m9].\nLine 113 of the Atlas notes, cited once [m9].\nLine 114 of the Atlas notes, cited once [m9].\nLine 115 of the Atlas notes, cited once [m9].\nLine 116 of the Atlas notes, cited once [m9].\nLine 117 of the Atlas notes, cited once [m9].\nLine 118 of the Atlas notes, cited once [m9].\nLine 119 of the Atlas notes, cited once [m9].\nLine 120 of the Atlas notes, cited once [m9].\nLine 121 of the Atlas notes, cited once [m9].\nLine 122 of the Atlas notes, cited once [m9].\nLine 123 of the Atlas notes, cited once [m9].\nLine 124 of the Atlas notes, cited once [m9].\nLine 125 of the Atlas notes, cited once [m9].\nLine 126 of the Atlas notes, cited once [m9].\nLine 127 of the Atlas notes, cited once [m9].\nLine 128 of the Atlas notes, cited once [m9].\nLine 129 of the Atlas notes, cited once [m9].\nLine 130 of the Atlas notes, cited once [m9].\nLine 131 of the Atlas notes, cited once [m9].\nLine 132 of the Atlas notes, cited once [m9].\nLine 133 of the Atlas notes, cited once [m9].\nLine 134 of the Atlas notes, cited once [m9].\nLine 135 of the Atlas notes, cited once [m9].\nLine 136 of the Atlas notes, cited once [m9].\nLine 137 of the Atlas notes, cited once [m9].\nLine 138 of the Atlas notes, cited once [m9].\nLine 139 of the Atlas notes, cited once [m9].\nLine 140 of the Atlas notes, cited once [m9].\nLine 141 of the Atlas notes, cited once [m9].\nLine 142 of the Atlas notes, cited once [m9].\nLine 143 of the Atlas notes, cited once [m9].\nLine 144 of the Atlas notes, cited once [m9].\nLine 145 of the Atlas notes, cited once [m9].\nLine 146 of the Atlas notes, cited once [m9].\nLine 147 of the Atlas notes, cited once [m9].\nLine 148 of the Atlas notes, cited once [m9].\nLine 149 of the Atlas notes, cited once [m9].\nLine 150 of the Atlas notes, cited once [m9].\nLine 151 of the Atlas notes, cited once [m9].\nLine 152 of the Atlas notes, cited once [m9].\nLine 153 of the Atlas notes, cited once [m9].\nLine 154 of the Atlas notes, cited once [m9].\nLine 155 of the Atlas notes, cited once [m9].\nLine 156 of the Atlas notes, cited once [m9].\nLine 157 of the Atlas notes, cited once [m9].\nLine 158 of the Atlas notes, cited once [m9].\nLine 159 of the Atlas notes, cited once [m9].",
+        "cites": [
+          "m9"
+        ]
+      }
+    },
+    {
+      "expected": {
+        "actions": [
+          {
+            "due": null,
+            "kind": "task",
+            "text": "Ask Marek Novak for the plan date"
+          },
+          {
+            "due": null,
+            "kind": "task",
+            "text": "Book the Atlas review"
+          }
+        ],
+        "answer": "Not in Connect: a date for the plan. Searched tasks 2 (Todoist).",
+        "cites": [],
+        "droppedActions": 0,
+        "droppedCites": 0
+      },
+      "name": "a bad due",
+      "raw": {
+        "actions": [
+          {
+            "due": "2026-02-31",
+            "kind": "task",
+            "text": "Ask Marek Novak for the plan date"
+          },
+          {
+            "due": "next week",
+            "kind": "task",
+            "text": "Book the Atlas review"
+          }
+        ],
+        "answer": "Not in Connect: a date for the plan. Searched tasks 2 (Todoist).",
+        "cites": []
+      }
+    },
+    {
+      "expected": {
+        "error": "invalid_output"
+      },
+      "name": "an empty answer",
+      "raw": {
+        "actions": [],
+        "answer": " [m3] \n",
+        "cites": [
+          "m3"
+        ]
+      }
+    }
+  ],
+  "facts": [
+    [
+      "f14",
+      "Atlas rollout"
+    ]
+  ],
+  "refs": {
+    "e11": {
+      "kind": "event",
+      "label": "Event · Fri 27 Nov 10:00 · QBR",
+      "recordId": "evt-qbr"
+    },
+    "f14": {
+      "kind": "fact",
+      "label": "Knowledge · Atlas rollout",
+      "recordId": ""
+    },
+    "m9": {
+      "kind": "message",
+      "label": "Priya N. · mail · Tue 24 Nov",
+      "recordId": "msg-priya"
+    },
+    "n12": {
+      "kind": "meeting",
+      "label": "Meeting · Atlas QBR · Thu 20 Nov",
+      "recordId": "mtg-qbr"
+    },
+    "p13": {
+      "kind": "person",
+      "label": "Person · Marek Novak",
+      "recordId": "person-marek"
+    },
+    "t10": {
+      "kind": "task",
+      "label": "Task · Send the Atlas budget",
+      "recordId": "task-atlas"
+    }
+  }
+}

@@ -141,6 +141,7 @@ pub fn session(
 
 /// The file manager (Finder, File Explorer), selecting `path`.
 pub fn open_in_finder(path: &Path) -> std::io::Result<()> {
+    crate::commands::tour::opens_nothing("plugin Finder reveal").map_err(std::io::Error::other)?;
     #[cfg(windows)]
     {
         // Explorer wants `/select,<path>` as one argument and answers 1 even when it worked.
