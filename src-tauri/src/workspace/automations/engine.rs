@@ -145,7 +145,7 @@ impl Core {
                 };
                 // Handled either way, so a held-back or catch-up slot is never retried later.
                 state.last_slot.insert(a.id.clone(), slot);
-                if let Some(reason) = state.refusal(&a.id, None, now) {
+                if let Some(reason) = state.schedule_refusal(&a.id) {
                     state.skip(&a.id, &format!("schedule:{slot}"), reason, now);
                     continue;
                 }
@@ -158,7 +158,6 @@ impl Core {
                     json!({"kind": kind, "scheduledAt": slot}),
                     slot,
                 )?;
-                state.started(&a.id, None, now);
             }
             if automations.iter().any(|(_, a)| {
                 matches!(
@@ -797,6 +796,38 @@ mod engine_tests {
         let key = jobs[0].key.clone();
         enqueue_run(&mut core.repo().unwrap(), &a, key, json!({}), 0).unwrap();
         assert_eq!(jobs_of(&core).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_schedule_runs_even_when_the_hourly_cap_is_used_up_and_does_not_count_toward_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        let mut record = core
+            .repo()
+            .unwrap()
+            .record("automation", "auto-schedule", None, Some("personal"))
+            .unwrap();
+        record.updated_at = ts("2026-03-23T00:00:00Z");
+        core.repo().unwrap().put_record(&record).unwrap();
+        let (now, started) = (ts("2026-03-24T08:45:10Z"), ts("2026-03-24T08:00:00Z"));
+        {
+            // Event runs used the whole hourly cap before the morning slot came up.
+            let mut r = core.repo().unwrap();
+            let mut state = load_state(&r, &[]);
+            state.runs = vec![now - 60; HOURLY_CAP];
+            save_state(&mut r, &state).unwrap();
+        }
+        core.automations_round_at(now, started).unwrap();
+        let jobs = jobs_of(&core);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].payload["trigger"]["kind"], "schedule");
+        let r = core.repo().unwrap();
+        let state = load_state(&r, &r.jobs().unwrap());
+        assert_eq!(state.runs.len(), HOURLY_CAP);
+        assert!(state.skipped.is_empty());
     }
 
     #[tokio::test]

@@ -499,13 +499,19 @@ impl State {
         }
     }
     /// Why a run must not start now, if it must not. `sender` is the event's cooldown key
-    /// (`sender_key`, or the meeting id for `meeting_ended`); `None` for a schedule, a manual
+    /// (`sender_key`, or the meeting id for `meeting_ended`); `None` for a manual
     /// run or `meeting_ready`, which have no cooldown.
     pub fn refusal(&self, id: &str, sender: Option<&str>, now: i64) -> Option<&'static str> {
-        if self.in_progress.contains(id) {
-            return Some("An earlier run of this automation is still in progress.");
-        }
-        self.limit(id, sender, now)
+        self.schedule_refusal(id)
+            .or_else(|| self.limit(id, sender, now))
+    }
+    /// Why a scheduled run must not start now: only an earlier run still in progress. A
+    /// schedule is exempt from the hourly cap (it neither waits for it nor counts toward it),
+    /// so a burst of event runs never starves a habit such as the weekday morning briefing.
+    pub fn schedule_refusal(&self, id: &str) -> Option<&'static str> {
+        self.in_progress
+            .contains(id)
+            .then_some("An earlier run of this automation is still in progress.")
     }
     /// `refusal` without the run in progress: a message or meeting event is seen only once, so
     /// it queues behind an earlier run instead (runs are claimed one at a time, so it still
