@@ -1719,17 +1719,8 @@ mod tests {
         }
         assert_eq!(e.fake.ops()[..2], ["create", "changedSince"]);
 
-        // The next background sync comes 300 s after the last run, not before.
-        let run_at = e.state()["lastRun"].as_i64().unwrap();
-        let queued = |e: &Env| {
-            e.core
-                .repo()
-                .unwrap()
-                .jobs()
-                .unwrap()
-                .iter()
-                .any(|j| j.kind == JOB_KIND && j.state == "queued")
-        };
+        // The run writes its state at its end, after the task got its id: wait for that end
+        // before reading `lastRun` (a menu-bar step deferred minor: this read raced the run).
         while e
             .core
             .repo()
@@ -1741,6 +1732,17 @@ mod tests {
         {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        // The next background sync comes 300 s after the last run, not before.
+        let run_at = e.state()["lastRun"].as_i64().unwrap();
+        let queued = |e: &Env| {
+            e.core
+                .repo()
+                .unwrap()
+                .jobs()
+                .unwrap()
+                .iter()
+                .any(|j| j.kind == JOB_KIND && j.state == "queued")
+        };
         e.core.task_sync_round(run_at + 299).unwrap();
         assert!(!queued(&e));
         e.core.task_sync_round(run_at + 300).unwrap();

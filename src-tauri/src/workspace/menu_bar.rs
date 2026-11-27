@@ -679,7 +679,8 @@ pub trait TraySink: Send + Sync {
 pub struct FakeTray {
     applied: std::sync::Arc<std::sync::Mutex<Vec<TrayView>>>,
     slow: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    applying: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// An apply is under way (the fake's own flag, not [`Refresher`]'s `applying` lock).
+    in_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     overlapped: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -694,18 +695,26 @@ impl FakeTray {
     pub fn overlapped(&self) -> bool {
         self.overlapped.load(std::sync::atomic::Ordering::SeqCst)
     }
+    /// Blocks until an apply is under way (at most 5 s), so a test can act during it.
+    pub fn wait_until_applying(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !self.in_apply.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline, "no apply started");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }
 
 #[cfg(test)]
 impl TraySink for FakeTray {
     fn apply(&self, view: &TrayView) {
         use std::sync::atomic::Ordering::SeqCst;
-        if self.applying.swap(true, SeqCst) {
+        if self.in_apply.swap(true, SeqCst) {
             self.overlapped.store(true, SeqCst);
         }
         std::thread::sleep(std::time::Duration::from_millis(self.slow.load(SeqCst)));
         self.applied.lock().unwrap().push(view.clone());
-        self.applying.store(false, SeqCst);
+        self.in_apply.store(false, SeqCst);
     }
 }
 
@@ -2081,15 +2090,18 @@ mod tests {
         // It runs once at start.
         assert_eq!(applied_within(&core, 1, 2_000).await.len(), 1);
 
-        // Forty writes, each changing the count and emitting, as a sync round does.
-        let at = std::time::Instant::now();
+        // Forty writes, each changing the count, then the forty events a sync round emits for
+        // them; the events come well inside the debounce whatever the machine's load (the
+        // writes before them take no part in the timing).
         for n in 0..40 {
             core.repo()
                 .unwrap()
                 .put_record(&inbound(&format!("mail-{n}"), None, FIXTURE_NOW - 60 - n))
                 .unwrap();
+        }
+        let at = std::time::Instant::now();
+        for _ in 0..40 {
             core.emit("workspace:changed");
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let burst = at.elapsed();
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
@@ -2204,7 +2216,7 @@ mod tests {
             let core = core.clone();
             std::thread::spawn(move || core.refresh_menu_bar_now().unwrap())
         };
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        core.menu_bar.fake().wait_until_applying();
         core.repo()
             .unwrap()
             .put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
@@ -2247,8 +2259,8 @@ mod tests {
             let busy = busy.clone();
             std::thread::spawn(move || refresher.offer(&busy))
         };
-        // Give the worker time to take `applying` and start its slow apply.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // The worker holds `applying` and is in its slow apply.
+        refresher.fake().wait_until_applying();
 
         let main_view = view("2", false);
         let started = std::time::Instant::now();
