@@ -6,4 +6,5 @@ pub mod discover;
 pub mod fake;
 pub mod profiles;
 pub mod runner;
+pub mod salvage;
 pub mod stream;

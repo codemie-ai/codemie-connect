@@ -13,7 +13,7 @@ use super::rules::{self, Rule};
 use super::save::save_transcript;
 use super::templates::{self, Template};
 use crate::ai::command::RunSpec;
-use crate::ai::stream::AiError;
+use crate::ai::stream::{AiError, ErrorClass, RunOutcome};
 use crate::workspace::{
     ai::{wire_name, RouteKey},
     ai_jobs::stored_job,
@@ -38,6 +38,8 @@ const AUTO_WINDOW: i64 = 2 * 24 * 3600;
 const SHORT: f64 = 180.0;
 /// `run.log` keeps its newest 256 KB.
 const RUN_LOG_MAX: usize = 256 * 1024;
+/// How much of an answer that could not be used `run.log` keeps, to tell why.
+const UNUSABLE_KEPT: usize = 4000;
 
 pub(super) const GETTING: &str = "Getting the transcript from Teams";
 const FINDING: &str = "Finding tasks";
@@ -169,6 +171,9 @@ struct Failure {
     error: Box<WorkspaceError>,
     /// The document file that already holds the new notes.
     written: Option<String>,
+    /// The beginning of an answer that could not be used, for `run.log` only (the meeting's
+    /// own folder): never the app log or the ledger.
+    answer: Option<String>,
 }
 
 impl Failure {
@@ -176,6 +181,7 @@ impl Failure {
         Self {
             error: Box::new(error),
             written: Some(file.to_string()),
+            answer: None,
         }
     }
 }
@@ -185,8 +191,18 @@ impl From<WorkspaceError> for Failure {
         Self {
             error: Box::new(error),
             written: None,
+            answer: None,
         }
     }
+}
+
+/// The first [`UNUSABLE_KEPT`] characters of what Claude answered, when it answered anything.
+fn unusable_answer(o: &RunOutcome) -> Option<String> {
+    let text = match &o.structured {
+        Some(v) if o.text.trim().is_empty() => v.to_string(),
+        _ => o.text.clone(),
+    };
+    (!text.trim().is_empty()).then(|| text.chars().take(UNUSABLE_KEPT).collect())
 }
 
 impl From<AiError> for Failure {
@@ -242,7 +258,7 @@ impl Core {
             Err(e) => {
                 // The template was deleted after the run was queued.
                 let named = job.payload["templateId"].as_str().unwrap_or("A template");
-                self.note_notes_failure(&c, &id, named, &e, None);
+                self.note_notes_failure(&c, &id, named, &e, None, None);
                 return Err(e);
             }
         };
@@ -287,7 +303,14 @@ impl Core {
             Ok(done) => Ok(done),
             Err(f) => {
                 let name = &plan.template.name;
-                self.note_notes_failure(&c, &id, name, &f.error, f.written.as_deref());
+                self.note_notes_failure(
+                    &c,
+                    &id,
+                    name,
+                    &f.error,
+                    f.written.as_deref(),
+                    f.answer.as_deref(),
+                );
                 Err(*f.error)
             }
         }
@@ -431,7 +454,12 @@ impl Core {
             .await;
         let requested = used.model.clone();
         let profile = resolved.profile_of(&used);
-        let out = answer?;
+        let out = answer.map_err(|e| Failure {
+            answer: (e.class == ErrorClass::InvalidOutput)
+                .then(|| reported.as_ref().and_then(unusable_answer))
+                .flatten(),
+            ..Failure::from(e)
+        })?;
         if plan.find_tasks {
             self.note_step(job, steps, FINDING)?;
         }
@@ -689,7 +717,8 @@ impl Core {
     /// A failed run: the meeting keeps why (`notes_error`) and is `failed` while it has no
     /// documents (one with documents stays `ready`); `run.log` says what happened, and that
     /// the documents are unchanged only when they are (`written` names a document file that
-    /// already got the new notes). A run that was stopped changes nothing on the meeting.
+    /// already got the new notes). A run that was stopped changes nothing on the meeting. An
+    /// answer that could not be used goes into `run.log` too, so the next failure can be told.
     fn note_notes_failure(
         &self,
         c: &Connection,
@@ -697,6 +726,7 @@ impl Core {
         template: &str,
         e: &WorkspaceError,
         written: Option<&str>,
+        answer: Option<&str>,
     ) {
         let _w = self.meeting_lock();
         let Ok(mut r) = self.repo() else {
@@ -711,6 +741,10 @@ impl Core {
             lines.push("Stopped before the notes were written.".into());
         } else {
             lines.push(format!("{} ({})", e.message, e.code));
+            if let Some(answer) = answer {
+                lines.push("Claude’s answer, its first 4,000 characters:".into());
+                lines.push(answer.to_string());
+            }
             if saved(m.state) {
                 m.notes_error = Some(ErrorInfo::from(e));
                 if m.docs.is_empty() {

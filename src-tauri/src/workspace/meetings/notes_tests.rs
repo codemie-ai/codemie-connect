@@ -2404,3 +2404,106 @@ async fn meeting_stamp_follows_the_meetings_own_account() {
     assert_eq!(gone.code, "not_found");
     assert!(menu_bar::seen(&r).meetings.contains_key("m1"));
 }
+
+/// What the runner gives back when a model answered in its text instead of the structured
+/// output the schema asked for (an Ollama model behind CodeMie): `invalid_output`, the answer
+/// kept as what the run spent.
+fn text_answer(text: &str) -> std::result::Result<RunOutcome, AiError> {
+    Err(
+        AiError::new(ErrorClass::InvalidOutput).with_spent(RunOutcome {
+            structured: None,
+            text: text.into(),
+            usage: Usage::default(),
+            cost_usd: None,
+            duration_ms: 155_000,
+            model: Some("gemma4-26b-64k".into()),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn notes_from_a_local_model_are_read_from_its_text() {
+    let envelope = r##"{"notesMarkdown": "# Синк\n\n- Решили: пилот в декабре", "tasks": [{"title": "Подготовить демо", "owner": "Marek Novak", "due": "", "line": 1, "confidence": "high",},],}"##;
+    let markdown = "# Синк\n\n- Решили: пилот в декабре\n- Марек готовит демо";
+    let n = notes_env(vec![
+        text_answer(&format!("```json\n{envelope}\n```")),
+        text_answer(&format!(
+            "Конечно! Вот заметки по встрече:\n\n{envelope}\n\nЕсли нужно, могу сократить."
+        )),
+        text_answer(&format!(
+            "<think>\nThe template wants {{informal}} notes. JSON with notesMarkdown.\n</think>\n{envelope}"
+        )),
+        text_answer(&format!("<think>Пишу заметки.</think>\n\n{markdown}\n")),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for round in 1..=4 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        let ran = run_jobs(&e.core).await;
+        let job = ran.iter().find(|j| j.kind == "meeting_notes").unwrap();
+        assert_eq!(job.state, "succeeded", "round {round}: {job:?}");
+        let notes = text(&dir.join("notes.md"));
+        assert!(
+            notes.starts_with("# Синк\n\n- Решили: пилот в декабре"),
+            "round {round}: {notes}"
+        );
+        assert!(
+            !notes.contains("think") && !notes.contains("```"),
+            "{notes}"
+        );
+        // The task the JSON rounds found, once; the Markdown round finds none.
+        assert_eq!(tasks_of(&e.core, "m1").len(), 1, "round {round}");
+    }
+    assert_eq!(
+        text(&dir.join("notes.md")),
+        markdown,
+        "Markdown with no JSON at all is the notes"
+    );
+}
+
+#[tokio::test]
+async fn a_cut_off_answer_fails_and_run_log_keeps_its_beginning() {
+    // A sentinel at the start, cut off by the output limit long after 4,000 characters.
+    let long = format!(
+        "{{\"notesMarkdown\": \"SENTINEL-OLLAMA-7f3 {}",
+        "очень длинные заметки ".repeat(400)
+    );
+    let n = notes_env(vec![
+        text_answer(&long),
+        text_answer("<think>Let me think about the {notesMarkdown"),
+        text_answer("   "),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for _ in 0..3 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        let ran = run_jobs(&e.core).await;
+        let job = ran.iter().find(|j| j.kind == "meeting_notes").unwrap();
+        assert_eq!(job.error_code.as_deref(), Some("invalid_output"), "{job:?}");
+    }
+    assert!(!dir.join("notes.md").exists());
+    let log = text(&dir.join("run.log"));
+    assert!(log.contains("Meeting notes · failed"), "{log}");
+    assert!(
+        log.contains("Claude’s answer, its first 4,000 characters:"),
+        "{log}"
+    );
+    assert!(log.contains("SENTINEL-OLLAMA-7f3"), "{log}");
+    let kept: String = long.chars().take(4000).collect();
+    assert!(log.contains(&kept), "the first 4,000 characters");
+    assert!(!log.contains(&long.chars().take(4001).collect::<String>()));
+    assert!(
+        log.contains("<think>Let me think about the {notesMarkdown"),
+        "{log}"
+    );
+    // Never the ledger.
+    let runs = e.core.repo().unwrap().records_of_kind("ai_run").unwrap();
+    assert_eq!(runs.len(), 3);
+    assert!(runs
+        .iter()
+        .all(|r| !r.data.to_string().contains("SENTINEL")));
+}

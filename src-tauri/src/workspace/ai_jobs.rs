@@ -10,6 +10,7 @@ use super::{
 };
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::AiProfile;
+use crate::ai::salvage;
 use crate::ai::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -673,12 +674,18 @@ impl Core {
                 done = &mut running => break done,
             }
         };
+        // An answer that missed the structured output may still be in the text (a local model).
+        let read = |o: &RunOutcome| {
+            salvage::candidates(o)
+                .iter()
+                .find_map(&parse)
+                .ok_or_else(|| AiError::new(ErrorClass::InvalidOutput))
+        };
         let answer = match &result {
-            Ok(o) => o
-                .structured
-                .as_ref()
-                .and_then(&parse)
-                .ok_or_else(|| AiError::new(ErrorClass::InvalidOutput)),
+            Ok(o) => read(o),
+            Err(e) if e.class == ErrorClass::InvalidOutput => {
+                e.spent.as_deref().map_or_else(|| Err(e.clone()), read)
+            }
             Err(e) => Err(e.clone()),
         };
         // A run that ended in an error may still have reported what it cost.
@@ -1464,6 +1471,40 @@ mod tests {
         assert!(!serde_json::to_string(&record)
             .unwrap()
             .contains("board meets"));
+    }
+
+    #[tokio::test]
+    async fn a_draft_in_the_text_of_a_local_model_is_used_but_plain_text_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_text = |text: &str| {
+            let mut spent = answer(Value::Null, "gemma4-26b-64k", 900, 0.0);
+            spent.structured = None;
+            spent.text = text.into();
+            Err(AiError::new(ErrorClass::InvalidOutput).with_spent(spent))
+        };
+        let fake = Arc::new(FakeRunner::new(vec![
+            in_text("<think>Short and polite.</think>\n```json\n{\"draft\": \"Monday works.\", \"questions\": [],}\n```"),
+            in_text("Monday works."),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        assert_eq!(job(&core, &queued["jobId"]).state, "succeeded");
+        assert_eq!(draft(&core, "ai:m3").unwrap().data["text"], "Monday works.");
+        assert_eq!(ai_runs(&core)[0].data["status"], "ok");
+        // Plain text is a notes body only: a draft needs its JSON.
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let failed = job(&core, &queued["jobId"]);
+        assert_eq!(failed.error_class.as_deref(), Some("invalid_output"));
     }
 
     #[tokio::test]
