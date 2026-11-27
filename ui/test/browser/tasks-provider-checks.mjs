@@ -456,6 +456,29 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
     await context.close().catch(() => {});
   }
 
+  // A pull the loaded plugin refused (amended 2026-11-27): the failed banner with its sentence,
+  // never "offline" and never "didn't load".
+  {
+    const patch = snapshot => {
+      snapshot.taskProvider = taskProvider('failed', {
+        available: STATES.failed.available.map(a => (a.id === 'plugin:todoist' ? { ...a, ready: true } : a)),
+        message: "Todoist didn't accept the change (400)",
+      });
+      for (const r of snapshot.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
+    };
+    const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, hash: '#/tasks', patch });
+    await check('tasks-provider P8: a refused pull shows the failed banner with the provider sentence', async () => {
+      await page.waitForSelector('.ws-tdate-banner');
+      await settled(page);
+      const text = (await page.locator('.ws-tdate-banner').innerText()).trim();
+      assert(text === "Todoist refused the last sync: Todoist didn't accept the change (400).", text);
+      const line = await page.locator('.ws-tasks-line').innerText();
+      assert(!/can't be reached/.test(line), line);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
   // I1: a plugin still loading reads as neutral, never the "didn't load" banner.
   {
     const patch = snapshot => {

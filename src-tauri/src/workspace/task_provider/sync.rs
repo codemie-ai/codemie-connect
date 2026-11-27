@@ -60,7 +60,8 @@ const WINDOW_MS: i64 = 15 * 60 * 1000;
 /// What one run did; its `summary` is the job's result (codes and counts, never provider text).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncOutcome {
-    /// `ready`, `offline`, `rate_limited`, `needs_token`, `off` or `failed`.
+    /// `ready`, `offline`, `rate_limited`, `needs_token`, `off` or `failed` (the plugin isn't
+    /// loaded, or it refused the pull).
     pub state: String,
     pub pushed: usize,
     pub parked: usize,
@@ -165,6 +166,9 @@ enum Stop {
     NeedsToken,
     /// The 15-minute budget is spent until this time (s).
     Budget(i64),
+    /// The provider refused the pull (`refused`, `not_found`): the provider's `failed` state,
+    /// with its sentence in the run's message, until a run goes through.
+    Refused,
 }
 
 /// Seconds and milliseconds from the run's `now`, advanced by tokio's clock.
@@ -564,6 +568,7 @@ impl Run<'_> {
             Stop::RateLimited(_) => "rate_limited",
             Stop::NeedsToken => "needs_token",
             Stop::Budget(_) => "budget",
+            Stop::Refused => "refused",
         }
         .into();
         r.commit_local(&[e], &[], false)
@@ -852,6 +857,7 @@ impl Run<'_> {
         self.pulled = true;
         let mut cursor = self.st["cursor"].clone();
         if !self.st["reread"].is_null() && !cursor.is_null() {
+            let message = self.message.clone();
             // Asked to read everything again: first what changed since the cursor, so what was
             // done or deleted there meanwhile follows the usual rules (I1). A cursor the provider
             // no longer takes is skipped for the full list.
@@ -861,7 +867,8 @@ impl Run<'_> {
                     // Kept, so a full list that then fails doesn't replay these changes.
                     self.st["cursor"] = changes["cursor"].clone();
                 }
-                Err(None) => {}
+                // Skipped, so its refusal names nothing for the banner.
+                Err(None) => self.message = message,
                 Err(Some(stop)) => return Ok(Some(stop)),
             }
             cursor = Value::Null;
@@ -877,7 +884,7 @@ impl Run<'_> {
                 }
                 Ok(None)
             }
-            Err(stop) => Ok(Some(stop.unwrap_or(Stop::Offline))),
+            Err(stop) => Ok(Some(stop.unwrap_or(Stop::Refused))),
         }
     }
 
@@ -886,7 +893,14 @@ impl Run<'_> {
         match self.ask("changedSince", json!({"cursor": cursor})).await {
             Err(stop) => Err(Some(stop)),
             Ok(Ok(changes)) => Ok(changes),
-            Ok(Err(ProviderError::Refused(_) | ProviderError::NotFound(_))) => Err(None),
+            Ok(Err(e @ (ProviderError::Refused(_) | ProviderError::NotFound(_)))) => {
+                // Kept for the banner unless it holds the secret (as `failed` checks).
+                self.message = e
+                    .text()
+                    .filter(|t| !self.providers.secret_matches(&self.plugin, t))
+                    .map(str::to_string);
+                Err(None)
+            }
             Ok(Err(ProviderError::Offline)) => Err(Some(Stop::Offline)),
             Ok(Err(ProviderError::RateLimited { retry_after })) => {
                 Err(Some(Stop::RateLimited(retry_after)))
@@ -1201,6 +1215,11 @@ impl Run<'_> {
             }
             Some(Stop::NeedsToken) => {
                 self.st["state"] = "needs_token".into();
+                self.st["backoffUntil"] = Value::Null;
+            }
+            // No retry of its own: the background round tries again within 5 minutes.
+            Some(Stop::Refused) => {
+                self.st["state"] = "failed".into();
                 self.st["backoffUntil"] = Value::Null;
             }
         }
@@ -1525,6 +1544,27 @@ mod tests {
             .any(|j| j.kind == JOB_KIND && j.state == "queued"));
         assert_eq!(e.sync(NOW + 5001).await.state, "ready");
         assert!(e.task("t2").unwrap()["remote"]["id"].is_string());
+    }
+
+    /// A pull the provider refuses (a 4xx other than auth) is not "offline": the provider shows
+    /// its failed state with the provider's sentence, and the next good run is ready again.
+    #[tokio::test]
+    async fn a_refused_pull_shows_failed_with_the_message_not_offline() {
+        let e = env();
+        e.fake.answer(
+            "changedSince",
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into(),
+            )),
+        );
+        let o = e.sync(NOW).await;
+        assert_eq!(o.state, "failed");
+        let snap = e.snapshot();
+        assert_eq!(snap["state"], "failed");
+        assert_eq!(snap["message"], "Todoist didn't accept the change (400)");
+        assert_eq!(snap["retryAt"], Value::Null);
+        assert_eq!(e.sync(NOW + 300).await.state, "ready");
+        assert_eq!(e.snapshot()["message"], Value::Null);
     }
 
     #[tokio::test]

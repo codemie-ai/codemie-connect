@@ -93,7 +93,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   "copyOffered": false }
 ```
 
-`state` is one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off` (the plugin is installed and turned off), `loading` (the plugin manager still has a reload under way; a provider that isn't `ready` yet may simply not have finished loading, not have failed — I1) or `failed` (it ran and didn't load). A contract fixture, `task-provider-states.json`, holds one real snapshot part per state.
+`state` is one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off` (the plugin is installed and turned off), `loading` (the plugin manager still has a reload under way; a provider that isn't `ready` yet may simply not have finished loading, not have failed — I1) or `failed` (it ran and didn't load; or, amended 2026-11-27, it loaded and refused the last pull, with its sentence in `message`). A contract fixture, `task-provider-states.json`, holds one real snapshot part per state.
 
 ### 3. Keys and the ledger
 
@@ -141,6 +141,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - `offline` (network failure or a 5xx): retry after 30 s, doubling to 15 minutes; reset on success;
 - `rate_limited`: nothing is sent until `retryAt` (`Retry-After`, else 60 s), shown in Settings and the Tasks header;
 - `needs_token` (401 or 403): no call until the token is saved again, which queues a sync;
+- **a refused pull (amended 2026-11-27)**: `changedSince` answered `refused:` or `not_found:` (another 4xx) is not `offline`. The run ends `failed` with the provider's sentence as `message` (never one holding the secret), no backoff of its own; the background round tries again within 5 minutes and a run that goes through is `ready` again. A refused cursor during a re-read is still skipped for the full list;
 - `off` or `failed`: no call; changes keep queueing.
 - **Budget:** at most 4 requests a second and 300 in any 15 minutes. That is well under Todoist's published per-user limits (about 1,000 requests and 100 full syncs per 15 minutes at the time of writing). A full pull happens on the first sync, on a switch, on "Check", on "Sync now", and when the provider plugin's version or a provider setting (its project, its Show scope) changes (amended 2026-11-27).
 
@@ -292,7 +293,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Banners** (one at a time, above the groups):
   - `needs_token`: "Todoist needs your API token." with "Open Settings";
   - `off`: "Todoist is turned off in Settings › Plugins. You're seeing the last copy; changes wait.";
-  - `failed`: "The Todoist plugin didn't load: <reason>.";
+  - `failed`: "The Todoist plugin didn't load: <reason>."; when the plugin loaded and refused the last pull (amended 2026-11-27): "Todoist refused the last sync: <message>.";
   - `offline` and `rate_limited` stay in the header line only.
 
 **Local and By date.** Local can use By date too: the same groups over Local's open tasks, without Open in Todoist. Waiting status and "someone else's" both read as Check with.
@@ -365,7 +366,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   - "Todoist can't be reached · <n> changes wait · trying again at <time>";
   - "Todoist asked Connect to slow down · trying again at <time>";
   - "Connect · on this Mac".
-- **Banners:** "Todoist needs your API token." with "Open Settings"; "Todoist is turned off in Settings › Plugins. You're seeing the last copy; changes wait."; "The Todoist plugin didn't load: <reason>."
+- **Banners:** "Todoist needs your API token." with "Open Settings"; "Todoist is turned off in Settings › Plugins. You're seeing the last copy; changes wait."; "The Todoist plugin didn't load: <reason>."; "Todoist refused the last sync: <message>." (amended 2026-11-27)
 - **By date:**
   - groups "To review · <n>", "Late · <n>", "Today", "Later";
   - folds "Next 7 days", "No date", "Later than that";

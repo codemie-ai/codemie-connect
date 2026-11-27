@@ -208,3 +208,19 @@ test('foldOf: the Later fold a task sits in (Next 7 days, No date, Later than th
   assert.equal(at('far'), 'later');
   for (const id of ['late', 'today', 'review', 'gone']) assert.equal(at(id), null);
 });
+
+test('a refused pull shows the failed banner with the provider sentence, not "didn\'t load"', () => {
+  const s = snapshot([task('a', provider({ text: 'One', due: '2026-11-18' }))], 'failed');
+  // The plugin loaded (ready) and refused the pull: its sentence is the reason.
+  s.taskProvider = {
+    ...STATES.failed,
+    available: STATES.failed.available.map(a => (a.id === 'plugin:todoist' ? { ...a, ready: true } : a)),
+    message: "Todoist didn't accept the change (400) <b>",
+  };
+  const html = tasksPage(s, { state: { tasks: newTasksView() }, now: NOW });
+  assert.match(html, /class="ws-tdate-banner" role="alert">[^]*Todoist refused the last sync: Todoist didn&#39;t accept the change \(400\) &lt;b&gt;\./);
+  assert.ok(!html.includes("plugin didn't load"));
+  // A plugin that didn't load keeps its own banner.
+  const notLoaded = tasksPage(snapshot([], 'failed'), { state: { tasks: newTasksView() }, now: NOW });
+  assert.ok(notLoaded.includes("The Todoist plugin didn't load."));
+});

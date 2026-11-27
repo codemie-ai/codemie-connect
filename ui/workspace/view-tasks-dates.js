@@ -22,6 +22,9 @@ function banner(tp) {
     return `<div class="ws-tdate-banner" role="alert">${icon('alert')}<span>${name} needs your API token.</span>${button('Open Settings', { action: 'settings-tab', size: 'sm', attrs: { 'data-tab': 'meetings-tasks' } })}</div>`;
   }
   if (tp?.state === 'off') return `<div class="ws-tdate-banner" role="alert">${icon('alert')}<span>${name} is turned off in Settings › Plugins. You're seeing the last copy; changes wait.</span></div>`;
+  // `failed` with the plugin loaded: it refused the last pull, and its sentence says why.
+  const loaded = tp?.available?.some(a => a.id === tp.active && a.ready === true);
+  if (tp?.state === 'failed' && loaded) return `<div class="ws-tdate-banner" role="alert">${icon('alert')}<span>${name} refused the last sync${tp.message ? `: ${e(tp.message)}` : ''}.</span></div>`;
   if (tp?.state === 'failed') return `<div class="ws-tdate-banner" role="alert">${icon('alert')}<span>The ${name} plugin didn't load${tp.message ? `: ${e(tp.message)}` : ''}.</span></div>`;
   return '';
 }

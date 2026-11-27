@@ -69,7 +69,7 @@ pub(crate) enum ProviderState {
     NeedsToken,
     /// The plugin is installed and turned off.
     Off,
-    /// The plugin didn't load.
+    /// The plugin didn't load, or it refused the last pull (amended 2026-11-27).
     Failed,
     /// The plugin manager hasn't finished loading it yet (I1: not a failure, so not a fix).
     Loading,
@@ -180,6 +180,7 @@ impl ProviderState {
             "offline" => Self::Offline,
             "rate_limited" => Self::RateLimited,
             "needs_token" => Self::NeedsToken,
+            "failed" => Self::Failed,
             _ => Self::Ready,
         }
     }
