@@ -297,7 +297,7 @@ export async function voiceChecks({ open, check, assert, shot, settled, calls, O
       await page.waitForSelector(`${dialog} .ws-modal-header h2`);
       await page.waitForTimeout(200);
       assert(squash(await text(page, `${dialog} .ws-modal-header h2`)) === "Delete Connect's copy of your voice?", 'dialog title');
-      assert(squash(await text(page, `${dialog} .ws-modal-text`)) === 'Connect stops adding your voice to drafts and turns it off. Your Knowledge folder is not touched; choose Knowledge again to make a new copy.', 'dialog body');
+      assert(squash(await text(page, `${dialog} .ws-modal-text`)) === 'Connect stops adding your voice to drafts, turns it off and clears your Ask history, whose answers may quote it. Your Knowledge folder is not touched; choose Knowledge again to make a new copy.', 'dialog body');
       const focused = await page.evaluate(() => document.activeElement?.textContent?.trim());
       assert(focused === 'Cancel', `focus is on ${focused}`);
       await shot(page, 'voice-delete-dark');

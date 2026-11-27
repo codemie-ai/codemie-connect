@@ -17,6 +17,7 @@ use super::{copy, refresh, skills, VoiceError};
 use crate::ai::command::RunSpec;
 use crate::ai::stream::ErrorClass;
 use crate::workspace::ai::RouteKey;
+use crate::workspace::ask::ops::stop_answers;
 use crate::workspace::models::{now, Operation, Purpose, Request, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::{prompts, Core};
@@ -298,14 +299,22 @@ fn record(r: &mut Repository, asked: &Asked, epoch: usize, now: i64) -> Result<V
     Ok(json!({"item": item}))
 }
 
-/// `voice_forget {}` (design §6): sets Off and deletes every copy record in one transaction;
-/// nothing in the provider's folder is touched.
+/// `voice_forget {}` (design §6): sets Off and deletes every copy record and every Ask thread
+/// in one transaction (an Ask answer may quote what came from the voice); an Ask answer still
+/// coming is stopped first. Nothing in the provider's folder is touched.
 fn forget(core: &Core, r: &mut Repository) -> Result<Value> {
     core.voice_epoch.fetch_add(1, Ordering::SeqCst);
     let mut s = r.settings()?;
     s.voice.provider = "off".into();
-    let deleted = copy::forget_with(r, &s)?;
-    log::info!("voice: copy deleted ({deleted} records)");
+    let stopped = stop_answers(r, |_| true)?;
+    let deleted = copy::forget_with_ask_history(r, &s)?;
+    for job_id in &stopped {
+        core.cancel_ai_job(job_id);
+    }
+    log::info!(
+        "voice: copy and Ask history deleted ({deleted} records), stopped {}",
+        stopped.len()
+    );
     Ok(json!({"deleted": deleted, "provider": "off"}))
 }
 
@@ -984,6 +993,84 @@ pub(crate) mod tests {
         assert!(e.copy().is_none());
         assert_eq!(e.snapshot()["state"], "off");
         assert_eq!(e.snapshot()["copy"], false);
+    }
+
+    #[tokio::test]
+    async fn forget_deletes_ask_history_so_no_voice_text_survives() {
+        use crate::workspace::ask::store::{self, tests as ask_t, Cite, TurnState};
+        let e = env();
+        e.choose_with_copy().await;
+        // A thread that cited a person's about text and a fact, and replays it in a follow-up
+        // that cites nothing; and a thread that cited no voice item.
+        let mut cited = ask_t::turn(1, 100, "What does Priya prefer?", TurnState::Done);
+        cited.answer = Some(format!("Priya prefers mornings [p1]; {SENTINEL} [f1]."));
+        cited.cites = vec![
+            Cite {
+                id: "p1".into(),
+                kind: "person".into(),
+                record_id: Some("priya-n".into()),
+                label: Some(format!("Priya N. {SENTINEL}")),
+                title: None,
+            },
+            Cite {
+                id: "f1".into(),
+                kind: "fact".into(),
+                record_id: None,
+                label: None,
+                title: Some(format!("Budget fact {SENTINEL}")),
+            },
+        ];
+        let mut replayed = ask_t::turn(2, 110, "And on Fridays?", TurnState::Done);
+        replayed.answer = Some(format!("As said before, {SENTINEL}."));
+        let mut plain = ask_t::turn(1, 120, "When is the QBR?", TurnState::Done);
+        plain.answer = Some("Thursday.".into());
+        {
+            let mut r = e.core.repo().unwrap();
+            store::write(
+                &mut r,
+                &ask_t::thread("ask-voice", 110, vec![cited, replayed]),
+            )
+            .unwrap();
+            store::write(&mut r, &ask_t::thread("ask-plain", 120, vec![plain])).unwrap();
+        }
+        // A question still waiting for its answer is stopped too.
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_profile = Some("claude".into());
+            r.settings_update(&s).unwrap();
+        }
+        let asked = e
+            .op(
+                Operation::AskStart,
+                json!({"threadId": "ask-voice", "question": "Anything else?"}),
+            )
+            .await
+            .unwrap();
+
+        let answer = e.op(Operation::VoiceForget, json!({})).await.unwrap();
+        assert_eq!(answer["provider"], "off");
+        let r = e.core.repo().unwrap();
+        assert!(
+            store::list(&r).unwrap().is_empty(),
+            "every Ask thread is gone"
+        );
+        assert!(r.records_of_kind(store::KIND).unwrap().is_empty());
+        let job = r
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| asked["jobId"] == j.id.as_str())
+            .unwrap();
+        assert_eq!(job.state, "cancelled");
+        let snapshot = serde_json::to_string(&r.snapshot().unwrap()).unwrap();
+        assert!(
+            !snapshot.contains(SENTINEL),
+            "the snapshot carries no voice text"
+        );
+        let settings = r.settings().unwrap();
+        drop(r);
+        assert_eq!(e.core.ask_snapshot(&settings)["threads"], json!([]));
     }
 
     #[tokio::test]

@@ -478,6 +478,15 @@ pub fn forget_with(r: &mut Repository, settings: &Settings) -> Result<usize> {
     r.forget_voice(Some(settings), &KINDS)
 }
 
+/// [`forget_with`] that also deletes every Ask thread in the same transaction (`voice_forget`):
+/// an answer, its cites and the turns a follow-up replays may quote people's about text and
+/// facts, and no turn records which of them it was given. Answers how many records went.
+pub fn forget_with_ask_history(r: &mut Repository, settings: &Settings) -> Result<usize> {
+    let mut kinds = KINDS.to_vec();
+    kinds.push(crate::workspace::ask::store::KIND);
+    r.forget_voice(Some(settings), &kinds)
+}
+
 /// Reads the stored copy, or `None` when nothing has ever been replaced into it.
 pub fn read_copy(r: &Repository) -> Result<Option<Copy>> {
     let Some(meta_record) = r.records_of_kind(KIND_META)?.into_iter().next() else {

@@ -393,18 +393,7 @@ impl Core {
         } else {
             vec![required(&req.data, "threadId", 200)?.to_string()]
         };
-        let mut stopped = Vec::new();
-        for mut j in r.jobs()?.into_iter().filter(|j| {
-            j.kind == KIND
-                && matches!(j.state.as_str(), "queued" | "running")
-                && j.payload["threadId"]
-                    .as_str()
-                    .is_some_and(|t| ids.iter().any(|i| i == t))
-        }) {
-            j.state = "cancelled".into();
-            r.save_job(&j)?;
-            stopped.push(j.id);
-        }
+        let stopped = stop_answers(&mut r, |t| ids.iter().any(|i| i == t))?;
         let deleted = if all {
             store::delete_all(&mut r)?
         } else {
@@ -895,6 +884,23 @@ impl Core {
             zone: settings.time_zone,
         })
     }
+}
+
+/// Marks every queued or running answer of a thread `of` picks cancelled, so its job writes
+/// nothing; answers their job ids, whose runs the caller stops once the repository is let go
+/// (`Core::cancel_ai_job`).
+pub(crate) fn stop_answers(r: &mut Repository, of: impl Fn(&str) -> bool) -> Result<Vec<String>> {
+    let mut stopped = Vec::new();
+    for mut j in r.jobs()?.into_iter().filter(|j| {
+        j.kind == KIND
+            && matches!(j.state.as_str(), "queued" | "running")
+            && j.payload["threadId"].as_str().is_some_and(&of)
+    }) {
+        j.state = "cancelled".into();
+        r.save_job(&j)?;
+        stopped.push(j.id);
+    }
+    Ok(stopped)
 }
 
 #[cfg(test)]

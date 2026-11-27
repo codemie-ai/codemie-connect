@@ -163,8 +163,8 @@ export function createVoiceController({
   function forget() {
     const n = chosen() ? name() : rv().name;
     const body = n
-      ? `Connect stops adding your voice to drafts and turns it off. Your ${n} folder is not touched; choose ${n} again to make a new copy.`
-      : 'Connect stops adding your voice to drafts and turns it off. The provider\'s folder is not touched; choose it again to make a new copy.';
+      ? `Connect stops adding your voice to drafts, turns it off and clears your Ask history, whose answers may quote it. Your ${n} folder is not touched; choose ${n} again to make a new copy.`
+      : 'Connect stops adding your voice to drafts, turns it off and clears your Ask history, whose answers may quote it. The provider\'s folder is not touched; choose it again to make a new copy.';
     openModal({
       title: 'Delete Connect\'s copy of your voice?',
       body: `<p class="ws-modal-text">${e(body)}</p>`,

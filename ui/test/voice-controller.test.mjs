@@ -199,7 +199,7 @@ test('Delete Connect\'s copy asks first; Cancel is the default; confirming sends
   assert.equal(calls.mutate.length, 0, 'nothing before the answer');
   const modal = calls.modals[0];
   assert.equal(modal.title, "Delete Connect's copy of your voice?");
-  assert.equal(text(modal.body), "Connect stops adding your voice to drafts and turns it off. Your Knowledge folder is not touched; choose Knowledge again to make a new copy.");
+  assert.equal(text(modal.body), "Connect stops adding your voice to drafts, turns it off and clears your Ask history, whose answers may quote it. Your Knowledge folder is not touched; choose Knowledge again to make a new copy.");
   assert.equal(modal.submit, 'Delete copy');
   assert.equal(modal.cancel, 'Cancel');
   assert.equal(modal.returnCancels, true, 'Cancel focused and Return cancels');

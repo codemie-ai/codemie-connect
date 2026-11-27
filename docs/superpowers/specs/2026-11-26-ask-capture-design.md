@@ -170,7 +170,7 @@ The whole context stays under **32,000 characters**: a source over its cap drops
 - **A thread** is one bookkeeping record of kind `ask_thread` in `workspace.sqlite` (the data root), not in the snapshot's `records`: `{id, createdAt, updatedAt, nextRef, turns: [Turn]}`; `nextRef` is the per-conversation id counter (§ 3, ruling 33), starting at 1.
 - **A turn:** `{id, at, question, about: {kind, recordId, label} | null, state, answer, cites, actions, searched, cut, profile, model, fellBackFrom, error: {code, message} | null, jobId}`; `state` is `queued`, `running`, `done`, `failed` or `stopped`.
 - **Kept** 30 days after a thread's last turn; at most 50 threads (the least recently updated go first); at most 20 turns per thread (the 21st is refused, § 6). Pruned on every `ask_start` and once at start-up. A moved data folder carries them; they hold no secret.
-- **Deleted** one at a time (the page's ⋯ › Delete, at once, no Undo) or all (Clear history, after a dialog). A delete while a turn of that thread runs cancels its job first.
+- **Deleted** one at a time (the page's ⋯ › Delete, at once, no Undo) or all (Clear history, after a dialog). A delete while a turn of that thread runs cancels its job first. Settings › Your voice › Delete Connect's copy (`voice_forget`) also deletes every thread, in the same transaction as the copy, and stops a running answer: an answer may quote people's `about` text and facts from the voice, in its text, its cites or the turns a follow-up replays.
 - **A cited record that is gone** shows its chip greyed, "No longer in Connect", not a link.
 
 ### 6. Native operations and shapes
