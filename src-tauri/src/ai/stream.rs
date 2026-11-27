@@ -13,6 +13,8 @@ pub enum ErrorClass {
     TooOld,
     NeedsLogin,
     NotConfigured,
+    /// The CodeMie server no longer takes this CodeMie CLI (HTTP 426): updating CodeMie fixes it.
+    CodemieOutdated,
     /// No profile chosen yet (set by the caller, never by the runner).
     NeedsChoice,
     RateLimited,
@@ -39,6 +41,7 @@ impl AiError {
             ErrorClass::TooOld => "This Claude Code is too old for AI features.",
             ErrorClass::NeedsLogin => "Claude is not signed in.",
             ErrorClass::NotConfigured => "The CodeMie profile is not fully configured.",
+            ErrorClass::CodemieOutdated => "This CodeMie CLI is too old for CodeMie. Update CodeMie in Settings › CodeMie, then try again.",
             ErrorClass::NeedsChoice => "Choose which Claude should write for you.",
             ErrorClass::RateLimited => "Claude is rate limited right now.",
             ErrorClass::Timeout => "Claude took too long to answer.",
@@ -103,7 +106,9 @@ pub struct RunOutcome {
 pub fn classify_text(text: &str) -> Option<ErrorClass> {
     let t = text.to_lowercase();
     let has = |n: &str| t.contains(n);
-    if has("configuration incomplete") {
+    if has("unsupported codemie cli version") {
+        Some(ErrorClass::CodemieOutdated)
+    } else if has("configuration incomplete") {
         Some(ErrorClass::NotConfigured)
     } else if has("not logged in")
         || has("/login")
@@ -333,6 +338,26 @@ mod tests {
         let out = parse_stream(lines(include_str!("testdata/noisy.jsonl"))).unwrap();
         assert_eq!(out.text, "ok");
         assert!(out.structured.is_none());
+    }
+
+    #[test]
+    fn a_codemie_cli_the_server_no_longer_takes_is_named() {
+        // What CodeMie answered every run once it required CLI 0.17.2 (2026-11-24): the run
+        // ends at once with an error result naming the fix.
+        let e = parse_stream([
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}"#,
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 426 {\"detail\":\"Unsupported CodeMie CLI version '0.17.1'. Please upgrade to CodeMie CLI 0.17.2 or higher. Run: npm install -g @codemieai/code\"}","duration_ms":1484}"#,
+        ])
+        .unwrap_err();
+        assert_eq!(e.class, ErrorClass::CodemieOutdated);
+        assert_eq!(e.message, "This CodeMie CLI is too old for CodeMie. Update CodeMie in Settings › CodeMie, then try again.");
+        // Said on stderr only, as some CLI builds do.
+        assert_eq!(
+            classify_text("Error: 426 Upgrade Required: unsupported CodeMie CLI version"),
+            Some(ErrorClass::CodemieOutdated)
+        );
+        // Another 426 is not this.
+        assert_eq!(classify_text("HTTP 426 from a proxy"), None);
     }
 
     #[test]

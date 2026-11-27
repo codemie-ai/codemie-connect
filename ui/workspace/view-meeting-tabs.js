@@ -352,7 +352,10 @@ function lastRunBanner(mc) {
   const err = mc.notesError || {};
   const login = err.code === 'needs_login';
   const choice = err.code === 'needs_choice';
-  return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${mc.docs.length ? 'The last notes run didn’t finish' : 'The notes weren’t written'}</strong><p>${e(err.message || 'Claude stopped before the notes were ready.')} ${mc.docs.length ? 'Your documents are as they were.' : 'Nothing was lost — the transcript is in the folder, and the run log is in Files.'}</p></div><div class="ws-actions">${login || choice ? button(login ? 'Sign in again' : 'Choose Claude', { action: 'ai-open-settings', variant: 'ghost' }) : ''}${button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } })}</div></div>`;
+  // The CodeMie server no longer takes this CLI (ai/stream.rs `CodemieOutdated`): Settings ›
+  // CodeMie updates it.
+  const outdated = err.code === 'codemie_outdated';
+  return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${mc.docs.length ? 'The last notes run didn’t finish' : 'The notes weren’t written'}</strong><p>${e(err.message || 'Claude stopped before the notes were ready.')} ${mc.docs.length ? 'Your documents are as they were.' : 'Nothing was lost — the transcript is in the folder, and the run log is in Files.'}</p></div><div class="ws-actions">${login || choice ? button(login ? 'Sign in again' : 'Choose Claude', { action: 'ai-open-settings', variant: 'ghost' }) : ''}${outdated ? button('Update CodeMie', { action: 'setup-tools', variant: 'ghost', iconName: 'download' }) : ''}${button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } })}</div></div>`;
 }
 
 /** What fixes a missing meeting folder: download it again from Teams, or import it again. */

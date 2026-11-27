@@ -135,6 +135,8 @@ const retry = (job, label = 'Try again', kind = 'draft') => ({
 const CHOOSE = { draft: 'ai-draft-choose', summary: 'ai-summarize-choose', automation: 'automation-choose' };
 const settingsAction = { label: 'Open Claude settings', action: 'ai-open-settings', iconName: 'settings' };
 const setupAction = { label: 'Set up CodeMie', action: 'cm-setup-open', iconName: 'download' };
+/** Settings › CodeMie, where Install … now updates the CLI. */
+export const updateCodemieAction = { label: 'Update CodeMie', action: 'setup-tools', iconName: 'download' };
 const signInAction = (profileId) => ({ label: 'Sign in', action: 'cm-profile-login', iconName: 'link', attrs: { 'data-id': profileId.slice('codemie:'.length) } });
 
 /**
@@ -164,6 +166,7 @@ export function draftError(job, { profiles = [], settings = {}, kind = 'draft' }
     case 'not_installed': return { tone: 'warning', sentence: "Claude Code isn't installed on this Mac.", action: settingsAction };
     case 'too_old': return { tone: 'warning', sentence: `This Claude Code is too old to ${task}.`, action: settingsAction };
     case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: setupAction };
+    case 'codemie_outdated': return { tone: 'warning', sentence: `This CodeMie CLI is too old to ${task}.`, action: updateCodemieAction };
     case 'rate_limited': return { tone: 'warning', sentence: "Claude's usage limit was reached. Try again later.", action: null };
     case 'permission_required': return { tone: 'warning', sentence: automation ? 'Connect may no longer read what this automation needs.' : `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
     case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job, 'Try again', kind) };

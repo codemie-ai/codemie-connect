@@ -1696,6 +1696,11 @@ test('save and notes errors show apart: a failed Download again on saved notes, 
   // A failed notes run: the notes banner, whose Try again makes the notes again.
   const critique = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique' })));
   assert.match(critique, /The notes weren’t written[^]*?data-action="meeting-retry" data-id="mtg-critique"/);
+  assert.doesNotMatch(critique, /data-action="setup-tools"/);
+  // A CodeMie CLI the server no longer takes: its own words, and Update CodeMie beside Try again.
+  meetingData(s, 'mtg-critique').notesError = { code: 'codemie_outdated', message: 'This CodeMie CLI is too old for CodeMie. Update CodeMie in Settings › CodeMie, then try again.' };
+  const outdated = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique' })));
+  assert.match(outdated, /The notes weren’t written[^]*?This CodeMie CLI is too old for CodeMie\.[^]*?data-action="setup-tools"[^>]*>[^]*?Update CodeMie[^]*?data-action="meeting-retry"/);
   assert.doesNotMatch(critique, /Download again didn’t work|Couldn’t get the transcript/);
   // An older record with one lastError reads as before: on a found transcript, the save's.
   const vendor = meetingData(s, 'mtg-vendor');
