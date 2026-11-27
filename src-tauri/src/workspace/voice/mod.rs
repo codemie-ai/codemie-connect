@@ -53,6 +53,7 @@ pub struct VoiceInfo {
     pub name: String,
     pub on: bool,
     pub ready: bool,
+    #[serde(default)]
     pub facts: bool,
 }
 
@@ -150,21 +151,16 @@ impl super::Core {
             .iter()
             .map(|p| json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready, "facts": p.facts}))
             .collect();
-        let name = listed
-            .iter()
-            .find(|p| p.id == provider)
-            .map(|p| p.name.clone());
-        let facts_offered = listed
-            .iter()
-            .find(|p| p.id == provider)
-            .is_some_and(|p| p.facts);
+        let chosen = listed.iter().find(|p| p.id == provider);
+        let name = chosen.map(|p| p.name.clone());
+        let facts_offered = chosen.is_some_and(|p| p.facts);
         let r = self.repo().ok();
         let c = r.as_deref().and_then(|r| copy::read_copy(r).ok()).flatten();
         let loading = self.voice_providers.get().is_some_and(|p| p.loading());
         let state = if provider == "off" {
             VoiceState::Off
         } else {
-            match listed.iter().find(|p| p.id == provider) {
+            match chosen {
                 None if loading => VoiceState::Loading,
                 None => VoiceState::Unavailable,
                 Some(p) if !p.on => VoiceState::Unavailable,
@@ -185,6 +181,19 @@ impl super::Core {
             "rules": c.as_ref().map(|c| c.rules.clone()).unwrap_or_default(),
             "people": c.as_ref().map_or_else(Vec::new, |c| c.people.iter().map(copy::person_summary).collect::<Vec<_>>()),
         })
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    /// `facts` reads as `false` when a provider's info leaves it out.
+    #[test]
+    fn voice_info_without_facts_reads_false() {
+        let info: super::VoiceInfo = serde_json::from_value(
+            serde_json::json!({"id": "plugin:x", "name": "X", "on": true, "ready": true}),
+        )
+        .unwrap();
+        assert!(!info.facts);
     }
 }
 

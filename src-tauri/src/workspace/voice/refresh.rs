@@ -136,6 +136,8 @@ impl Core {
         let mut r = self.repo()?;
         let provider = r.settings()?.voice.provider;
         if provider == "off" {
+            // Nothing to schedule, but the finished refreshes of a provider chosen before go.
+            r.prune_finished_jobs(&[JOB_KIND], now - 86_400)?;
             return Ok(());
         }
         // Queued, running, or due in the last 30 minutes whatever became of it.
@@ -270,6 +272,31 @@ mod tests {
         assert_eq!(queued(&e), 1);
         e.core.voice_refresh_round(t + EVERY + 2).unwrap();
         assert_eq!(queued(&e), 1, "at most one queued");
+    }
+
+    /// Final review minor 12: finished refresh jobs older than a day go while the voice is Off
+    /// too, not only when a provider is chosen.
+    #[tokio::test]
+    async fn finished_refreshes_are_pruned_while_off() {
+        let e = env();
+        e.choose_with_copy().await;
+        e.op(Operation::VoiceSet, json!({"provider": "off"}))
+            .await
+            .unwrap();
+        let finished = || {
+            e.core
+                .repo()
+                .unwrap()
+                .jobs()
+                .unwrap()
+                .iter()
+                .filter(|j| j.kind == JOB_KIND && j.state == "succeeded")
+                .count()
+        };
+        assert_eq!(finished(), 1);
+        e.core.voice_refresh_round(now() + 2 * 86_400).unwrap();
+        assert_eq!(finished(), 0, "a day old: pruned while Off");
+        assert_eq!(queued(&e), 0, "Off: nothing queued");
     }
 
     /// The plugin manager (re)loaded the chosen provider (including its first load at startup):
