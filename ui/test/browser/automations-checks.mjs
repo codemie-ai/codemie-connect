@@ -86,6 +86,9 @@ export async function automationsChecks({ open, check, assert, shot, settled, ca
           assert(errors.length === 0, errors.join(' | '));
         });
         if (canonical) await check('automations A2: unticking the last message read hides the switch, and a fresh template saves with Tasks on', async () => {
+          // `check` closed the editor the matrix check left open: open it again.
+          await page.click('[data-action="automation-template"][data-id="inbox-triage"]');
+          await editorOpen(page);
           // Unticking "Needs your reply" leaves no read that gives messages: the switch hides
           // (readsMessages(draft) is false), but stays in the form (checked, just hidden).
           await page.click('.ws-check:has([data-read="needsReply"])');
