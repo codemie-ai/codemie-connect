@@ -179,7 +179,7 @@ const codemie = createCodemieController({
   claudeReady: () => claudeProfileReady(),
 });
 codemie.busy = () => codemieSetup.running() || codemieService.busy();
-// Settings → Claude detects CodeMie profiles natively (cached for 30 s): a profile added, renamed,
+// Settings › AI detects CodeMie profiles natively (cached for 30 s): a profile added, renamed,
 // removed or made active in Settings → CodeMie is detected again at once, so both tabs agree.
 let codemieProfilesSeen = null;
 codemieService.subscribe(() => {
@@ -1303,7 +1303,7 @@ function readClaude({ now = false, detect = false } = {}) {
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
     if (changed && ['inbox', 'today', 'automations', 'ask'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
-  }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
+  }).catch(() => { /* drafts stay offered; Settings › AI explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
 }
 

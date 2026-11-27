@@ -3,7 +3,7 @@
 //! notification or a reply draft. Automations never send and never create actions.
 use super::context::{self, Source};
 use super::engine::stored;
-use super::rules::{row_of, Automation, Pin, SUMMARY_RUN_NOW};
+use super::rules::{purpose_of, Automation, Pin, SUMMARY_RUN_NOW};
 use crate::ai::command::RunSpec;
 use crate::ai::stream::{AiError, ErrorClass};
 use crate::workspace::{
@@ -732,12 +732,13 @@ impl Core {
     /// one.
     async fn automation_route(&self, a: &Automation) -> Result<Resolved> {
         let settings = self.repo()?.settings()?;
-        let row = row_of(a);
-        let RouteKey::Purpose(purpose) = &row else {
-            unreachable!("row_of only ever names a purpose row")
-        };
-        let ai = pinned(settings.ai, &a.ai, *purpose);
-        Ok(resolve(&ai, &self.profiles.profiles().await, &row)?)
+        let purpose = purpose_of(a);
+        let ai = pinned(settings.ai, &a.ai, purpose);
+        Ok(resolve(
+            &ai,
+            &self.profiles.profiles().await,
+            &RouteKey::Purpose(purpose),
+        )?)
     }
 
     /// Ends the job with a `skipped` run that says why.

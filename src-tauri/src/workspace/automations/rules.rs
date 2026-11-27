@@ -1,6 +1,5 @@
 //! Automations (DESIGN 6.6): the model, its validation, when a run is due and which new
 //! messages or ended meetings start one. A due run is queued as an `automation_run` job.
-use crate::workspace::ai::RouteKey;
 use crate::workspace::meetings::model::{MeetingRecord, MeetingState};
 use crate::workspace::meetings::templates::Template;
 use crate::workspace::models::*;
@@ -247,17 +246,17 @@ impl Automation {
     }
 }
 
-/// The row this automation runs on (DESIGN §3 "Automations", spec Values): the template it
-/// was made from names its row; anything else, including none, is the Automations row (an
-/// automation saved before this step has no `template` and keeps that row, DESIGN ruling 12).
-pub fn row_of(a: &Automation) -> RouteKey {
-    let purpose = match a.template.as_deref() {
+/// The row this automation runs on, `RouteKey::Purpose` of this (DESIGN §3 "Automations", spec
+/// Values): the template it was made from names its row; anything else, including none, is the
+/// Automations row (an automation saved before this step has no `template` and keeps that row,
+/// DESIGN ruling 12).
+pub fn purpose_of(a: &Automation) -> Purpose {
+    match a.template.as_deref() {
         Some("morning-brief") => Purpose::Briefing,
         Some("inbox-triage") => Purpose::Triage,
         Some("commitments") => Purpose::Commitments,
         _ => Purpose::Automation,
-    };
-    RouteKey::Purpose(purpose)
+    }
 }
 
 fn valid_time(time: &str) -> bool {
@@ -1400,29 +1399,20 @@ mod tests {
     }
 
     #[test]
-    fn row_of_maps_templates() {
+    fn purpose_of_maps_templates() {
         let with = |t: Option<&str>| Automation {
             template: t.map(String::from),
             ..schedule(&[1], "08:45")
         };
-        assert_eq!(
-            row_of(&with(Some("morning-brief"))),
-            RouteKey::Purpose(Purpose::Briefing)
-        );
-        assert_eq!(
-            row_of(&with(Some("inbox-triage"))),
-            RouteKey::Purpose(Purpose::Triage)
-        );
-        assert_eq!(
-            row_of(&with(Some("commitments"))),
-            RouteKey::Purpose(Purpose::Commitments)
-        );
+        assert_eq!(purpose_of(&with(Some("morning-brief"))), Purpose::Briefing);
+        assert_eq!(purpose_of(&with(Some("inbox-triage"))), Purpose::Triage);
+        assert_eq!(purpose_of(&with(Some("commitments"))), Purpose::Commitments);
         // Any other template, or none, is the Automations row.
         assert_eq!(
-            row_of(&with(Some("draft-replies"))),
-            RouteKey::Purpose(Purpose::Automation)
+            purpose_of(&with(Some("draft-replies"))),
+            Purpose::Automation
         );
-        assert_eq!(row_of(&with(None)), RouteKey::Purpose(Purpose::Automation));
+        assert_eq!(purpose_of(&with(None)), Purpose::Automation);
     }
 
     #[test]

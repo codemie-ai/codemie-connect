@@ -304,6 +304,8 @@ test('each_error_class_shows_its_sentence_and_action', () => {
     [{ errorClass: 'not_installed', errorCode: 'not_installed', state: 'failed' }, 'claude', "Claude Code isn't installed on this Mac.", 'ai-open-settings', 'Open AI settings'],
     [{ errorClass: 'too_old', errorCode: 'too_old', state: 'failed' }, 'claude', 'This Claude Code is too old to draft replies.', 'ai-open-settings', 'Open AI settings'],
     [{ errorClass: 'not_configured', errorCode: 'not_configured', state: 'failed' }, 'codemie:prod', "This CodeMie profile isn't fully set up.", 'cm-setup-open', 'Set up CodeMie'],
+    // A ready profile that lacks the row's model, with no fallback: native's own sentence, and AI settings.
+    [{ errorClass: 'not_configured', errorCode: 'not_configured', state: 'failed', result: "CodeMie · local doesn't offer llama3.2." }, 'codemie:local', "CodeMie · local doesn't offer llama3.2.", 'ai-open-settings', 'Open AI settings'],
     [{ errorClass: 'rate_limited', errorCode: 'rate_limited', state: 'failed' }, 'claude', "Claude's usage limit was reached. Try again later.", null, null],
     [{ errorClass: 'timeout', errorCode: 'timeout', state: 'failed' }, 'claude', 'Claude took too long to answer.', 'ai-draft-retry', 'Try again'],
     [{ errorClass: 'invalid_output', errorCode: 'invalid_output', state: 'failed' }, 'claude', "Claude's answer couldn't be used.", 'ai-draft-retry', 'Try again'],

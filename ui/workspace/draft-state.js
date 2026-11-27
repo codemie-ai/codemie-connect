@@ -210,7 +210,11 @@ export function draftError(job, { profiles = [], settings = {}, kind = 'draft' }
         : { tone: 'warning', sentence: "Claude Code isn't signed in.", action: { label: 'Copy sign-in steps', action: 'ai-copy-login', iconName: 'link' } };
     case 'not_installed': return { tone: 'warning', sentence: "Claude Code isn't installed on this Mac.", action: settingsAction };
     case 'too_old': return { tone: 'warning', sentence: `This Claude Code is too old to ${task}.`, action: settingsAction };
-    case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: setupAction };
+    case 'not_configured':
+      // A ready profile that lacks the row's model, with no fallback: native says which, and the
+      // fix is a model or a profile in Settings › AI, not setting CodeMie up.
+      if (/ doesn't offer /.test(job.result || '')) return { tone: 'warning', sentence: job.result, action: settingsAction };
+      return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: setupAction };
     case 'rate_limited': return { tone: 'warning', sentence: "Claude's usage limit was reached. Try again later.", action: null };
     case 'permission_required': return { tone: 'warning', sentence: automation ? 'Connect may no longer read what this automation needs.' : `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
     case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job, 'Try again', kind) };
