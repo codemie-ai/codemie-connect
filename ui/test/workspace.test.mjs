@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, escapeHtml, REBASE_SAFE } from '../workspace/store.js';
+import { createStore, escapeHtml, REBASE_SAFE, refreshDelay } from '../workspace/store.js';
 import { runReadOnlyProbe } from '../workspace/safe-probe.js';
 import {
   calendarDays, calendarWindow, calendarCoverage, calendarIds, calendarColor, eventSpan, eventsOnDay,
@@ -22,7 +22,7 @@ import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.
 import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
-import { newTasksView } from '../workspace/tasks-model.js';
+import { dueInfo, newTasksView, quickDates } from '../workspace/tasks-model.js';
 import { meetings, makeNotesBody, shownCall } from '../workspace/view-meetings.js';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
 import { callOfMeeting, meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
@@ -67,6 +67,172 @@ test('workspace mutations serialize against refreshed native revisions', async (
   await Promise.all([store.mutate('workspace_create', { name: 'A' }), store.mutate('settings_update', { theme: 'dark' })]);
   assert.deepEqual(mutations, ['workspace_create', 'settings_update']);
   assert.equal(store.get().snapshot.revision, 2);
+});
+
+/** A native stand-in whose snapshot reads wait until the test lets them go (`reads[i].go()`); a
+ *  read sees `value` as it was when the read was asked, as native does. */
+function slowReads() {
+  const bridge = { value: 0, reads: [], writes: [] };
+  bridge.invoke = (_, { request: r }) => {
+    if (r.op === 'snapshot') {
+      const seen = bridge.value;
+      return new Promise(resolve => bridge.reads.push({ seen, go: () => resolve({ snapshot: { revision: seen, value: seen, settings: { activeWorkspace: 'personal' } } }) }));
+    }
+    return new Promise(resolve => bridge.writes.push({ go: () => { bridge.value = r.data.value; resolve({ saved: true }); } }));
+  };
+  return bridge;
+}
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('a write settles on its own read, not on a background read asked after it', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  let settled = false;
+  const write = store.mutate('layout_save', { value: 1 }).then(() => { settled = true; });
+  await tick();
+  bridge.writes[0].go();
+  await tick();
+  // The write's own read is on its way when a workspace:changed starts another one.
+  assert.equal(bridge.reads.length, 2);
+  const background = store.refresh();
+  bridge.reads[1].go();
+  await tick();
+  await tick();
+  // Its own read has the write: shown and settled without waiting for the later read (a full
+  // snapshot of a real workspace takes about a second).
+  assert.equal(settled, true);
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1]);
+  bridge.reads[2].go();
+  await write;
+  await background;
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1, 1]);
+});
+
+test('changes heard while a read is on its way ask one more read after it, not one each', async () => {
+  let clock = 0;
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { now: () => clock });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  clock = 10;
+  const first = store.refreshAfter(10);
+  assert.equal(bridge.reads.length, 2);
+  // A sync round announces each Graph request: three more while that read is on its way.
+  const later = [20, 30, 40].map(at => { clock = at; return store.refreshAfter(at); });
+  assert.equal(bridge.reads.length, 2, 'one read on its way; the rest wait for it');
+  bridge.value = 7;
+  bridge.reads[1].go();
+  await first;
+  await tick();
+  assert.equal(bridge.reads.length, 3, 'one more, for everything heard meanwhile');
+  bridge.reads[2].go();
+  const answers = await Promise.all(later);
+  assert.ok(answers.every(a => a.snapshot.value === 7));
+  assert.equal(bridge.reads.length, 3);
+});
+
+test('a read that lands after a newer one is dropped: the view never goes back', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const older = store.refresh();
+  bridge.value = 1;
+  const newer = store.refresh();
+  bridge.reads[1].go();
+  await newer;
+  bridge.reads[0].go();
+  // The overtaken read settles with the newer state.
+  assert.equal((await older).snapshot.value, 1);
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1]);
+});
+
+test('a read asked while a write is sent, landing before the write’s own read, is not shown', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('meeting_set', { value: 1 });
+  await tick();
+  // Native may answer this read before it applies the write.
+  const background = store.refresh();
+  bridge.writes[0].go();
+  await tick();
+  assert.equal(bridge.reads.length, 3);
+  bridge.reads[1].go();
+  await background;
+  // Drawn, it would put back the switch the person just turned on.
+  assert.deepEqual(shown, []);
+  bridge.reads[2].go();
+  await write;
+  assert.deepEqual(shown, [1]);
+  assert.equal(store.get().snapshot.value, 1);
+});
+
+test('a workspace:changed heard before a read was asked needs no read of its own', async () => {
+  let clock = 0;
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { now: () => clock });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  // A write: native announces its change before it answers, then the write reads.
+  const write = store.mutate('task_save', { value: 1 });
+  await tick();
+  clock = 10;
+  const heard = clock;
+  bridge.writes[0].go();
+  clock = 20;
+  await tick();
+  assert.equal(bridge.reads.length, 2);
+  // The echo of the write's own change: its own read, asked after it, already brings it.
+  const echo = store.refreshAfter(heard);
+  assert.equal(bridge.reads.length, 2);
+  bridge.reads[1].go();
+  await write;
+  assert.equal((await echo).snapshot.value, 1);
+  // A change heard after the last read was asked is read.
+  clock = 30;
+  const later = store.refreshAfter(clock);
+  assert.equal(bridge.reads.length, 3);
+  bridge.reads[2].go();
+  await later;
+});
+
+test('a background read that lands while a write is being sent is not shown; the write’s own read is', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  // A workspace:changed read asked before the write lands while the write is on its way: drawn,
+  // it would put back the switch the person just turned on.
+  const background = store.refresh();
+  const write = store.mutate('meeting_set', { value: 1 });
+  await tick();
+  bridge.reads[1].go();
+  await background;
+  assert.deepEqual(shown, []);
+  bridge.writes[0].go();
+  await tick();
+  bridge.reads[2].go();
+  await write;
+  assert.deepEqual(shown, [1]);
+  assert.equal(store.get().snapshot.value, 1);
 });
 
 test('a rejected mutation refreshes canonical state before the next write', async () => {
@@ -118,6 +284,203 @@ test('mutate rebases through a sync that keeps moving the revision, then gives u
   acceptAt = Infinity;
   await assert.rejects(store.mutate('local_save', {}), { code: 'stale_view' });
   assert.equal(writes, 5, 'five tries, then the stale view is reported');
+});
+
+/** A native stand-in that counts what it is asked: reads, cheap revision reads and writes. Each
+ *  write moves the revision by two (native reserves one and stores one). */
+function countingNative({ refuse = () => null } = {}) {
+  const bridge = { revision: 0, value: 0, ops: [] };
+  bridge.invoke = async (_, { request: r }) => {
+    bridge.ops.push(r.op);
+    if (r.op === 'snapshot') return { snapshot: { revision: bridge.revision, value: bridge.value, settings: { activeWorkspace: 'personal' } } };
+    if (r.op === 'revision') return { revision: bridge.revision };
+    if (r.expectedRevision !== bridge.revision) throw { code: 'stale_view' };
+    await tick();
+    const refused = refuse(r);
+    if (refused) throw refused;
+    bridge.revision += 2;
+    bridge.value = r.data.value;
+    return { saved: true };
+  };
+  return bridge;
+}
+const preview = { task_save: (s, d) => ({ ...s, value: d.value }) };
+
+test('a change with a preview shows the moment it is asked, before native answers', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('task_save', { value: 1 });
+  assert.equal(store.get().snapshot.value, 1, 'shown at once');
+  assert.deepEqual(shown, [1]);
+  await tick();
+  bridge.writes[0].go();
+  await tick();
+  bridge.reads[1].go();
+  await write;
+  assert.equal(store.get().snapshot.value, 1, 'kept by the read that has it');
+});
+
+test('a refused change is taken back at once and its error still reaches the caller', async () => {
+  const bridge = countingNative({ refuse: r => (r.data.value === 2 ? { code: 'validation', message: 'No.' } : null) });
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('task_save', { value: 2 });
+  assert.equal(store.get().snapshot.value, 2);
+  await assert.rejects(write, { code: 'validation' });
+  assert.equal(store.get().snapshot.value, 0);
+  assert.equal(shown.at(-1), 0, 'drawn back');
+});
+
+test('queued rebase-safe writes share one snapshot read; between them native is asked only its revision', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [1, 2, 3].map(value => store.mutate('task_save', { value }));
+  assert.equal(store.get().snapshot.value, 3, 'every change shown at once');
+  await Promise.all(writes);
+  // Each settled when native answered it; the shared read follows.
+  await store.refreshAfter(Infinity);
+  assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'revision', 'task_save', 'snapshot']);
+  assert.equal(store.get().snapshot.value, 3);
+  assert.equal(store.get().snapshot.revision, 6);
+});
+
+test('a preview names a new record by the operation id the write is sent with', async () => {
+  const sent = [];
+  const seen = [];
+  const store = createStore(async (_, { request: r }) => {
+    if (r.op === 'snapshot') return { snapshot: { revision: sent.length, settings: { activeWorkspace: 'personal' } } };
+    sent.push(r.operationId);
+    return { id: r.operationId };
+  }, { optimistic: { task_save: (s, d, { operationId }) => { seen.push(operationId); return { ...s, added: operationId }; } } });
+  await store.refresh();
+  const write = store.mutate('task_save', { text: 'New' });
+  assert.ok(store.get().snapshot.added, 'shown at once');
+  await write;
+  assert.equal(new Set(seen).size, 1);
+  assert.deepEqual(sent, [seen[0]]);
+});
+
+test('idle settles once the queue’s read has landed, after a previewed write already has', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const write = store.mutate('task_save', { value: 1 });
+  let idle = false;
+  const waiting = store.idle().then(() => { idle = true; });
+  await tick();
+  bridge.writes[0].go();
+  await write;
+  await tick();
+  assert.equal(idle, false, 'the write settled; its read is still on its way');
+  bridge.reads[1].go();
+  await waiting;
+  assert.equal(store.get().snapshot.value, 1);
+  assert.equal((await store.idle()).snapshot.value, 1, 'nothing queued: at once');
+});
+
+test('a write that is not rebase-safe waits for a full read before it is sent', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  await Promise.all([store.mutate('task_save', { value: 1 }), store.mutate('graph_disconnect', { value: 2 })]);
+  assert.deepEqual(bridge.ops, ['task_save', 'snapshot', 'graph_disconnect', 'snapshot']);
+});
+
+test('without a revision read native answers, queued writes read the whole snapshot as before', async () => {
+  const bridge = countingNative();
+  const invoke = (cmd, args) => (args.request.op === 'revision' ? Promise.reject({ code: 'validation' }) : bridge.invoke(cmd, args));
+  const store = createStore(invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  await Promise.all([store.mutate('task_save', { value: 1 }), store.mutate('task_save', { value: 2 })]);
+  assert.deepEqual(bridge.ops, ['task_save', 'snapshot', 'task_save', 'snapshot']);
+  assert.equal(store.get().snapshot.value, 2);
+});
+
+test('a workspace:changed heard while writes are queued reads nothing: the queue’s last read brings it', async () => {
+  const bridge = countingNative();
+  const store = createStore(bridge.invoke, { optimistic: preview });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [1, 2].map(value => store.mutate('task_save', { value }));
+  await store.refreshAfter(Infinity);
+  await Promise.all(writes);
+  assert.equal(bridge.ops.filter(op => op === 'snapshot').length, 1);
+});
+
+/** A native stand-in that answers `changes_since` with a delta of what `value` became (or a
+ *  reset when told to), and counts its requests. */
+function deltaNative() {
+  const bridge = { revision: 1, value: 0, scope: 's1', ops: [], reset: false, fail: false };
+  const answer = () => ({ snapshot: { revision: bridge.revision, records: [{ kind: 'v', id: 'v', connectionId: null, workspaceId: 'personal', data: { value: bridge.value } }], jobs: [], settings: { activeWorkspace: 'personal' } }, scope: bridge.scope, authPending: false, authError: null });
+  bridge.invoke = async (_, { request: r }) => {
+    bridge.ops.push(r.op);
+    if (r.op === 'snapshot') return answer();
+    if (r.op === 'revision') return { revision: bridge.revision };
+    if (r.op === 'changes_since') {
+      if (bridge.fail) throw { code: 'storage', message: 'boom' };
+      if (bridge.reset || r.data.scope !== bridge.scope) return { reset: true };
+      const a = answer();
+      return { reset: false, revision: bridge.revision, scope: bridge.scope, records: a.snapshot.records, removed: [], replace: [], jobs: [], removedJobs: [], jobsAll: false, settings: a.snapshot.settings, workspaces: [], connection: null, available: true, meetingsRoot: null, noteTemplates: [], authPending: false, authError: null };
+    }
+    if (r.expectedRevision !== bridge.revision) throw { code: 'stale_view' };
+    bridge.revision += 2;
+    bridge.value = r.data.value;
+    return { saved: true };
+  };
+  return bridge;
+}
+const valueOf = store => store.get().snapshot.records.find(r => r.kind === 'v').data.value;
+
+test('with a snapshot in hand a read asks changes_since and applies it; a reset or an error reads the snapshot', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true });
+  await store.refresh();
+  bridge.value = 3;
+  bridge.revision = 4;
+  await store.refresh();
+  assert.deepEqual(bridge.ops, ['snapshot', 'changes_since']);
+  assert.equal(valueOf(store), 3);
+  assert.equal(store.get().snapshot.revision, 4);
+  bridge.reset = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(2), ['changes_since', 'snapshot']);
+  bridge.reset = false;
+  bridge.fail = true;
+  await store.refresh();
+  assert.deepEqual(bridge.ops.slice(4), ['changes_since', 'snapshot']);
+});
+
+test('a write with a preview settles on a delta, the preview laid over it until then', async () => {
+  const bridge = deltaNative();
+  const store = createStore(bridge.invoke, { deltas: true, optimistic: { task_save: (s, d) => ({ ...s, records: s.records.map(r => (r.kind === 'v' ? { ...r, data: { value: d.value } } : r)) }) } });
+  await store.refresh();
+  bridge.ops.length = 0;
+  const writes = [5, 6].map(value => store.mutate('task_save', { value }));
+  assert.equal(valueOf(store), 6, 'shown at once');
+  await Promise.all(writes);
+  await store.idle();
+  assert.deepEqual(bridge.ops, ['task_save', 'revision', 'task_save', 'changes_since']);
+  assert.equal(valueOf(store), 6);
+});
+
+test('a change is read again 300 ms after the last read at most, and never sooner than 150 ms', () => {
+  assert.equal(refreshDelay(0), 300);
+  assert.equal(refreshDelay(100), 200);
+  assert.equal(refreshDelay(250), 150);
+  assert.equal(refreshDelay(60_000), 150);
 });
 
 test('sending rebases; native guards the review itself', async () => {
@@ -373,6 +736,43 @@ test('Today shows the live meeting, a join action, attention and commitments', (
   assert.ok(!m.timed.some(t => t.record.id === 'ev-cancelled'), 'cancelled events are hidden');
 });
 
+test('Today stays calm: the meeting on now is marked, the pill turns amber only near its end, Next is one line', () => {
+  const now = Date.now();
+  const s = buildSnapshot(now, { photo: false });
+  const at = ms => ({ ...ctx(), now: ms });
+  const html = today(s, at(now));
+  const schedule = tileOf(html, 'calendar');
+  assert.match(schedule, /class="ws-tl-event ws-current[^"]*"[^>]*data-id="ev-current"/, 'the event on now is marked');
+  assert.doesNotMatch(schedule, /ws-current"[^>]*data-id="ev-next"/);
+  const brief = tileOf(html, 'brief');
+  assert.match(brief, /class="ws-live-chip"/, '25 minutes left: the accent pill');
+  assert.match(brief, /<strong><span class="ws-upnext-dot" style="--event-color:[^"]+" aria-hidden="true"><\/span>/, 'the calendar colour is a dot before the time');
+  assert.match(brief, /class="ws-next" data-action="event" data-id="ev-next"[^>]*>[^]*?<span class="ws-next-label">Next<\/span>[^]*?<strong>1:1 with Jordan<\/strong>[^]*?<span class="ws-next-in">· in /);
+  assert.doesNotMatch(brief, /ws-later/, 'no Later today chips');
+  assert.match(brief, /data-action="source"[^>]*class="ws-btn ws-btn-ghost|class="ws-btn ws-btn-ghost[^"]*"[^>]*data-action="source"/, 'Open in Outlook is a quiet button');
+  // Four minutes before the end, the pill says so in amber.
+  assert.match(tileOf(today(s, at(now + 21 * 60_000)), 'brief'), /class="ws-live-chip ws-ending"/);
+});
+
+test('Today’s header is one ⋯ (with Customize in it); Tasks has one review line and an add row; replies keep the name and conversation on one line', () => {
+  const now = Date.now();
+  const s = withTasks(buildSnapshot(now, { photo: false }), now);
+  const html = today(s, { ...ctx(), now });
+  const actions = html.match(/<div class="ws-actions ws-today-actions">[^]*?<\/details><\/div>/)?.[0] || '';
+  // The ⋯ holds the layouts, Add widget, Customize and Lock in both views (compact-checks C4).
+  assert.match(actions, /^<div class="ws-actions ws-today-actions"><details class="ws-menu ws-menu-right ws-today-more" data-menu="today-more">/);
+  assert.match(actions, /role="menuitem" data-action="today-customize">[^]*?<span>Customize<\/span>/, 'Customize is in the ⋯');
+  assert.match(actions, /data-action="today-lock" aria-pressed="false">[^]*?Lock layouts/);
+  assert.doesNotMatch(actions, /ws-today-layout-pill|<button[^>]*ws-btn[^>]*data-action="today-lock"/, 'no layout pill, no lock button while unlocked');
+  const locked = today(s, { ...ctx(), now, today: { locked: true } });
+  assert.match(locked, /<div class="ws-actions ws-today-actions"><button[^>]*data-action="today-lock"[^>]*aria-pressed="true"/, 'locked: a lock to undo it, first');
+  const tasks = tileOf(html, 'commitments');
+  assert.match(tasks, /class="ws-today-review" data-action="route" data-route="tasks"><svg[^]*?<span><strong>\d+<\/strong> tasks? from meeting notes to review<\/span>/);
+  assert.doesNotMatch(tasks, /Check owners and dates/);
+  assert.match(tasks, /<details class="ws-menu ws-task-add" data-menu="today-task-add"><summary class="ws-task-add-row">[^]*?Add task<\/span><\/summary><form class="ws-quick-add" data-form="commitment-add">/);
+  assert.match(tileOf(html, 'inbox'), /<span class="ws-msg-top"><strong>[^<]+<\/strong><span class="ws-msg-title">[^]*?<\/span><\/span><time>/, 'name, conversation, time on one line');
+});
+
 test('Day at a glance says when free time ends on the same clock as the header', t => {
   // 09:00 in Kyiv: the workday ends at 18:00 there.
   const now = Date.parse('2026-11-18T07:00:00Z');
@@ -562,7 +962,7 @@ test('widgets honour their options', t => {
   const w = active(s);
   const items = [...PRESETS.Default, { id: 'timer', x: 0, y: 22, w: 4, h: 3 }];
   const before = today(s, ctx());
-  assert.match(tileOf(before, 'brief'), /ws-later-label[^]*?class="ws-people"|class="ws-people"[^]*?ws-later-label/);
+  assert.match(tileOf(before, 'brief'), /class="ws-next"[^]*?class="ws-people"|class="ws-people"[^]*?class="ws-next"/);
   assert.match(tileOf(before, 'calendar'), /ws-tl-free/);
   assert.match(tileOf(before, 'commitments'), /data-form="commitment-add"/);
   assert.match(tileOf(before, 'focus'), /class="ws-focus"/);
@@ -577,7 +977,7 @@ test('widgets honour their options', t => {
     },
   };
   const html = today(s, ctx());
-  assert.doesNotMatch(tileOf(html, 'brief'), /ws-later-label|class="ws-people"/);
+  assert.doesNotMatch(tileOf(html, 'brief'), /class="ws-next"|class="ws-people"/);
   const glance = tileOf(html, 'focus');
   assert.deepEqual([...glance.matchAll(/<strong>[^<]*<\/strong><span>([^<]+)<\/span>/g)].map(m => m[1]), ['Meetings left', 'Open tasks'], 'in their usual order');
   assert.doesNotMatch(glance, /class="ws-focus/);
@@ -1356,6 +1756,24 @@ test('an upcoming, blocked, pending or untranscribed meeting shows its explainer
     assert.doesNotMatch(d, /role="tablist"|meeting-copy-tab|meeting-make-tab/, id);
     assert.ok(meetingMenuOf(stripOf(d), id), `${id}: ⋯ in the strip`);
   }
+});
+
+test('a Teams meeting on now by the calendar says so and offers Check now, as it may have ended early', () => {
+  const s = meetingsSnapshot();
+  const next = s.records.find(r => r.kind === 'event' && r.id === 'ev-next');
+  next.data = { ...next.data, start: new Date(MEET_NOW - 10 * 60_000).toISOString(), end: new Date(MEET_NOW + 20 * 60_000).toISOString() };
+  const m = meetingItems(s, MEET_NOW).find(x => x.id === 'ev-next');
+  assert.equal(m.state, 'upcoming');
+  assert.equal(m.live, true);
+  const html = meetings(s, meetingsCtx({ selected: 'ev-next' }));
+  assert.match(rowOf(html, 'ev-next'), /On now/);
+  const d = detailOf(html);
+  assert.match(d, /This meeting is still going[^]*?looks every 5 minutes, so it finds one that ends early too/);
+  assert.match(d, /data-action="meeting-check" data-id="ev-next"|data-id="ev-next"[^>]*data-action="meeting-check"/);
+  // One still to come is neither.
+  const later = meetingItems(meetingsSnapshot(), MEET_NOW).find(x => x.id === 'ev-next');
+  assert.equal(later.live, false);
+  assert.doesNotMatch(detailOf(meetings(meetingsSnapshot(), meetingsCtx({ selected: 'ev-next' }))), /meeting-check|On now/);
 });
 
 test("the meeting's ⋯ menu offers Hide from the list, and a hidden meeting says so", () => {

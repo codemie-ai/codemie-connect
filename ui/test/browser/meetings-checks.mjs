@@ -424,6 +424,21 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector(`${row('mtg-vendor')}:has-text("Short summary")`, { timeout: 8000 });
       });
 
+      await step(`${tag}: Add N to Tasks in the action items column reads what changed, not the whole workspace`, async () => {
+        await select(page, 'mtg-philips', 'all');
+        const add = '.ws-dock[data-page="meetings"] [data-action="meeting-items-add"]';
+        await page.waitForSelector(add);
+        await page.evaluate(() => { window.__readCalls = []; window.__recordReads = true; });
+        await page.click(add);
+        await page.waitForSelector('.ws-mtg-items-foot:has-text("Added 1 to Tasks")');
+        await page.waitForFunction(() => window.__readCalls.includes('changes_since'), null, { timeout: 8000 });
+        const reads = await page.evaluate(() => { window.__recordReads = false; return window.__readCalls; });
+        assert(!reads.includes('snapshot'), `a full read after Add: ${reads.join(', ')}`);
+        // Undo puts it back to review, ticked, for the checks after this one.
+        await page.click('.ws-mtg-items-foot [data-action="meeting-items-undo"]');
+        await page.waitForSelector('[data-task="task-endpoint"] [data-action="meeting-item-tick"]:checked');
+      });
+
       await step(`${tag}: Make notes for all goes on past a meeting whose folder is gone`, async () => {
         await setFilter(page, 'all');
         // What Make notes for N takes: the card's transcripts without notes (saved or still in Teams).

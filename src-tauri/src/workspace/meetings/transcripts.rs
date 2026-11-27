@@ -102,15 +102,17 @@ pub fn pick_transcripts(list: &Value, start: i64, end: Option<i64>) -> Vec<Trans
 
 /// The state a check leaves a meeting in: `available` when Teams has transcripts; `blocked`
 /// (with Microsoft's reason) when it refused them (403, or no meeting for this account);
-/// otherwise still `pending` until two hours after the meeting ended, then `none`. A read that did
-/// not get through (offline, throttled, a token Graph refused with 401) keeps its reason, and
-/// the next slot checks again.
+/// otherwise `upcoming` while the meeting is still on by its calendar times, then `pending`
+/// until two hours after it ended, then `none`. A read that did not get through (offline,
+/// throttled, a token Graph refused with 401) keeps its reason, and the next slot checks again.
 pub fn state_after_check(
     found: Result<Vec<TranscriptRef>>,
     ended_at: i64,
     now: i64,
 ) -> (MeetingState, Option<ErrorInfo>) {
-    let waiting = if now - ended_at < STOP_AFTER {
+    let waiting = if now < ended_at {
+        MeetingState::Upcoming
+    } else if now - ended_at < STOP_AFTER {
         MeetingState::Pending
     } else {
         MeetingState::None
@@ -248,6 +250,11 @@ mod tests {
         assert_eq!(
             state_after_check(Ok(found), ended, ended + 600),
             (MeetingState::Available, None)
+        );
+        // Still on by the calendar: a meeting to come, not one waiting for Teams.
+        assert_eq!(
+            state_after_check(Ok(vec![]), ended, ended - 600),
+            (MeetingState::Upcoming, None)
         );
         assert_eq!(
             state_after_check(Ok(vec![]), ended, ended + 3600),

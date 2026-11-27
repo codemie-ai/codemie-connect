@@ -234,3 +234,80 @@ test('an_agent_starts_in_connects_terminal_or_the_terminal_app', async () => {
     { name: 'open_agent_in_terminal', args: { folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod' } },
   ]);
 });
+
+// Your own CLI as an `npm link` (or any copy ahead on PATH): `codemie self-update` installs the
+// new version into Connect's ~/.codemie/agents and exits 0, yet `codemie --version` still names
+// the old copy. That is not an update: say which copy still runs, never offer Install again quietly.
+const STALE = [
+  ['📦 Updating CodeMie CLI to 0.17.2...'],
+  ['✓ CodeMie CLI updated successfully!'],
+  ['⚠ The codemie on your PATH is older than the version just installed.'],
+  ['  Active:    /Users/taylor/.npm-global/bin/codemie (version 0.17.1)'],
+];
+const ownCli = (h, version, latest) => Object.assign(h.svc.state.runtime, { ownCli: { version }, version, latest });
+
+test('own_cli_update_that_leaves_an_older_copy_first_says_so', async () => {
+  let during;
+  const h = harness({
+    stream: { 'codemie self-update': { lines: STALE, get code() { during = h.svc.state.busy.cli; return 0; } } },
+    capture: {
+      'codemie --version': { code: 0, stdout: '0.17.1\n', stderr: '' },
+      'command -v codemie': { code: 0, stdout: '/Users/taylor/.npm-global/bin/codemie\n', stderr: '' },
+      'cd "$(dirname': { code: 0, stdout: '/Users/taylor/.npm-global/lib/node_modules/@codemieai/code\n', stderr: '' },
+    },
+  });
+  ownCli(h, '0.17.1', '0.17.2');
+  await assert.rejects(() => h.svc.updateCli());
+  assert.equal(during, 'install', 'Install says it installs, not that it checks');
+  const err = h.svc.state.errors.cli;
+  assert.match(err.message, /CodeMie 0\.17\.2 was installed, but Connect and Terminal still run 0\.17\.1 from \/Users\/taylor\/\.npm-global\/bin\/codemie, which comes first on your PATH\. Update or remove that copy, then check again\./);
+  assert.match(err.output, /older than the version just installed/);
+  assert.equal(h.svc.state.runtime.version, '0.17.1');
+  // Remembered until another version runs: the card offers Check again, not the same Install.
+  assert.deepEqual(h.svc.state.runtime.shadowed, { version: '0.17.1', message: err.message, output: err.output });
+});
+
+test('own_cli_linked_to_a_checkout_names_the_folder', async () => {
+  const h = harness({
+    stream: { 'codemie self-update': { code: 0, lines: STALE } },
+    capture: {
+      'codemie --version': { code: 0, stdout: '0.17.1\n', stderr: '' },
+      'command -v codemie': { code: 0, stdout: '/Users/taylor/.npm-global/bin/codemie\n', stderr: '' },
+      'cd "$(dirname': { code: 0, stdout: '/Users/taylor/src/codemie-code\n', stderr: '' },
+    },
+  });
+  ownCli(h, '0.17.1', '0.17.2');
+  await assert.rejects(() => h.svc.updateCli());
+  assert.equal(h.svc.state.errors.cli.message, 'CodeMie 0.17.2 was installed, but Connect and Terminal still run 0.17.1 from your npm link to /Users/taylor/src/codemie-code. Update that checkout (git pull, then npm run build) or run npm unlink -g @codemieai/code, then check again.');
+});
+
+test('check_again_forgets_the_shadow_once_a_new_version_runs', async () => {
+  let running = '0.17.1';
+  const h = harness({
+    capture: {
+      'codemie self-update --check': () => ({ code: 0, stdout: `Update available: ${running} → 0.17.2\n`, stderr: '' }),
+      'codemie --version': () => ({ code: 0, stdout: `${running}\n`, stderr: '' }),
+    },
+  });
+  ownCli(h, '0.17.1', '0.17.2');
+  h.svc.state.runtime.shadowed = { version: '0.17.1', message: 'still 0.17.1', output: '' };
+  await h.svc.checkCli();
+  assert.equal(h.svc.state.runtime.shadowed?.version, '0.17.1', 'the old copy still runs');
+  running = '0.17.2';
+  await h.svc.checkCli();
+  assert.equal(h.svc.state.runtime.version, '0.17.2');
+  assert.equal(h.svc.state.runtime.shadowed, null);
+});
+
+test('own_cli_update_that_takes_is_quiet', async () => {
+  let runs = 0;
+  const h = harness({
+    stream: { 'codemie self-update': { code: 0, lines: [['✓ CodeMie CLI updated successfully!']] } },
+    capture: { 'codemie --version': () => ({ code: 0, stdout: `${runs++ ? '0.17.2' : '0.17.1'}\n`, stderr: '' }) },
+  });
+  ownCli(h, '0.17.1', '0.17.2');
+  runs = 1;
+  await h.svc.updateCli();
+  assert.equal(h.svc.state.errors.cli, undefined);
+  assert.equal(h.svc.state.runtime.version, '0.17.2');
+});

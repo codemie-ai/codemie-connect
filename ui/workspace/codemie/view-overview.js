@@ -115,14 +115,21 @@ function cliCard(cm) {
     ? 'Your own copy, installed with npm. Connect uses it and does not download another.'
     : 'Included with Connect. New versions install in the background when Connect starts. Profiles and agents are kept.';
   const busy = !!cm.busy.cli;
-  const control = !isReady ? '' : busy ? `<span class="cm-status">${spinner('Working')}<span>Checking…</span></span>`
-    : latest ? button(`Install ${latest} now`, { action: 'cm-cli-update', variant: 'primary', iconName: 'download' })
-      : button('Check for updates', { action: 'cm-cli-check', variant: 'ghost', iconName: 'refresh' });
-  const error = cm.errors.cli ? `<div class="cm-problem" style="margin-top:4px"><strong>${icon('alert')}CodeMie was not updated</strong><p>${e(cm.errors.cli.message)}</p>${logBlock('Update CodeMie', cm.errors.cli.output, { always: true })}</div>` : '';
+  // The new version went in behind an older copy that still runs first: installing again won't help.
+  const shadowed = own ? r.shadowed : null;
+  const doing = cm.busy.cli === 'install' && r.latest ? `Installing ${e(r.latest)}…` : 'Checking…';
+  const control = !isReady ? '' : busy ? `<span class="cm-status">${spinner('Working')}<span>${doing}</span></span>`
+    : shadowed ? button('Check again', { action: 'cm-cli-check', variant: 'ghost', iconName: 'refresh' })
+      : latest ? button(`Install ${latest} now`, { action: 'cm-cli-update', variant: 'primary', iconName: 'download' })
+        : button('Check for updates', { action: 'cm-cli-check', variant: 'ghost', iconName: 'refresh' });
+  const problem = shadowed ? { title: `Connect still runs CodeMie ${shadowed.version}`, ...shadowed }
+    : cm.errors.cli ? { title: 'CodeMie was not updated', ...cm.errors.cli } : null;
+  const error = problem ? `<div class="cm-problem" style="margin-top:4px"><strong>${icon('alert')}${e(problem.title)}</strong><p>${e(problem.message)}</p>${logBlock('Update CodeMie', problem.output, { always: true })}</div>` : '';
   const terminal = own
     ? markupRow({ iconName: 'terminal', title: 'Terminal', html: `${code('codemie')} and agent commands like ${code('codemie-claude')} come from your npm copy. Agents Connect installs go to ${code('~/.codemie/agents')}.` })
     : markupRow({ iconName: 'terminal', title: 'Terminal can use CodeMie', html: `New Terminal windows have ${code('codemie')} and agent commands like ${code('codemie-claude')}.` });
-  return `<details class="ws-advanced"${r.state !== 'ready' || latest ? ' open' : ''}><summary>${icon('chevron-right')}CodeMie CLI ${isReady && version ? `<span class="ws-muted" style="font-weight:400">· ${e(version)}</span>` : ''}${latest ? ` ${badge('Update ready', 'info')}` : ''}</summary>
+  // data-menu: render() keeps it open once opened, so a click inside doesn't fold it.
+  return `<details class="ws-advanced" data-menu="codemie-cli"${r.state !== 'ready' || latest ? ' open' : ''}><summary>${icon('chevron-right')}CodeMie CLI ${isReady && version ? `<span class="ws-muted" style="font-weight:400">· ${e(version)}</span>` : ''}${latest ? ` ${badge('Update ready', 'info')}` : ''}</summary>
     <div style="padding-bottom:12px">
       ${status}
       ${settingRow({ iconName: 'package', title: isReady && version ? `CodeMie ${version}` : 'CodeMie CLI', text: versionText, control })}

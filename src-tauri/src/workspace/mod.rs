@@ -8,6 +8,7 @@ pub(crate) mod analytics;
 // tasks); this task wires the snapshot's `ask` and the start-up prune.
 pub mod ask;
 mod automations;
+mod changes;
 mod credentials;
 #[cfg(target_os = "macos")]
 mod curl;
@@ -599,6 +600,17 @@ impl Core {
             if let Err(e) = meetings::meetings_round_at(self, now()) {
                 eprintln!("meetings: transcript round failed: {}", e.message);
             }
+            // The change log keeps a day (or 100k revisions) for reads by revision.
+            let pruned = self.repo().and_then(|mut r| {
+                r.prune_changes(
+                    repository::CHANGES_KEEP_REVISIONS,
+                    repository::CHANGES_KEEP_SECS,
+                    now(),
+                )
+            });
+            if let Err(e) = pruned {
+                eprintln!("workspace: the change log was not pruned: {}", e.message);
+            }
         }
         for _ in 0..8 {
             let job = {
@@ -909,6 +921,19 @@ impl Core {
         };
         Ok((w, c))
     }
+    /// The meetings folder as a view shows it: a setting, not account data, so shown whatever
+    /// the account may read.
+    pub(crate) fn shown_meetings_root(
+        &self,
+        settings: &meetings::model::MeetingSettings,
+    ) -> Option<meetings::model::MeetingsRoot> {
+        self.meetings_root(settings)
+            .ok()
+            .map(|(path, is_default)| meetings::model::MeetingsRoot {
+                path: path.to_string_lossy().into_owned(),
+                is_default,
+            })
+    }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
         // Checked before the mutation lock (design § 2, ruling 7): no revision bump, and the
         // runner's own deny-list (design § 5) is the first guard, this the second. `GraphConnect`,
@@ -944,25 +969,24 @@ impl Core {
             }
         }
         if req.op == Operation::Snapshot {
-            let mut snapshot = self.repo()?.snapshot()?;
-            // A setting, not account data: shown whatever the account may read.
-            snapshot.meetings_root =
-                self.meetings_root(&snapshot.settings.meetings)
-                    .ok()
-                    .map(|(path, is_default)| meetings::model::MeetingsRoot {
-                        path: path.to_string_lossy().into_owned(),
-                        is_default,
-                    });
+            let (mut snapshot, scope) = self.repo()?.snapshot_scoped()?;
+            snapshot.meetings_root = self.shown_meetings_root(&snapshot.settings.meetings);
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
             snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
             snapshot.reply_voice = self.voice_snapshot(&snapshot.settings);
             snapshot.ask = self.ask_snapshot(&snapshot.settings);
             snapshot.menu_bar = self.menu_bar_snapshot(&mut snapshot);
             return Ok(
-                json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
+                json!({"snapshot":snapshot,"scope":scope,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
         }
+        if req.op == Operation::ChangesSince {
+            return self.changes_since(&req).await;
+        }
         // Read-only: no operation id, no revision bump.
+        if req.op == Operation::Revision {
+            return Ok(json!({"revision": self.repo()?.revision()?}));
+        }
         if req.op == Operation::AiStatus {
             return self.ai_status(&req).await;
         }
@@ -3060,6 +3084,36 @@ mod tests {
             })
             .await;
         assert!(snapshot.is_ok());
+    }
+
+    #[tokio::test]
+    async fn revision_answers_what_the_next_write_is_fenced_on_and_moves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let read = |op| Request {
+            op,
+            workspace_id: None,
+            expected_revision: None,
+            operation_id: None,
+            data: json!({}),
+        };
+        let before = core.request(read(Operation::Revision)).await.unwrap();
+        let snapshot = core.request(read(Operation::Snapshot)).await.unwrap();
+        assert_eq!(before["revision"], snapshot["snapshot"]["revision"]);
+        assert_eq!(
+            core.request(read(Operation::Revision)).await.unwrap(),
+            before
+        );
+        // A write sent on it lands, and moves it.
+        let mut req = mutation(
+            &core,
+            Operation::LocalSave,
+            json!({"kind": "commitment", "text": "Send the report"}),
+        );
+        req.expected_revision = before["revision"].as_i64();
+        core.request(req).await.unwrap();
+        let after = core.request(read(Operation::Revision)).await.unwrap();
+        assert!(after["revision"].as_i64() > before["revision"].as_i64());
     }
 
     #[tokio::test]

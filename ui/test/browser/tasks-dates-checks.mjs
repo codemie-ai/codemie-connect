@@ -142,6 +142,8 @@ export async function tasksDatesChecks({ open, check, assert, shot, settled, cal
       assert(await tile.locator('[data-action="task-delete"]').count() === 0, 'no trash with a provider');
       assert(await tile.locator('[data-action="commitment-toggle"]').count() > 0, 'done boxes');
       assert((await tile.locator('.ws-card-actions [data-action="route"][data-route="tasks"]').innerText()).trim() === 'Tasks', 'the Tasks button');
+      // The form sits behind "+ Add task".
+      await tile.locator('.ws-task-add > summary').click();
       await tile.locator('[data-form="commitment-add"] [name="text"]').fill('Send the Todoist summary');
       await tile.locator('[data-form="commitment-add"] button[type="submit"]').click();
       await page.waitForSelector('.ws-commitments .ws-todo:has-text("Send the Todoist summary")');

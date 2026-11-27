@@ -14,6 +14,7 @@ import { viewOf } from './view-mode.js';
 import { providerSettings, whereTasksLive } from './settings-tasks.js';
 import { menuBarCard } from './menu-bar.js';
 import { voiceCard } from './settings-voice.js';
+import { MOD_THEN_SHIFT } from './platform.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -138,7 +139,7 @@ export function settings(s, ctx) {
   };
   const anyOpen = SETTINGS_GROUPS.some(g => !menu.folded.includes(g.name));
   const foldTitle = anyOpen ? 'Fold all groups' : 'Unfold all groups';
-  const shrinkTitle = `${rail ? 'Expand' : 'Shrink'} the Settings menu (⌘⇧\\)`;
+  const shrinkTitle = `${rail ? 'Expand' : 'Shrink'} the Settings menu (${MOD_THEN_SHIFT}\\)`;
   const width = rail ? SETTINGS_MENU.rail : Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, menu.width));
   const sized = rail || width !== SETTINGS_MENU.def ? ` style="--ws-settings-w:${width}px"` : '';
   const found = SETTINGS_GROUPS.map(menuGroup).join('');

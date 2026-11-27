@@ -357,7 +357,7 @@ fn home_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .home_dir()
         .ok()
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| Some(crate::ai::discover::home_dir()))
         .unwrap_or_default()
 }
 
@@ -673,13 +673,36 @@ pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
         Err(WorkspaceError::new("io", "Connect couldn’t open Finder."))
     }
 }
-#[cfg(not(target_os = "macos"))]
+/// File Explorer: `/select,` shows a data folder in its parent's window; the logs folder and
+/// meeting folders open. Explorer answers 1 even when it worked, so only a failed start counts.
+#[cfg(windows)]
+pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
+    crate::commands::tour::opens_nothing("File Explorer reveal")
+        .map_err(|m| WorkspaceError::new("tour", m))?;
+    if !path.exists() {
+        return Err(WorkspaceError::new(
+            "not_found",
+            "That folder doesn’t exist right now.",
+        ));
+    }
+    let mut arg = OsString::new();
+    if !matches!(place, Place::Logs | Place::Meetings | Place::Meeting) {
+        arg.push("/select,");
+    }
+    arg.push(path);
+    std::process::Command::new("explorer.exe")
+        .arg(arg)
+        .status()
+        .map(drop)
+        .map_err(|_| WorkspaceError::new("io", "Connect couldn’t open File Explorer."))
+}
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn reveal(_place: Place, _path: &Path) -> Result<()> {
     crate::commands::tour::opens_nothing("Finder reveal")
         .map_err(|m| WorkspaceError::new("tour", m))?;
     Err(WorkspaceError::new(
         "unsupported",
-        "Showing folders is available on macOS.",
+        "Showing folders is available on macOS and Windows.",
     ))
 }
 

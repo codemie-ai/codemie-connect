@@ -336,8 +336,41 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
   }
   const DEFAULT_MEETINGS_ROOT = s.meetingsRoot?.path || '/Users/taylor/CodeMie Connect/Meetings';
   const SCOPES = { calendar: 'Calendars.Read', mail: 'Mail.Read', chats: 'Chat.Read', meetings: 'OnlineMeetings.Read', transcripts: 'OnlineMeetingTranscript.Read.All' };
+  // The snapshot answers handed out, by scope token, for changes_since.
+  const sent = new Map();
+  let sentSeq = 0;
   const ops = {
-    snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
+    // Every answer carries its own scope token: changes_since diffs against exactly the snapshot
+    // the window holds (native's scope hash stands for the visibility scope; the mock's diff
+    // covers everything, so a token per answer is enough).
+    snapshot: () => {
+      const answer = { snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError, scope: `mock:${++sentSeq}` };
+      sent.set(answer.scope, clone(answer));
+      for (const key of [...sent.keys()].slice(0, -40)) sent.delete(key);
+      return answer;
+    },
+    revision: () => ({ revision: s.revision }),
+    // changes.rs `changes_since`, by diffing: records by kind|id|scope, jobs by id (the whole list
+    // when one went), the small parts whole; a reset when the base is gone.
+    changes_since: ({ scope }) => {
+      const base = sent.get(scope);
+      if (!base) return { reset: true };
+      const now = ops.snapshot();
+      const key = r => `${r.kind}|${r.id}|${r.connectionId ?? ''}|${r.workspaceId ?? ''}`;
+      const was = new Map(base.snapshot.records.map(r => [key(r), JSON.stringify(r)]));
+      const is = new Set(now.snapshot.records.map(key));
+      const records = now.snapshot.records.filter(r => was.get(key(r)) !== JSON.stringify(r));
+      const removed = base.snapshot.records.filter(r => !is.has(key(r))).map(r => ({ kind: r.kind, id: r.id, connectionId: r.connectionId ?? null, workspaceId: r.workspaceId ?? null }));
+      const jobsWas = new Map((base.snapshot.jobs || []).map(j => [j.id, JSON.stringify(j)]));
+      const jobsIs = new Set((now.snapshot.jobs || []).map(j => j.id));
+      const removedJobs = [...jobsWas.keys()].filter(id => !jobsIs.has(id));
+      const jobsAll = removedJobs.length > 0;
+      const jobs = jobsAll ? now.snapshot.jobs : (now.snapshot.jobs || []).filter(j => jobsWas.get(j.id) !== JSON.stringify(j));
+      // The parts native fills from their own stores come whole too (changes.rs): the task
+      // provider, the menu bar's count, the reply voice and Ask's threads.
+      const { settings, workspaces, connection, available, meetingsRoot, noteTemplates, taskProvider, menuBar, replyVoice, ask } = now.snapshot;
+      return { reset: false, revision: now.snapshot.revision, scope: now.scope, records, removed, replace: [], jobs, removedJobs, jobsAll, settings, workspaces, connection, available, meetingsRoot, noteTemplates, taskProvider, menuBar, replyVoice, ask, authPending: now.authPending, authError: now.authError };
+    },
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
       if ('view' in d && !['default', 'compact'].includes(d.view)) refuse('view', 'Unknown view.');
@@ -1682,13 +1715,14 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
         if (unavailable) throw { code: 'storage_unavailable', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
         if (window.__storageFail) throw { code: 'storage_unavailable', message: 'Connect lost access to its data folder.' };
         const r = args.request;
+        if (window.__recordReads && ['snapshot', 'changes_since'].includes(r.op)) window.__readCalls.push(r.op);
         // Fake background sync: bump the revision once so the next fenced write is stale.
-        if (window.__syncBump && r.op !== 'snapshot') { window.__syncBump = false; s.revision++; }
+        if (window.__syncBump && !['snapshot', 'revision', 'changes_since'].includes(r.op)) { window.__syncBump = false; s.revision++; }
         if (r.op !== 'snapshot' && r.expectedRevision !== undefined && r.expectedRevision !== s.revision) throw { code: 'stale_view', message: 'This view changed.' };
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check', 'voice_refresh', 'voice_read', 'voice_import_scan', 'voice_import_distil'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['revision', 'changes_since', 'ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check', 'voice_refresh', 'voice_read', 'voice_import_scan', 'voice_import_distil'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -1933,6 +1967,9 @@ for (const theme of ['dark', 'light']) {
   });
 
   await check(`${theme}: commitments add inline and notes autosave`, async () => {
+    // The form sits behind "+ Add task", whose field takes focus as it opens.
+    await page.click('.ws-commitments .ws-task-add > summary');
+    await page.waitForFunction(() => document.activeElement?.matches('[data-form=commitment-add] [name=text]'));
     await page.fill('[data-form=commitment-add] [name=text]', 'Prepare release notes');
     await page.click('[data-form=commitment-add] button[type=submit]');
     await page.waitForSelector('.ws-todo:has-text("Prepare release notes")');
@@ -2503,13 +2540,20 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-attention [data-action="draft-reply"]').count() === await page.locator('.ws-attention .ws-msg-row').count(), 'one action per row');
     const action = page.locator('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"]');
     await action.hover();
-    await page.waitForTimeout(300);
+    // The pill fades in and its label slides open (a render under the pointer restarts both): wait
+    // for the label rather than a fixed time.
+    await page.waitForFunction(() => document.querySelector('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"] span')?.getBoundingClientRect().width > 40, null, { timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(200);
     assert(await action.evaluate(el => el.querySelector('span').getBoundingClientRect().width > 40), 'label shows on hover');
+    // The text on the pill's line (the preview; the conversation sits on the name's line above it).
     const geo = await action.evaluate(el => {
       const item = el.closest('.ws-msg-item');
+      const pill = el.getBoundingClientRect();
       const r = sel => item.querySelector(sel).getBoundingClientRect();
-      return { pill: el.getBoundingClientRect().left, text: Math.max(r('.ws-msg-preview').right, r('.ws-msg-title').right), time: r('time').right, card: item.getBoundingClientRect().right };
+      const beside = ['.ws-msg-preview', '.ws-msg-title'].map(r).filter(t => t.bottom > pill.top && t.top < pill.bottom);
+      return { pill: pill.left, text: Math.max(0, ...beside.map(t => t.right)), lines: beside.length, time: r('time').right, card: item.getBoundingClientRect().right };
     });
+    assert(geo.lines >= 1, `nothing shares the pill's line ${JSON.stringify(geo)}`);
     assert(geo.pill >= geo.text, `the pill covers the preview ${JSON.stringify(geo)}`);
     assert(geo.card - geo.time <= 12, `the time left the card edge ${JSON.stringify(geo)}`);
     await shot(page, `${theme}-today-draft-reply`);
@@ -2781,6 +2825,7 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: a drive that goes away while Connect runs shows the recovery page`, async () => {
     const { page, context, errors } = await open({ theme, storage: STORAGE.missing });
     await page.evaluate(() => { window.__storageFail = true; });
+    await page.click('.ws-commitments .ws-task-add > summary');
     await page.fill('[data-form=commitment-add] [name=text]', 'Prepare release notes');
     await page.click('[data-form=commitment-add] button[type=submit]');
     await page.waitForSelector('.ws-recovery-card[data-status="missing"]');
@@ -3904,6 +3949,16 @@ for (const theme of ['dark', 'light']) {
       assert(!(await page.locator('#sidebar-analytics').count()), 'analytics entry exists');
       assert(!(await page.locator('#legacy-host').count()), 'legacy host exists');
       assert(!(await page.locator('.ws-settings-nav :text("CLI usage analytics")').count()), 'analytics tab exists');
+    });
+    if (width === 1440) await check(`${theme} codemie: Check for updates keeps the CodeMie CLI card open`, async () => {
+      const { page } = ready;
+      await page.click('.ws-settings-nav button[data-tab=cm-overview]');
+      const card = page.locator('details[data-menu="codemie-cli"]');
+      await card.locator('summary').click();
+      await page.waitForSelector('details[data-menu="codemie-cli"][open]');
+      await card.locator('button[data-action="cm-cli-check"]').click();
+      await page.waitForSelector('.ws-toast:has-text("CodeMie is up to date.")', { timeout: 6000 });
+      assert(await card.evaluate(d => d.open), 'the CodeMie CLI card folded after Check for updates');
     });
     await check(`${theme} ${width}px codemie: settings no page errors`, async () => assert(ready.errors.length === 0, ready.errors.join(' | ')));
     await ready.context.close().catch(() => {});

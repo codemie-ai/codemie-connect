@@ -5,6 +5,7 @@ import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { badge, button, checkbox, field, select, toggle } from './ui.js';
 import { PRESETS, layoutChanged, optionsOf, sizeName } from './today-grid.js';
+import { MOD, MOD_SHIFT } from './platform.js';
 
 const WIDTHS = [[3, '1/4'], [4, '1/3'], [6, '1/2'], [8, '2/3'], [12, 'Full']];
 const HEIGHTS = [['S', 3], ['M', 5], ['L', 7], ['XL', 9]];
@@ -55,8 +56,8 @@ export function todayMenu(t, { locked = false } = {}) {
 export function editBar(t, { canUndo = false, canRedo = false } = {}) {
   return `<div class="ws-today-editbar" role="toolbar" aria-label="Customize Today">
     <span class="ws-today-hint">${icon('hand')}<span><strong>Customizing Today</strong><span>Drag a header to move · pull an edge or corner to resize · drag cards in from the right</span></span></span>
-    ${button('Undo', { action: 'today-undo', iconName: 'undo', size: 'sm', disabled: !canUndo, title: 'Undo (⌘Z)' })}
-    ${button('Redo', { action: 'today-redo', iconName: 'redo', size: 'sm', disabled: !canRedo, title: 'Redo (⇧⌘Z)' })}
+    ${button('Undo', { action: 'today-undo', iconName: 'undo', size: 'sm', disabled: !canUndo, title: `Undo (${MOD}Z)` })}
+    ${button('Redo', { action: 'today-redo', iconName: 'redo', size: 'sm', disabled: !canRedo, title: `Redo (${MOD_SHIFT}Z)` })}
     <span class="ws-today-sep" aria-hidden="true"></span>${layoutMenu(t, { small: true })}
     <span class="ws-today-sep" aria-hidden="true"></span>${button('Done', { action: 'today-done', iconName: 'check', variant: 'primary', size: 'sm' })}
   </div>`;

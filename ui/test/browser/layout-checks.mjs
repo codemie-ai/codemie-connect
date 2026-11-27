@@ -393,10 +393,12 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
     await check('layout E6: locked nothing moves; keys move, resize, remove and undo, said aloud; a touch long press moves Notes', async () => {
       // Locked: dragging Up next by its header moves nothing and offers Unlock.
       await openTodayMenu(page);
-      await page.click('.ws-today-actions [data-action="today-lock"]');
+      await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-lock"]');
       await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="true"]');
       await page.keyboard.press('Escape');
       await page.waitForSelector('.ws-today-actions details[data-menu="today-more"]:not([open])');
+      // While locked, a lock to undo it shows beside the ⋯.
+      await page.waitForSelector('.ws-today-actions > [data-action="today-lock"][aria-pressed="true"]');
       await page.evaluate(() => { document.getElementById('workspace-main').scrollTop = 0; });
       const head = await box(page, '[data-tile="brief"] .ws-tile-head h2');
       const from = { x: head.x + 30, y: head.y + head.height / 2 };
@@ -411,6 +413,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
       assert((await saves(page)).length === 0, 'a locked drag saved the layout');
       await page.click('.ws-toast:has-text("Layouts are locked") .ws-toast-action');
       await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="false"]', { state: 'attached' });
+      assert(await page.locator('.ws-today-actions > [data-action="today-lock"]').count() === 0, 'the unlock button stays after unlocking');
       await shot(page, 'layout-e6-unlocked');
       // Keyboard: Tab reaches Schedule's grip.
       await page.focus('[data-tile="focus"] .ws-tile-grip');
@@ -593,6 +596,15 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls, 
       assert(JSON.stringify(await groups()) === only, `groups ${JSON.stringify(await groups())}`);
       const codemie = SETTINGS_GROUPS.find(g => g.name === 'CodeMie').items.map(([id]) => id);
       assert((await items('CodeMie')).join() === codemie.join() && (await items('Workspace')).join() === 'layout' && !(await items('Meetings')).length && !(await items('Application')).length, 'the other groups are not folded');
+      // A group's header is one left-aligned line: chevron, name and (folded) count side by side.
+      const heads = await page.evaluate(() => [...document.querySelectorAll('.ws-settings-nav button.ws-nav-group')].map(b => {
+        const box = b.getBoundingClientRect();
+        const parts = [...b.children].map(c => c.getBoundingClientRect());
+        const mids = parts.map(p => p.top + p.height / 2);
+        return { name: b.dataset.group, height: Math.round(box.height), indent: Math.round(parts[0].left - box.left), drift: Math.round(Math.max(...mids) - Math.min(...mids)) };
+      }));
+      const bad = heads.filter(h => h.drift > 2 || h.height > 40 || h.indent > 12);
+      assert(!bad.length, `group headers not on one left-aligned line: ${JSON.stringify(bad)}`);
       await shot(page, 'layout-e8-settings-folded');
       // Find a setting ignores folding while it holds text.
       await page.locator('[data-settings-find]').pressSequentially('temp');

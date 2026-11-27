@@ -409,6 +409,8 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
       assert(await tile.locator('[data-action="commitment-toggle"]').count() > 0, 'done boxes');
       assert((await tile.locator('.ws-card-actions [data-action="route"][data-route="tasks"]').innerText()).trim() === 'Tasks', 'the Tasks button');
       const saves = (await calls(page, 'task_save')).length;
+      // The form sits behind "+ Add task".
+      await tile.locator('.ws-task-add > summary').click();
       await tile.locator('[data-form="commitment-add"] [name="text"]').fill('Send the Todoist-only summary');
       await tile.locator('[data-form="commitment-add"] button[type="submit"]').click();
       await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'task_save').length > n, saves);

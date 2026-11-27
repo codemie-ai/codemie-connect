@@ -12,6 +12,19 @@ pub fn project(
     records: &mut [Record],
 ) -> Result<()> {
     let Some(c) = c else { return Ok(()) };
+    let messages = repo.provider_records(&c.id, "message")?;
+    project_with(repo, w, c, records, &messages)
+}
+
+/// [`project`] reading the conversations from `messages`: every message of each conversation
+/// `records` holds messages of (a delta passes just those conversations' messages).
+pub fn project_with(
+    repo: &Repository,
+    w: &Workspace,
+    c: &Connection,
+    records: &mut [Record],
+    messages: &[Record],
+) -> Result<()> {
     let decisions: HashMap<_, _> = records
         .iter()
         .filter(|r| r.kind == "decision")
@@ -21,7 +34,6 @@ pub fn project(
             (r.id.clone(), data)
         })
         .collect();
-    let messages = repo.provider_records(&c.id, "message")?;
     let mut latest_mine: HashMap<String, i64> = HashMap::new();
     let mut latest_inbound: HashMap<String, (i64, String)> = HashMap::new();
     let mut waiting: HashMap<String, i64> = HashMap::new();

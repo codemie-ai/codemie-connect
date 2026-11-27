@@ -581,3 +581,21 @@ test('a parked change whose sentence was withheld reads "<Provider> refused this
   await ctl.handle('tasks-older', control());
   assert.doesNotMatch(calls.html, /ws-tdate-error/);
 });
+
+test('Accept and Dismiss move focus with the click; their toasts wait for native', async () => {
+  let release;
+  const native = new Promise(resolve => { release = resolve; });
+  const { ctl, calls } = harness({ answers: { task_save: () => native } });
+  const first = list => (Array.isArray(list) ? list[0] : list);
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  const dismissing = ctl.handle('task-dismiss', control({ id: 'task-bug' }));
+  await tick();
+  assert.equal(first(calls.focus.at(-1)), '[data-task="task-share"] .ws-task-title');
+  assert.equal(calls.toasts.length, 0, 'no toast before native has it: a refused step never shows one');
+  const accepting = ctl.handle('task-accept', control({ id: 'task-share' }));
+  await tick();
+  assert.equal(first(calls.focus.at(-1)), '[data-task="task-share"] .ws-task-title');
+  release({ id: 'saved' });
+  await Promise.all([dismissing, accepting]);
+  assert.match(calls.toasts.at(-1).message, /^Dismissed\./);
+});

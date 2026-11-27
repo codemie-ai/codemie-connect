@@ -92,10 +92,13 @@ impl Core {
     }
 
     /// `transcript_check`: finds the meeting in Teams by its join link and lists this
-    /// occurrence's transcripts. Found: `available`, and its save is queued at once.
+    /// occurrence's transcripts. Found: `available`, and its save is queued at once. The round's
+    /// late look (`late`) at a transcript saved before the scheduled end saves it again when
+    /// Teams has one it doesn't.
     pub(in crate::workspace) async fn run_transcript_check(&self, job: &Job) -> Result<String> {
         let c = self.job_connection(job)?;
         let id = required(&job.payload, "meetingId", 2000)?.to_string();
+        let late = job.payload["late"] == true;
         let event = self
             .repo()?
             .record("event", &id, Some(&c.id), None)
@@ -143,8 +146,27 @@ impl Core {
             )?;
             let (mut m, _, source) = self.current(&r, &c, &id)?;
             if saved(m.state) || m.state == MeetingState::Available {
-                // Found or saved meanwhile, by an import or another check.
-                return Ok("The transcript was already found".into());
+                let more = late
+                    && saved(m.state)
+                    && m.imported.is_none()
+                    && refs.iter().any(|t| !m.transcript_ids.contains(&t.id));
+                if !more {
+                    // Found or saved meanwhile, by an import or another check.
+                    return Ok("The transcript was already found".into());
+                }
+                // Saved again with every transcript, as Download again does; notes and tasks stay.
+                r.enqueue(&new_job(
+                    "transcript_download",
+                    format!("transcript_download:late:{id}"),
+                    job.workspace_id.clone(),
+                    job.connection_id.clone(),
+                    now(),
+                    job.policy.clone(),
+                    json!({"meetingId": id, "title": m.title}),
+                ))?;
+                drop(r);
+                self.emit("workspace:changed");
+                return Ok("Teams has more of the transcript; saving it again".into());
             }
             m.state = state;
             m.error = error.clone();

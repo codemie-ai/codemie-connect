@@ -48,5 +48,8 @@ export function cliCommands(platform) {
     doctor: 'codemie doctor',
     selfUpdateCheck: `codemie self-update --check${closed}`,
     selfUpdate: `codemie self-update${closed}`,
+    // The real folder of the CodeMie package that runs: an `npm link` resolves to its checkout.
+    activePackageDir: platform === 'windows' ? null
+      : `cd "$(dirname "$(command -v codemie)")/../lib/node_modules/@codemieai/code" && pwd -P${closed}`,
   };
 }

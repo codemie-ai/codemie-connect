@@ -525,11 +525,15 @@ export function createMeetingsController({
       subtitle: `${m.title} · ${formatDate(m.start, zone, { weekday: 'short', month: 'short', day: 'numeric' })}, ${formatTime(m.start, zone)}`,
       body: makeNotesBody(s, m, { now: now(), reads: data }),
       submit: 'Make notes', variant: 'magic', size: 'lg',
-      onSubmit: async f => {
+      // The dialog closes with the click: the progress line shows at once (a preview). Native's
+      // answer brings the toast, or the problem's toast with the way on.
+      onSubmit: f => {
         const options = formOptions(f);
-        await makeNotes(id, options);
+        if (!options.templateId) throw new Error('Choose a note template.');
         const name = (s.noteTemplates || []).find(t => t.id === options.templateId)?.name || 'notes';
-        toast(docs.length ? `Making “${name}” next to your notes` : `Making ${name} for “${m.title}”`, 'success');
+        guarded(id, () => makeNotes(id, options)).then(queued => {
+          if (queued) toast(docs.length ? `Making “${name}” next to your notes` : `Making ${name} for “${m.title}”`, 'success');
+        });
       },
     });
     dialog?.classList?.add('ws-mtg-make-modal');
@@ -699,12 +703,13 @@ export function createMeetingsController({
       title: `Delete “${doc.name}”?`,
       text: `The document${kept ? ` and its ${plural(kept, 'earlier version')}` : ''} move to notes-history in the meeting folder. The transcript, the other documents and the tasks stay.`,
       confirm: 'Delete document', variant: 'danger', initialFocus: 'cancel', guard: true,
+      // Gone with the click (a preview); a document changed meanwhile comes back with its toast.
       onConfirm: async () => {
-        await mutate('meeting_doc', { meetingId: id, docId, action: 'delete', ...base });
+        const deleting = guarded(id, () => mutate('meeting_doc', { meetingId: id, docId, action: 'delete', ...base }));
         const view = v();
         if (view.docView[id] === docId) delete view.docView[id];
         if ((record(id)?.data?.docs || []).length < 2) await setCompare(false);
-        toast(`“${doc.name}” moved to notes-history`, 'success');
+        deleting.then(deleted => { if (deleted) toast(`“${doc.name}” moved to notes-history`, 'success'); });
       },
     });
   }
@@ -1125,6 +1130,7 @@ export function createMeetingsController({
       // What the view state kept wins over the form's fields (a render may have rebuilt them).
       const kept = v().makeForm?.[id] || {};
       const options = { ...formOptions(f), ...kept };
+      // The progress line shows with the click (a preview); native's answer brings the toast.
       const queued = await guarded(id, () => makeNotes(id, options));
       const name = (snap().noteTemplates || []).find(t => t.id === options.templateId)?.name || 'notes';
       if (queued) {

@@ -14,6 +14,7 @@ import { dotsSummary, menu, menuItems, plural, tplColor } from './view-meeting-t
 import {
   SECTION_LABELS, fieldError, mdEditor, ruleTestResult, sortedRules, subCard, templateEditor, tplIcon,
 } from './settings-meetings-editors.js';
+import { FILE_MANAGER } from './platform.js';
 
 /** The page's view state: the template being edited (`{id, isNew, draft}`), refusals by field,
  *  the glossary and tag texts as read (and typed), Write/Preview, the rule tester, and the
@@ -137,7 +138,7 @@ function transcriptsPanel(s, { v, auth = {}, now }) {
   const transcripts = card({
     title: 'Teams transcripts', iconName: 'transcript',
     body: `${settingRow({ title: 'Read Teams transcripts', text, control })}${reason}
-      ${row(v, 'checkEveryMin', { title: 'Look for transcripts', text: 'From 10 minutes after a Teams meeting ends, for a day. Each transcript is saved into its meeting folder as soon as Teams has it; nothing goes to the AI until notes are made.', control: choose('checkEveryMin', [[5, 'Every 5 minutes'], [10, 'Every 10 minutes'], [30, 'Every 30 minutes']], m.checkEveryMin ?? 10, 'Look for transcripts') })}
+      ${row(v, 'checkEveryMin', { title: 'Look for transcripts', text: 'From 5 minutes after a Teams meeting starts until 2 hours after it ends, so a meeting that ends early is found too. Each transcript is saved into its meeting folder as soon as Teams has it; nothing goes to the AI until notes are made.', control: choose('checkEveryMin', [[5, 'Every 5 minutes'], [10, 'Every 10 minutes'], [30, 'Every 30 minutes']], m.checkEveryMin ?? 5, 'Look for transcripts') })}
       ${row(v, 'autoNotes', { title: 'Make notes automatically', text: 'Uses the template its rule picks. Notes wait until the transcript appears.', control: choose('autoNotes', [['off', 'Never — I start them'], ['rules', 'When a rule says so'], ['all', 'For every meeting with a transcript']], m.autoNotes ?? 'rules', 'Make notes automatically') })}
       ${row(v, 'waitMin', { title: 'Wait after the meeting', text: 'Gives Teams time to finish the transcript and you time to add context.', control: choose('waitMin', [[0, 'Right away'], [15, '15 minutes'], [60, '1 hour']], m.waitMin ?? 15, 'Wait after the meeting', x => `${x} minutes`) })}
       ${row(v, 'skipShort', { title: 'Skip very short meetings', text: 'No automatic notes for meetings under 3 minutes or with almost no talking.', control: set('skipShort', m.skipShort !== false, 'Skip very short meetings') })}`,
@@ -150,7 +151,7 @@ function transcriptsPanel(s, { v, auth = {}, now }) {
     title: 'Meeting folders', iconName: 'folder',
     body: `<div class="ws-ms-location">
         <div class="ws-ms-location-path"><span class="ws-field-label">Location</span><span class="ws-ms-path-line"><code class="ws-ms-path" title="${e(root.path || '')}">${e(root.path || 'Your home folder › CodeMie Connect › Meetings')}</code>${root.isDefault !== false ? badge('Default', 'neutral') : ''}</span></div>
-        <div class="ws-actions">${button('Change…', { action: 'meetings-settings-root-pick', size: 'sm', iconName: 'folder' })}${button('Show in Finder', { action: 'meetings-settings-root-reveal', variant: 'ghost', size: 'sm', iconName: 'folder-open' })}${root.isDefault === false ? button('Use the default', { action: 'meetings-settings-root-default', variant: 'ghost', size: 'sm', iconName: 'undo' }) : ''}</div>
+        <div class="ws-actions">${button('Change…', { action: 'meetings-settings-root-pick', size: 'sm', iconName: 'folder' })}${button(`Show in ${FILE_MANAGER}`, { action: 'meetings-settings-root-reveal', variant: 'ghost', size: 'sm', iconName: 'folder-open' })}${root.isDefault === false ? button('Use the default', { action: 'meetings-settings-root-default', variant: 'ghost', size: 'sm', iconName: 'undo' }) : ''}</div>
       </div>
       ${fieldError(v, 'meetings.root')}
       <p class="ws-field-hint ws-ms-location-hint">New meetings are saved here. Meetings saved before keep their folders.</p>

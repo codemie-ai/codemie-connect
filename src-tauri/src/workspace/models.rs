@@ -84,6 +84,11 @@ fn empty_object() -> Value {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Snapshot,
+    /// Read-only: the revision a fenced write is checked against, without the snapshot. The
+    /// window's queue sends a rebase-safe write behind another on it.
+    Revision,
+    /// Read-only: what changed after the revision the window holds (changes.rs), or a reset.
+    ChangesSince,
     WorkspaceCreate,
     WorkspaceUpdate,
     WorkspaceSelect,

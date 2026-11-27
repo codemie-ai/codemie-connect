@@ -726,6 +726,9 @@ const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 pub struct Refresher {
     notify: std::sync::Arc<tokio::sync::Notify>,
     last: std::sync::Mutex<Option<TrayView>>,
+    /// The window's `menuBar` as the refresher last counted it: what a delta (changes.rs) sends,
+    /// so a read by revision never counts over the whole snapshot itself.
+    counted: std::sync::Mutex<Option<Value>>,
     /// Held across compare, record and apply, so applies never overlap and the tray always
     /// shows what `last` holds. Never taken on the main thread (`open_menu_row` reads `last`
     /// only), and `last` is let go before the tray is set.
@@ -746,6 +749,7 @@ impl Refresher {
         Self {
             notify: Default::default(),
             last: Default::default(),
+            counted: Default::default(),
             applying: Default::default(),
             main_thread: Default::default(),
             sink: Default::default(),
@@ -773,6 +777,21 @@ impl Refresher {
     /// Asks for a recount. Takes no lock, so callers may hold the repository guard.
     pub fn wake(&self) {
         self.notify.notify_one();
+    }
+
+    /// Keeps `menu_bar` as the last count; true when it differs from an earlier one.
+    fn keep_counted(&self, menu_bar: Value) -> bool {
+        let Ok(mut counted) = self.counted.lock() else {
+            return false;
+        };
+        let changed = counted.as_ref().is_some_and(|c| *c != menu_bar);
+        *counted = Some(menu_bar);
+        changed
+    }
+
+    /// The window's `menuBar` as last counted; None before the first count.
+    fn counted(&self) -> Option<Value> {
+        self.counted.lock().ok().and_then(|c| c.clone())
     }
 
     /// The view last applied to the tray.
@@ -855,7 +874,28 @@ impl super::Core {
         };
         let view = tray_view(&m);
         self.menu_bar.offer(&view);
+        // A window reading by revision got the count before this one: it reads again. The next
+        // count finds nothing new and stops there.
+        if self
+            .menu_bar
+            .keep_counted(serde_json::to_value(&m).unwrap_or(Value::Null))
+        {
+            self.emit("workspace:changed");
+        }
         Ok(view)
+    }
+
+    /// The window's `menuBar` for a read by revision (changes.rs): the refresher's last count,
+    /// or one counted now before the refresher's first (tests, the moment after start).
+    pub(in crate::workspace) fn menu_bar_for_delta(&self) -> Value {
+        if let Some(counted) = self.menu_bar.counted() {
+            return counted;
+        }
+        let Ok(mut s) = self.repo().and_then(|r| r.snapshot()) else {
+            return Value::Null;
+        };
+        s.task_provider = self.task_provider_snapshot(&s.settings);
+        self.menu_bar_snapshot(&mut s)
     }
 
     /// Starts the refresher: each wake waits [`DEBOUNCE`] for more, then counts once. It runs
@@ -2083,6 +2123,32 @@ mod tests {
         assert_eq!(applied[1].title.as_deref(), Some("1"));
         assert_eq!(second, applied[1]);
         assert_eq!(core.menu_bar.last(), Some(second));
+    }
+
+    #[tokio::test]
+    async fn a_delta_sends_the_last_count_until_the_refresher_counts_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        core.refresh_menu_bar_now().unwrap();
+        assert_eq!(core.menu_bar_for_delta()["count"], 0);
+        core.repo()
+            .unwrap()
+            .put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
+            .unwrap();
+        // A read by revision never counts over the whole snapshot itself once there is a count.
+        assert_eq!(core.menu_bar_for_delta()["count"], 0);
+        core.refresh_menu_bar_now().unwrap();
+        assert_eq!(core.menu_bar_for_delta()["count"], 1);
+    }
+
+    #[test]
+    fn only_a_changed_count_asks_the_window_to_read_again() {
+        let r = Refresher::new(now);
+        assert!(!r.keep_counted(json!({"count": 0})), "the first count");
+        assert!(!r.keep_counted(json!({"count": 0})), "the same count");
+        assert!(r.keep_counted(json!({"count": 1})));
+        assert_eq!(r.counted(), Some(json!({"count": 1})));
     }
 
     #[tokio::test]

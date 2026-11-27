@@ -214,7 +214,7 @@ pub(super) async fn op(core: &Arc<Core>, op: Operation, data: Value) -> Result<V
 }
 
 pub(super) fn slot(at: i64) -> i64 {
-    at / 600
+    at / 300
 }
 
 pub(super) fn default_root(core: &Core) -> PathBuf {
@@ -243,7 +243,7 @@ pub(super) const FILES: [&str; 5] = [
 ];
 
 #[tokio::test]
-async fn round_queues_checks_only_for_ended_online_meetings() {
+async fn round_queues_checks_for_online_meetings_from_5_minutes_after_the_start() {
     let e = env();
     put(&e.core, ended("due", 15, json!({})));
     put(
@@ -261,7 +261,28 @@ async fn round_queues_checks_only_for_ended_online_meetings() {
             json!({"isOnlineMeeting": false, "joinUrl": null}),
         ),
     );
-    put(&e.core, ended("just-ended", 9, json!({})));
+    put(&e.core, ended("just-ended", 2, json!({})));
+    // Still on by the calendar: Teams lists the transcript once it ends, which may be early.
+    put(
+        &e.core,
+        event(
+            "on-now",
+            SYNC,
+            &rfc(now() - 360),
+            &rfc(now() + 1440),
+            json!({}),
+        ),
+    );
+    put(
+        &e.core,
+        event(
+            "just-started",
+            SYNC,
+            &rfc(now() - 120),
+            &rfc(now() + 1680),
+            json!({}),
+        ),
+    );
     put(&e.core, ended("yesterday", 25 * 60, json!({})));
     put(
         &e.core,
@@ -276,24 +297,29 @@ async fn round_queues_checks_only_for_ended_online_meetings() {
     let at = now();
     meetings_round_at(&e.core, at).unwrap();
     let checks = jobs(&e.core, "transcript_check");
-    assert_eq!(checks.len(), 1, "{checks:?}");
-    assert_eq!(checks[0].key, format!("transcript_check:due:{}", slot(at)));
-    assert_eq!(checks[0].payload["meetingId"], "due");
-    assert_eq!(checks[0].workspace_id.as_deref(), Some("personal"));
-    assert_eq!(checks[0].connection_id.as_deref(), Some(ACCT));
+    let ids = |checks: &[Job]| {
+        let mut ids: Vec<String> = checks
+            .iter()
+            .map(|j| j.payload["meetingId"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&checks), ["due", "just-ended", "on-now"], "{checks:?}");
+    let due = checks
+        .iter()
+        .find(|j| j.payload["meetingId"] == "due")
+        .unwrap();
+    assert_eq!(due.key, format!("transcript_check:due:{}", slot(at)));
+    assert_eq!(due.workspace_id.as_deref(), Some("personal"));
+    assert_eq!(due.connection_id.as_deref(), Some(ACCT));
     // The same slot, or a check still waiting, never queues a second one; ten minutes on,
-    // the meeting that had just ended is due too.
+    // the meeting that had just started is due too.
     meetings_round_at(&e.core, at).unwrap();
     meetings_round_at(&e.core, at + 600).unwrap();
-    let checks = jobs(&e.core, "transcript_check");
-    let ids: Vec<&str> = checks
-        .iter()
-        .map(|j| j.payload["meetingId"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids.len(), 2, "{ids:?}");
-    assert!(
-        ids.contains(&"due") && ids.contains(&"just-ended"),
-        "{ids:?}"
+    assert_eq!(
+        ids(&jobs(&e.core, "transcript_check")),
+        ["due", "just-ended", "just-started", "on-now"]
     );
     // A meeting whose transcript was already found is not checked again.
     put(&e.core, ended("found", 15, json!({})));
@@ -313,9 +339,113 @@ async fn round_queues_checks_only_for_ended_online_meetings() {
         put(&e.core, ended(&format!("many-{i}"), 20 + i, json!({})));
     }
     meetings_round_at(&e.core, at).unwrap();
-    assert_eq!(jobs(&e.core, "transcript_check").len(), 2 + 25);
+    assert_eq!(jobs(&e.core, "transcript_check").len(), 4 + 25);
     meetings_round_at(&e.core, at).unwrap();
-    assert_eq!(jobs(&e.core, "transcript_check").len(), 2 + 30);
+    assert_eq!(jobs(&e.core, "transcript_check").len(), 4 + 30);
+}
+
+#[tokio::test]
+async fn a_meeting_that_ends_early_is_saved_before_its_scheduled_end() {
+    let e = env();
+    let (start, end) = (now() - 900, now() + 900);
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(start), &rfc(end), json!({})),
+    );
+    e.graph
+        .answer(&lookup_url(JOIN), json!({"value": [{"id": ONLINE}]}));
+    e.graph.answer(&list_url(ONLINE), json!({"value": []}));
+    // Still on: nothing yet, and it stays a meeting to come, not one waiting for Teams.
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Upcoming);
+    assert!(m.checked_at.is_some());
+    // It ended early: the next slot's check finds the transcript and saves it.
+    teams(&e.graph, &rfc(start + 60), VTT);
+    meetings_round_at(&e.core, at + 300).unwrap();
+    run_jobs_ahead(&e.core, 300).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert_eq!(m.transcript_ids, ["t1"]);
+    assert!(folder_of(&e.core, "m1").join("transcript.md").is_file());
+}
+
+#[tokio::test]
+async fn a_transcript_saved_before_the_scheduled_end_is_looked_at_once_more() {
+    let e = env();
+    let (start, end) = (now() - 900, now() + 900);
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(start), &rfc(end), json!({})),
+    );
+    teams(&e.graph, &rfc(start + 60), VTT);
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Downloaded);
+    // Not before 5 minutes after the scheduled end.
+    meetings_round_at(&e.core, end + 60).unwrap();
+    assert!(jobs(&e.core, "transcript_check")
+        .iter()
+        .all(|j| !j.key.starts_with("transcript_check:late:")));
+    // Transcription started again: the late look saves both, oldest first.
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [{"id": "t1", "createdDateTime": rfc(start + 60)},
+                         {"id": "t2", "createdDateTime": rfc(start + 1500)}]}),
+    );
+    e.graph.answer_text(&content_url(ONLINE, "t2"), VTT);
+    let later = end + 360;
+    meetings_round_at(&e.core, later).unwrap();
+    let ran = run_jobs_ahead(&e.core, later - now()).await;
+    let late: Vec<&Job> = ran.iter().filter(|j| j.key.ends_with(":late:m1")).collect();
+    assert_eq!(late.len(), 2, "the look and its save: {ran:#?}");
+    assert!(late.iter().all(|j| j.state == "succeeded"), "{late:#?}");
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert_eq!(m.transcript_ids, ["t1", "t2"]);
+    // Once only.
+    meetings_round_at(&e.core, later + 600).unwrap();
+    assert_eq!(
+        jobs(&e.core, "transcript_check")
+            .iter()
+            .filter(|j| j.key == "transcript_check:late:m1")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn the_late_look_keeps_a_transcript_teams_has_nothing_more_of() {
+    let e = env();
+    let (start, end) = (now() - 900, now() + 900);
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(start), &rfc(end), json!({})),
+    );
+    teams(&e.graph, &rfc(start + 60), VTT);
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    let later = end + 360;
+    meetings_round_at(&e.core, later).unwrap();
+    let ran = run_jobs_ahead(&e.core, later - now()).await;
+    assert_eq!(ran.len(), 1, "{ran:#?}");
+    assert_eq!(ran[0].key, "transcript_check:late:m1");
+    assert_eq!(
+        ran[0].result.as_deref(),
+        Some("The transcript was already found")
+    );
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
+    // A meeting found after its end gets no late look.
+    put(&e.core, ended("m2", 15, json!({})));
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m2").state, MeetingState::Downloaded);
+    meetings_round_at(&e.core, now() + 600).unwrap();
+    assert!(jobs(&e.core, "transcript_check")
+        .iter()
+        .all(|j| j.key != "transcript_check:late:m2"));
 }
 
 #[tokio::test]

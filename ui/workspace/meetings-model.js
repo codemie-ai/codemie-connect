@@ -240,6 +240,73 @@ export function runsOf(s) {
  *  nothing runs. */
 export const runOf = (s, meetingId) => runsOf(s).get(meetingId) || null;
 
+// ---------------------------------------------------------------- previews
+// What a Meetings write does, shown before native has it: the store lays it over the snapshot
+// until the snapshot after the write lands (store.js `optimistic`). Each mirrors native: null
+// when there is nothing to show.
+
+/** `snapshot` with the meeting record `id` replaced by `next(data)`; a meeting without one gets
+ *  one made from its event, as native's `current` makes it. Null when neither is there. */
+function withMeeting(snapshot, id, next) {
+  const records = snapshot.records.slice();
+  const i = records.findIndex(r => r.kind === 'meeting' && r.id === id);
+  if (i >= 0) {
+    records[i] = { ...records[i], data: next({ ...records[i].data }) };
+    return { ...snapshot, records };
+  }
+  const ev = id ? records.find(r => r.kind === 'event' && r.id === id) : null;
+  if (!ev) return null;
+  records.push({ id, kind: 'meeting', connectionId: ev.connectionId, workspaceId: ev.workspaceId, source: ev.source, revision: 'preview', updatedAt: ev.updatedAt, data: next({}) });
+  return { ...snapshot, records };
+}
+
+/** notes_ops.rs `meeting_set`: the meeting's template and its automatic-notes switch; null goes
+ *  back to the rule or setting. */
+export const previewMeetingSet = (snapshot, data) => withMeeting(snapshot, data?.meetingId, d => {
+  for (const key of ['template', 'auto']) {
+    if (!Object.hasOwn(data, key)) continue;
+    if (data[key] === null) delete d[key];
+    else d[key] = data[key];
+  }
+  return d;
+});
+
+/** docs.rs Make main and delete: the main document, and the next one becoming main when it goes
+ *  (none left: the meeting has no notes yet). Editing and versions read the files: no preview. */
+export function previewMeetingDoc(snapshot, data) {
+  if (!['main', 'delete'].includes(data?.action)) return null;
+  const rec = snapshot.records.find(r => r.kind === 'meeting' && r.id === data.meetingId);
+  if (!(rec?.data?.docs || []).some(d => d.id === data.docId)) return null;
+  return withMeeting(snapshot, data.meetingId, d => {
+    if (data.action === 'main') return { ...d, main: data.docId };
+    const docs = d.docs.filter(x => x.id !== data.docId);
+    const main = docs.some(x => x.id === d.main) ? d.main : docs[0]?.id ?? null;
+    return { ...d, docs, main, state: !docs.length && d.state === 'ready' ? 'downloaded' : d.state };
+  });
+}
+
+/** Make notes (`meeting_notes`) or Try again / Download again (`transcript_download`): the
+ *  meeting's run, queued, so its progress line shows at once. */
+export const previewRun = kind => (snapshot, data, { operationId = 'run' } = {}) => {
+  if (!data?.meetingId) return null;
+  const job = {
+    id: `preview:${operationId}`, kind, key: `${kind}:${operationId}`, state: 'queued', attempts: 0, dueAt: Math.floor(Date.now() / 1000),
+    workspaceId: snapshot.settings?.activeWorkspace ?? null, connectionId: snapshot.connection?.id ?? null, result: null,
+    payload: { meetingId: data.meetingId, ...(data.templateId ? { templateId: data.templateId } : {}) },
+  };
+  return { ...snapshot, jobs: [job, ...(snapshot.jobs || [])] };
+};
+
+/** Stop (`job_cancel`): the job ends at once, so its progress line goes. */
+export function previewJobCancel(snapshot, data) {
+  const jobs = snapshot.jobs || [];
+  const i = jobs.findIndex(j => j.id === data?.id && ['queued', 'running'].includes(j.state));
+  if (i < 0) return null;
+  const next = jobs.slice();
+  next[i] = { ...jobs[i], state: 'cancelled' };
+  return { ...snapshot, jobs: next };
+}
+
 /** The newest failed notes job of a meeting (its template is what Try again runs again). */
 export function failedNotesJob(s, meetingId) {
   return (s.jobs || []).filter(j => j.kind === 'meeting_notes' && j.payload?.meetingId === meetingId && ['failed', 'blocked'].includes(j.state))
@@ -270,6 +337,8 @@ export function meetingItems(s, now = Date.now()) {
     const run = runs.get(id) || null;
     return {
       id, ev, rec, title: d.title || r.title || 'Untitled meeting', start, end, ended: Number.isFinite(end) && end <= now,
+      // A Teams meeting on now by its calendar times: Check now may find it ended early.
+      live: start <= now && !(end <= now) && hasLink(d),
       online: ev ? isOnline(d) : r.state !== 'offline', state, run,
       // Found or waiting for Teams, but nothing can get it now: why (`signin` while Microsoft
       // needs the person to sign in again, `off` while reading transcripts is off), else null.

@@ -6,6 +6,7 @@ import { icon } from './icons.js';
 import { badge, button, card, checkbox, spinner } from './ui.js';
 import { formatDate } from './format.js';
 import { USE_DEFAULT_WARNING } from './recovery.js';
+import { FILE_MANAGER } from './platform.js';
 
 export const ACK_LABEL = 'I understand others with access to this drive can read my workspace';
 const DATA_DIR = 'CodeMie Connect Data';
@@ -28,7 +29,7 @@ export function formatBytes(n) {
 
 const path = (p, attrs = '') => `<code class="ws-storage-path"${attrs}>${e(p || '')}</code>`;
 const target = p => `<code class="ws-storage-path ws-dl-target">${e(p || '')}</code>`;
-const reveal = (which, disabled) => button('Show in Finder', { action: 'data-reveal', variant: 'ghost', iconName: 'folder', disabled, attrs: { 'data-which': which } });
+const reveal = (which, disabled) => button(`Show in ${FILE_MANAGER}`, { action: 'data-reveal', variant: 'ghost', iconName: 'folder', disabled, attrs: { 'data-which': which } });
 const note = (text, tone = '', iconName = 'info', role = '') => `<p class="ws-inline-note${tone ? ` ws-${tone}` : ''}"${role ? ` role="${role}"` : ''}>${icon(iconName)}<span>${text}</span></p>`;
 
 // ---------------------------------------------------------------- Settings card

@@ -1,0 +1,1397 @@
+{
+  "after": {
+    "authError": null,
+    "authPending": false,
+    "scope": "b1e713af377889da1f0c7a333ad22d9d179d22a4cc9bdf39c20a462674b5bf8a",
+    "snapshot": {
+      "ask": {
+        "inMenu": true,
+        "running": null,
+        "threads": []
+      },
+      "available": true,
+      "connection": {
+        "accountKey": "acct-1",
+        "department": null,
+        "displayName": "Taylor Morgan",
+        "email": "taylor@example.test",
+        "enabled": [
+          "mail",
+          "chats",
+          "calendar"
+        ],
+        "generation": 1,
+        "givenName": null,
+        "id": "acct-1",
+        "jobTitle": null,
+        "lastSync": null,
+        "officeLocation": null,
+        "photo": null,
+        "policyRevision": 1,
+        "profileAt": null,
+        "retryAt": null,
+        "scopes": [
+          "Mail.Read",
+          "Chat.Read",
+          "Calendars.Read"
+        ],
+        "sourceRevision": 1,
+        "status": "connected",
+        "syncError": null,
+        "userId": "me-1"
+      },
+      "jobs": [
+        {
+          "attempts": 0,
+          "connectionId": "acct-1",
+          "dueAt": 1795000120,
+          "id": "job-notes",
+          "key": "job-notes",
+          "kind": "meeting_notes",
+          "leaseUntil": null,
+          "payload": {
+            "meetingId": "mtg-1"
+          },
+          "policy": {},
+          "result": null,
+          "state": "queued",
+          "workspaceId": "personal"
+        }
+      ],
+      "meetingsRoot": {
+        "isDefault": true,
+        "path": "/Users/taylor/CodeMie Connect/Meetings"
+      },
+      "menuBar": {
+        "amber": false,
+        "count": 1,
+        "counted": [
+          "replies"
+        ],
+        "fixes": [],
+        "label": "1",
+        "newMeetings": [],
+        "sources": {
+          "automations": 0,
+          "meetings": 0,
+          "replies": 1,
+          "tasks": 0
+        },
+        "tooltip": "CodeMie Connect · 1 message needs a reply"
+      },
+      "noteTemplates": [
+        {
+          "blurb": "Your reference format: organized by topic, decisions keep their “why”, every task has one owner. Still makes sense months later.",
+          "color": "#5677C8",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "note",
+          "id": "meeting-notes",
+          "kind": "builtin",
+          "name": "Meeting notes",
+          "prompt": "You turn one meeting transcript into meeting notes for {{me}}. Nobody answers questions during your run — put doubts in Transcript Notes.\n\nMeeting: {{title}} · {{date}}\nParticipants: {{participants}}\nExtra wishes for this run: {{wishes}}\n\nTHE NOTE IS KNOWLEDGE, NOT MINUTES\nWrite what a reader needs to know afterwards, not what happened in what order.\n- Organize by topic. A thread that recurs across the meeting becomes one topic.\n- Each bullet is a standalone statement — a claim, definition, number, example, decision or argument — that still makes sense when read alone months later. Name the subject instead of writing \"it\" or \"this\".\n- Keep the reasoning: why a decision or position holds, and what it was weighed against.\n- Attribute positions to people (**Name:**) and keep disagreements visible.\n- {{me}}'s statements matter most; capture them precisely.\n- Speech-to-text garbles names and terms. Spell them as the glossary does; whatever stays uncertain goes to Transcript Notes.\n\nDensity over coverage: one bullet per distinct fact, argument, decision or number; repeated points merged; greetings, logistics and scheduling chatter left out. A short meeting makes a short note.\n\nSECTIONS — keep this order. Sections marked \"if\" appear only when the condition holds.\n---\ntitle, date, participants, tags, summary (two sentences: who met and why, and what came out of it)\n---\n## TL;DR — 3–5 bullets: decisions, shifts in thinking, the most reusable insights\n## Context — 2–4 sentences: why this meeting happened, who was there in what role, what was at stake\n## Knowledge — 3–8 topics as noun phrases, each with standalone bullets\n## Decisions — if any: <decision> — <why>\n## Plan — if a plan or sequence of steps was discussed: <step> — <owner> — <timing or \"timing open\">\n## Action Items — if concrete next steps exist\n## Open Questions — if anything was left unresolved: <question> — <why it is open, who holds it>\n## Transcript Notes — if a term or name stayed uncertain: \"<as heard>\" → <best reading> (unverified)\n\nTAGS: only from the tag list, \"meeting\" first. When no tag fits a topic, use fewer tags and name the missing one in Transcript Notes.\n\nTASKS (returned as JSON next to the note)\n- One row per task, written as an imperative, self-contained action.\n- Owner is one attendee's full name. A collective \"we\" becomes {{me}}.\n- Due is a date only when one was stated or follows unambiguously from the meeting date (\"by Friday\"); otherwise empty.\n- Quote the transcript line the task comes from.\n\nGlossary:\n{{glossary}}\n\nTag list:\n{{tags}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "frontmatter",
+            "tldr",
+            "context",
+            "knowledge",
+            "decisions",
+            "plan",
+            "actions",
+            "questions",
+            "transcriptNotes"
+          ],
+          "skillPath": null
+        },
+        {
+          "blurb": "A recap you can paste into chat: two sentences, the decisions, who does what by when.",
+          "color": "#259F4C",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "list",
+          "id": "short-summary",
+          "kind": "builtin",
+          "name": "Short summary",
+          "prompt": "Write a short summary of \"{{title}}\" ({{date}}) that {{me}} can paste into a chat.\n\n## Summary — two sentences: who met, why, and what came out of it\n## Decisions — if any: <decision> — <why>, one line each\n## Action items — owner · action · due date only when someone said one\n\nSame rules as Meeting notes: name the subject, attribute positions, spell names and terms as the glossary does, \"we\" becomes {{me}}. Leave out everything else. Wishes: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "summary",
+            "decisions",
+            "actions"
+          ],
+          "skillPath": null
+        },
+        {
+          "blurb": "A summary you can send to the attendees: in English, the real title and people, what was discussed, decided and who does what by when.",
+          "color": "#8A5CC2",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "list",
+          "id": "formal-summary",
+          "kind": "builtin",
+          "name": "Formal summary",
+          "prompt": "Write a summary of \"{{title}}\" ({{date}}) that {{me}} can send to the attendees. Always write in English, whatever language the meeting was held in. Be neutral: report positions and decisions, not opinions of the people who hold them.\n\n# {{title}} — {{date}}\nAttendees: {{participants}}\n\n## Summary — two or three sentences: who met, why, and what came out of it\n## Discussion — by topic, each a short paragraph or a few bullets\n## Decisions — if any: <decision> — <why>\n## Action items — owner · action · due date only when someone said one\n\nName the subject instead of \"it\" or \"this\". Spell names and terms as the glossary does. A collective \"we\" becomes {{me}}. Extra wishes for this run: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "summary",
+            "attendees",
+            "discussion",
+            "decisions",
+            "actions"
+          ],
+          "skillPath": null
+        }
+      ],
+      "records": [
+        {
+          "connectionId": null,
+          "data": {
+            "createdAt": 1795000000,
+            "done": false,
+            "doneAt": null,
+            "history": [
+              {
+                "at": 1795000000,
+                "text": "Added by you"
+              },
+              {
+                "at": 1795000060,
+                "text": "Moved from To do to In progress"
+              }
+            ],
+            "key": "b0fe90d9ba9f7418",
+            "order": 1.0,
+            "status": "doing",
+            "text": "Send the roadmap comments"
+          },
+          "id": "task-keep",
+          "kind": "commitment",
+          "revision": "rev-task-keep",
+          "source": "local",
+          "updatedAt": 1795000060,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "lane": "waiting",
+            "waitingSince": 350
+          },
+          "id": "m2",
+          "kind": "decision",
+          "revision": "rev-d",
+          "source": "mail:inbox",
+          "updatedAt": 1000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "end": "2026-11-25T10:30:00Z",
+            "start": "2026-11-25T10:00:00Z",
+            "state": "downloaded",
+            "template": "short-summary",
+            "title": "Vendor sync"
+          },
+          "id": "mtg-1",
+          "kind": "meeting",
+          "revision": "v1",
+          "source": "calendar:cal-1",
+          "updatedAt": 1795000090,
+          "workspaceId": null
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "automations": 0,
+            "meetings": {},
+            "since": 1795000000
+          },
+          "id": "personal",
+          "kind": "menu_bar_seen",
+          "revision": "rev-seen",
+          "source": "local",
+          "updatedAt": 1795000000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 100,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "ann@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": false,
+            "lane": "fyi",
+            "lifecycle": "open",
+            "reason": "A later reply from you was found",
+            "responseSourceId": null,
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "Can you review the Q3 budget?",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m1",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 200,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "taylor@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": true,
+            "lane": "waiting",
+            "lifecycle": null,
+            "reason": "A new response is available; review it before resolving Waiting",
+            "responseSourceId": "m4",
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "Sure, which version?",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m2",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 300,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "ann@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": false,
+            "lane": "fyi",
+            "lifecycle": "open",
+            "reason": "Selected source; no direct request rule matched",
+            "responseSourceId": null,
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "The one from Monday.",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m3",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 400,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "ann@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": false,
+            "lane": "reply",
+            "lifecycle": "open",
+            "reason": "A new response in a conversation you marked Waiting",
+            "responseSourceId": null,
+            "seenAt": 1795000180,
+            "snoozedUntil": null,
+            "text": "Any news?",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m4",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000180,
+          "workspaceId": null
+        }
+      ],
+      "replyVoice": {
+        "available": [],
+        "copy": false,
+        "facts": {
+          "offered": false,
+          "on": true
+        },
+        "name": null,
+        "people": [],
+        "provider": "off",
+        "refreshedAt": null,
+        "rules": [],
+        "state": "off",
+        "style": null
+      },
+      "revision": 14,
+      "settings": {
+        "activeConnection": "acct-1",
+        "activeWorkspace": "personal",
+        "ai": {
+          "defaultFallback": null,
+          "defaultModel": null,
+          "defaultProfile": null,
+          "plugins": {},
+          "routes": {}
+        },
+        "askInMenu": true,
+        "background": false,
+        "clientId": "client-id",
+        "criticalRepeat": true,
+        "focusUntil": null,
+        "hiddenPages": [],
+        "launchAtLogin": false,
+        "meetings": {
+          "actionItems": true,
+          "askSpeakers": true,
+          "autoNotes": "rules",
+          "checkEveryMin": 5,
+          "columns": {},
+          "defaultTemplate": "meeting-notes",
+          "doneDays": 14,
+          "dueOnlySaid": true,
+          "folderPattern": "echo",
+          "glossaryFile": null,
+          "glossarySource": "connect",
+          "keepVersions": true,
+          "keepVtt": true,
+          "onlyAttendees": true,
+          "openOn": "summary",
+          "remind": true,
+          "review": true,
+          "root": null,
+          "skipShort": true,
+          "summaryTabs": [],
+          "tagsFile": null,
+          "waitMin": 15,
+          "weMe": true
+        },
+        "menuBar": {
+          "automations": false,
+          "meetings": false,
+          "replies": true,
+          "tasks": false
+        },
+        "notificationPermission": "not_requested",
+        "notificationPreview": false,
+        "notifications": false,
+        "quietEnd": "08:00",
+        "quietStart": "22:00",
+        "syncDays": 30,
+        "syncEveryMin": 1,
+        "tasks": {
+          "copyOffered": [],
+          "provider": "local"
+        },
+        "tenant": "common",
+        "theme": "system",
+        "timeZone": "UTC",
+        "view": "default",
+        "voice": {
+          "facts": true,
+          "provider": "off"
+        }
+      },
+      "taskProvider": {
+        "active": "local",
+        "available": [
+          {
+            "id": "local",
+            "name": "Connect"
+          }
+        ],
+        "copyOffered": false,
+        "lastSync": null,
+        "message": null,
+        "name": "Connect",
+        "parked": 0,
+        "pending": 0,
+        "retryAt": null,
+        "state": "local"
+      },
+      "workspaces": [
+        {
+          "accessRevision": 1,
+          "archived": false,
+          "color": "#2297f6",
+          "connectionId": "acct-1",
+          "id": "personal",
+          "isDefault": true,
+          "layout": [
+            "brief",
+            "focus",
+            "calendar",
+            "inbox",
+            "commitments",
+            "automations"
+          ],
+          "name": "Personal",
+          "profileRevision": 0,
+          "revision": 0,
+          "sources": {
+            "calendars": [
+              "cal-1"
+            ],
+            "chats": [
+              "chat-a"
+            ],
+            "mail": true
+          },
+          "today": {},
+          "widgetWidths": {}
+        }
+      ]
+    }
+  },
+  "before": {
+    "authError": null,
+    "authPending": false,
+    "scope": "b1e713af377889da1f0c7a333ad22d9d179d22a4cc9bdf39c20a462674b5bf8a",
+    "snapshot": {
+      "ask": {
+        "inMenu": true,
+        "running": null,
+        "threads": []
+      },
+      "available": true,
+      "connection": {
+        "accountKey": "acct-1",
+        "department": null,
+        "displayName": "Taylor Morgan",
+        "email": "taylor@example.test",
+        "enabled": [
+          "mail",
+          "chats",
+          "calendar"
+        ],
+        "generation": 1,
+        "givenName": null,
+        "id": "acct-1",
+        "jobTitle": null,
+        "lastSync": null,
+        "officeLocation": null,
+        "photo": null,
+        "policyRevision": 1,
+        "profileAt": null,
+        "retryAt": null,
+        "scopes": [
+          "Mail.Read",
+          "Chat.Read",
+          "Calendars.Read"
+        ],
+        "sourceRevision": 1,
+        "status": "connected",
+        "syncError": null,
+        "userId": "me-1"
+      },
+      "jobs": [],
+      "meetingsRoot": {
+        "isDefault": true,
+        "path": "/Users/taylor/CodeMie Connect/Meetings"
+      },
+      "menuBar": {
+        "amber": false,
+        "count": 0,
+        "counted": [
+          "replies"
+        ],
+        "fixes": [],
+        "label": "",
+        "newMeetings": [],
+        "sources": {
+          "automations": 0,
+          "meetings": 0,
+          "replies": 0,
+          "tasks": 0
+        },
+        "tooltip": "CodeMie Connect"
+      },
+      "noteTemplates": [
+        {
+          "blurb": "Your reference format: organized by topic, decisions keep their “why”, every task has one owner. Still makes sense months later.",
+          "color": "#5677C8",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "note",
+          "id": "meeting-notes",
+          "kind": "builtin",
+          "name": "Meeting notes",
+          "prompt": "You turn one meeting transcript into meeting notes for {{me}}. Nobody answers questions during your run — put doubts in Transcript Notes.\n\nMeeting: {{title}} · {{date}}\nParticipants: {{participants}}\nExtra wishes for this run: {{wishes}}\n\nTHE NOTE IS KNOWLEDGE, NOT MINUTES\nWrite what a reader needs to know afterwards, not what happened in what order.\n- Organize by topic. A thread that recurs across the meeting becomes one topic.\n- Each bullet is a standalone statement — a claim, definition, number, example, decision or argument — that still makes sense when read alone months later. Name the subject instead of writing \"it\" or \"this\".\n- Keep the reasoning: why a decision or position holds, and what it was weighed against.\n- Attribute positions to people (**Name:**) and keep disagreements visible.\n- {{me}}'s statements matter most; capture them precisely.\n- Speech-to-text garbles names and terms. Spell them as the glossary does; whatever stays uncertain goes to Transcript Notes.\n\nDensity over coverage: one bullet per distinct fact, argument, decision or number; repeated points merged; greetings, logistics and scheduling chatter left out. A short meeting makes a short note.\n\nSECTIONS — keep this order. Sections marked \"if\" appear only when the condition holds.\n---\ntitle, date, participants, tags, summary (two sentences: who met and why, and what came out of it)\n---\n## TL;DR — 3–5 bullets: decisions, shifts in thinking, the most reusable insights\n## Context — 2–4 sentences: why this meeting happened, who was there in what role, what was at stake\n## Knowledge — 3–8 topics as noun phrases, each with standalone bullets\n## Decisions — if any: <decision> — <why>\n## Plan — if a plan or sequence of steps was discussed: <step> — <owner> — <timing or \"timing open\">\n## Action Items — if concrete next steps exist\n## Open Questions — if anything was left unresolved: <question> — <why it is open, who holds it>\n## Transcript Notes — if a term or name stayed uncertain: \"<as heard>\" → <best reading> (unverified)\n\nTAGS: only from the tag list, \"meeting\" first. When no tag fits a topic, use fewer tags and name the missing one in Transcript Notes.\n\nTASKS (returned as JSON next to the note)\n- One row per task, written as an imperative, self-contained action.\n- Owner is one attendee's full name. A collective \"we\" becomes {{me}}.\n- Due is a date only when one was stated or follows unambiguously from the meeting date (\"by Friday\"); otherwise empty.\n- Quote the transcript line the task comes from.\n\nGlossary:\n{{glossary}}\n\nTag list:\n{{tags}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "frontmatter",
+            "tldr",
+            "context",
+            "knowledge",
+            "decisions",
+            "plan",
+            "actions",
+            "questions",
+            "transcriptNotes"
+          ],
+          "skillPath": null
+        },
+        {
+          "blurb": "A recap you can paste into chat: two sentences, the decisions, who does what by when.",
+          "color": "#259F4C",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "list",
+          "id": "short-summary",
+          "kind": "builtin",
+          "name": "Short summary",
+          "prompt": "Write a short summary of \"{{title}}\" ({{date}}) that {{me}} can paste into a chat.\n\n## Summary — two sentences: who met, why, and what came out of it\n## Decisions — if any: <decision> — <why>, one line each\n## Action items — owner · action · due date only when someone said one\n\nSame rules as Meeting notes: name the subject, attribute positions, spell names and terms as the glossary does, \"we\" becomes {{me}}. Leave out everything else. Wishes: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "summary",
+            "decisions",
+            "actions"
+          ],
+          "skillPath": null
+        },
+        {
+          "blurb": "A summary you can send to the attendees: in English, the real title and people, what was discussed, decided and who does what by when.",
+          "color": "#8A5CC2",
+          "edited": false,
+          "extractTasks": true,
+          "icon": "list",
+          "id": "formal-summary",
+          "kind": "builtin",
+          "name": "Formal summary",
+          "prompt": "Write a summary of \"{{title}}\" ({{date}}) that {{me}} can send to the attendees. Always write in English, whatever language the meeting was held in. Be neutral: report positions and decisions, not opinions of the people who hold them.\n\n# {{title}} — {{date}}\nAttendees: {{participants}}\n\n## Summary — two or three sentences: who met, why, and what came out of it\n## Discussion — by topic, each a short paragraph or a few bullets\n## Decisions — if any: <decision> — <why>\n## Action items — owner · action · due date only when someone said one\n\nName the subject instead of \"it\" or \"this\". Spell names and terms as the glossary does. A collective \"we\" becomes {{me}}. Extra wishes for this run: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+          "sections": [
+            "summary",
+            "attendees",
+            "discussion",
+            "decisions",
+            "actions"
+          ],
+          "skillPath": null
+        }
+      ],
+      "records": [
+        {
+          "connectionId": null,
+          "data": {
+            "createdAt": 1795000000,
+            "done": false,
+            "doneAt": null,
+            "history": [
+              {
+                "at": 1795000000,
+                "text": "Added by you"
+              }
+            ],
+            "key": "d8cb26db67034580",
+            "order": 2.0,
+            "status": "todo",
+            "text": "Book the room"
+          },
+          "id": "task-gone",
+          "kind": "commitment",
+          "revision": "rev-task-gone",
+          "source": "local",
+          "updatedAt": 1795000000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "createdAt": 1795000000,
+            "done": false,
+            "doneAt": null,
+            "history": [
+              {
+                "at": 1795000000,
+                "text": "Added by you"
+              }
+            ],
+            "key": "b0fe90d9ba9f7418",
+            "order": 1.0,
+            "status": "todo",
+            "text": "Send the roadmap comments"
+          },
+          "id": "task-keep",
+          "kind": "commitment",
+          "revision": "rev-task-keep",
+          "source": "local",
+          "updatedAt": 1795000000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "lane": "waiting",
+            "waitingSince": 350
+          },
+          "id": "m2",
+          "kind": "decision",
+          "revision": "rev-d",
+          "source": "mail:inbox",
+          "updatedAt": 1000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "end": "2026-11-25T10:30:00Z",
+            "start": "2026-11-25T10:00:00Z",
+            "state": "downloaded",
+            "title": "Vendor sync"
+          },
+          "id": "mtg-1",
+          "kind": "meeting",
+          "revision": "v1",
+          "source": "calendar:cal-1",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": null,
+          "data": {
+            "automations": 0,
+            "meetings": {},
+            "since": 1795000000
+          },
+          "id": "personal",
+          "kind": "menu_bar_seen",
+          "revision": "rev-seen",
+          "source": "local",
+          "updatedAt": 1795000000,
+          "workspaceId": "personal"
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 100,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "ann@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": false,
+            "lane": "fyi",
+            "lifecycle": "open",
+            "reason": "A later reply from you was found",
+            "responseSourceId": null,
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "Can you review the Q3 budget?",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m1",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 200,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "taylor@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": true,
+            "lane": "waiting",
+            "lifecycle": null,
+            "reason": "Your manual lane override",
+            "responseSourceId": null,
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "Sure, which version?",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m2",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        },
+        {
+          "connectionId": "acct-1",
+          "data": {
+            "acknowledgedAt": null,
+            "at": 300,
+            "conversationId": "conv-1",
+            "criticalRule": "manual",
+            "fromAddress": "ann@example.test",
+            "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+            "isMine": false,
+            "lane": "fyi",
+            "lifecycle": "open",
+            "reason": "Selected source; no direct request rule matched",
+            "responseSourceId": null,
+            "seenAt": 1795000000,
+            "snoozedUntil": null,
+            "text": "The one from Monday.",
+            "title": "Q3 budget",
+            "to": [
+              {
+                "emailAddress": {
+                  "address": "taylor@example.test"
+                }
+              }
+            ]
+          },
+          "id": "m3",
+          "kind": "message",
+          "revision": "v1",
+          "source": "mail:inbox",
+          "updatedAt": 1795000000,
+          "workspaceId": null
+        }
+      ],
+      "replyVoice": {
+        "available": [],
+        "copy": false,
+        "facts": {
+          "offered": false,
+          "on": true
+        },
+        "name": null,
+        "people": [],
+        "provider": "off",
+        "refreshedAt": null,
+        "rules": [],
+        "state": "off",
+        "style": null
+      },
+      "revision": 10,
+      "settings": {
+        "activeConnection": "acct-1",
+        "activeWorkspace": "personal",
+        "ai": {
+          "defaultFallback": null,
+          "defaultModel": null,
+          "defaultProfile": null,
+          "plugins": {},
+          "routes": {}
+        },
+        "askInMenu": true,
+        "background": false,
+        "clientId": "client-id",
+        "criticalRepeat": true,
+        "focusUntil": null,
+        "hiddenPages": [],
+        "launchAtLogin": false,
+        "meetings": {
+          "actionItems": true,
+          "askSpeakers": true,
+          "autoNotes": "rules",
+          "checkEveryMin": 5,
+          "columns": {},
+          "defaultTemplate": "meeting-notes",
+          "doneDays": 14,
+          "dueOnlySaid": true,
+          "folderPattern": "echo",
+          "glossaryFile": null,
+          "glossarySource": "connect",
+          "keepVersions": true,
+          "keepVtt": true,
+          "onlyAttendees": true,
+          "openOn": "summary",
+          "remind": true,
+          "review": true,
+          "root": null,
+          "skipShort": true,
+          "summaryTabs": [],
+          "tagsFile": null,
+          "waitMin": 15,
+          "weMe": true
+        },
+        "menuBar": {
+          "automations": false,
+          "meetings": false,
+          "replies": true,
+          "tasks": false
+        },
+        "notificationPermission": "not_requested",
+        "notificationPreview": false,
+        "notifications": false,
+        "quietEnd": "08:00",
+        "quietStart": "22:00",
+        "syncDays": 30,
+        "syncEveryMin": 1,
+        "tasks": {
+          "copyOffered": [],
+          "provider": "local"
+        },
+        "tenant": "common",
+        "theme": "system",
+        "timeZone": "UTC",
+        "view": "default",
+        "voice": {
+          "facts": true,
+          "provider": "off"
+        }
+      },
+      "taskProvider": {
+        "active": "local",
+        "available": [
+          {
+            "id": "local",
+            "name": "Connect"
+          }
+        ],
+        "copyOffered": false,
+        "lastSync": null,
+        "message": null,
+        "name": "Connect",
+        "parked": 0,
+        "pending": 0,
+        "retryAt": null,
+        "state": "local"
+      },
+      "workspaces": [
+        {
+          "accessRevision": 1,
+          "archived": false,
+          "color": "#2297f6",
+          "connectionId": "acct-1",
+          "id": "personal",
+          "isDefault": true,
+          "layout": [
+            "brief",
+            "focus",
+            "calendar",
+            "inbox",
+            "commitments",
+            "automations"
+          ],
+          "name": "Personal",
+          "profileRevision": 0,
+          "revision": 0,
+          "sources": {
+            "calendars": [
+              "cal-1"
+            ],
+            "chats": [
+              "chat-a"
+            ],
+            "mail": true
+          },
+          "today": {},
+          "widgetWidths": {}
+        }
+      ]
+    }
+  },
+  "delta": {
+    "ask": {
+      "inMenu": true,
+      "running": null,
+      "threads": []
+    },
+    "authError": null,
+    "authPending": false,
+    "available": true,
+    "connection": {
+      "accountKey": "acct-1",
+      "department": null,
+      "displayName": "Taylor Morgan",
+      "email": "taylor@example.test",
+      "enabled": [
+        "mail",
+        "chats",
+        "calendar"
+      ],
+      "generation": 1,
+      "givenName": null,
+      "id": "acct-1",
+      "jobTitle": null,
+      "lastSync": null,
+      "officeLocation": null,
+      "photo": null,
+      "policyRevision": 1,
+      "profileAt": null,
+      "retryAt": null,
+      "scopes": [
+        "Mail.Read",
+        "Chat.Read",
+        "Calendars.Read"
+      ],
+      "sourceRevision": 1,
+      "status": "connected",
+      "syncError": null,
+      "userId": "me-1"
+    },
+    "jobs": [
+      {
+        "attempts": 0,
+        "connectionId": "acct-1",
+        "dueAt": 1795000120,
+        "id": "job-notes",
+        "key": "job-notes",
+        "kind": "meeting_notes",
+        "leaseUntil": null,
+        "payload": {
+          "meetingId": "mtg-1"
+        },
+        "policy": {},
+        "result": null,
+        "state": "queued",
+        "workspaceId": "personal"
+      }
+    ],
+    "jobsAll": false,
+    "meetingsRoot": {
+      "isDefault": true,
+      "path": "/Users/taylor/CodeMie Connect/Meetings"
+    },
+    "menuBar": {
+      "amber": false,
+      "count": 1,
+      "counted": [
+        "replies"
+      ],
+      "fixes": [],
+      "label": "1",
+      "newMeetings": [],
+      "sources": {
+        "automations": 0,
+        "meetings": 0,
+        "replies": 1,
+        "tasks": 0
+      },
+      "tooltip": "CodeMie Connect · 1 message needs a reply"
+    },
+    "noteTemplates": [
+      {
+        "blurb": "Your reference format: organized by topic, decisions keep their “why”, every task has one owner. Still makes sense months later.",
+        "color": "#5677C8",
+        "edited": false,
+        "extractTasks": true,
+        "icon": "note",
+        "id": "meeting-notes",
+        "kind": "builtin",
+        "name": "Meeting notes",
+        "prompt": "You turn one meeting transcript into meeting notes for {{me}}. Nobody answers questions during your run — put doubts in Transcript Notes.\n\nMeeting: {{title}} · {{date}}\nParticipants: {{participants}}\nExtra wishes for this run: {{wishes}}\n\nTHE NOTE IS KNOWLEDGE, NOT MINUTES\nWrite what a reader needs to know afterwards, not what happened in what order.\n- Organize by topic. A thread that recurs across the meeting becomes one topic.\n- Each bullet is a standalone statement — a claim, definition, number, example, decision or argument — that still makes sense when read alone months later. Name the subject instead of writing \"it\" or \"this\".\n- Keep the reasoning: why a decision or position holds, and what it was weighed against.\n- Attribute positions to people (**Name:**) and keep disagreements visible.\n- {{me}}'s statements matter most; capture them precisely.\n- Speech-to-text garbles names and terms. Spell them as the glossary does; whatever stays uncertain goes to Transcript Notes.\n\nDensity over coverage: one bullet per distinct fact, argument, decision or number; repeated points merged; greetings, logistics and scheduling chatter left out. A short meeting makes a short note.\n\nSECTIONS — keep this order. Sections marked \"if\" appear only when the condition holds.\n---\ntitle, date, participants, tags, summary (two sentences: who met and why, and what came out of it)\n---\n## TL;DR — 3–5 bullets: decisions, shifts in thinking, the most reusable insights\n## Context — 2–4 sentences: why this meeting happened, who was there in what role, what was at stake\n## Knowledge — 3–8 topics as noun phrases, each with standalone bullets\n## Decisions — if any: <decision> — <why>\n## Plan — if a plan or sequence of steps was discussed: <step> — <owner> — <timing or \"timing open\">\n## Action Items — if concrete next steps exist\n## Open Questions — if anything was left unresolved: <question> — <why it is open, who holds it>\n## Transcript Notes — if a term or name stayed uncertain: \"<as heard>\" → <best reading> (unverified)\n\nTAGS: only from the tag list, \"meeting\" first. When no tag fits a topic, use fewer tags and name the missing one in Transcript Notes.\n\nTASKS (returned as JSON next to the note)\n- One row per task, written as an imperative, self-contained action.\n- Owner is one attendee's full name. A collective \"we\" becomes {{me}}.\n- Due is a date only when one was stated or follows unambiguously from the meeting date (\"by Friday\"); otherwise empty.\n- Quote the transcript line the task comes from.\n\nGlossary:\n{{glossary}}\n\nTag list:\n{{tags}}\n\nTranscript:\n{{transcript}}",
+        "sections": [
+          "frontmatter",
+          "tldr",
+          "context",
+          "knowledge",
+          "decisions",
+          "plan",
+          "actions",
+          "questions",
+          "transcriptNotes"
+        ],
+        "skillPath": null
+      },
+      {
+        "blurb": "A recap you can paste into chat: two sentences, the decisions, who does what by when.",
+        "color": "#259F4C",
+        "edited": false,
+        "extractTasks": true,
+        "icon": "list",
+        "id": "short-summary",
+        "kind": "builtin",
+        "name": "Short summary",
+        "prompt": "Write a short summary of \"{{title}}\" ({{date}}) that {{me}} can paste into a chat.\n\n## Summary — two sentences: who met, why, and what came out of it\n## Decisions — if any: <decision> — <why>, one line each\n## Action items — owner · action · due date only when someone said one\n\nSame rules as Meeting notes: name the subject, attribute positions, spell names and terms as the glossary does, \"we\" becomes {{me}}. Leave out everything else. Wishes: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+        "sections": [
+          "summary",
+          "decisions",
+          "actions"
+        ],
+        "skillPath": null
+      },
+      {
+        "blurb": "A summary you can send to the attendees: in English, the real title and people, what was discussed, decided and who does what by when.",
+        "color": "#8A5CC2",
+        "edited": false,
+        "extractTasks": true,
+        "icon": "list",
+        "id": "formal-summary",
+        "kind": "builtin",
+        "name": "Formal summary",
+        "prompt": "Write a summary of \"{{title}}\" ({{date}}) that {{me}} can send to the attendees. Always write in English, whatever language the meeting was held in. Be neutral: report positions and decisions, not opinions of the people who hold them.\n\n# {{title}} — {{date}}\nAttendees: {{participants}}\n\n## Summary — two or three sentences: who met, why, and what came out of it\n## Discussion — by topic, each a short paragraph or a few bullets\n## Decisions — if any: <decision> — <why>\n## Action items — owner · action · due date only when someone said one\n\nName the subject instead of \"it\" or \"this\". Spell names and terms as the glossary does. A collective \"we\" becomes {{me}}. Extra wishes for this run: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+        "sections": [
+          "summary",
+          "attendees",
+          "discussion",
+          "decisions",
+          "actions"
+        ],
+        "skillPath": null
+      }
+    ],
+    "records": [
+      {
+        "connectionId": null,
+        "data": {
+          "createdAt": 1795000000,
+          "done": false,
+          "doneAt": null,
+          "history": [
+            {
+              "at": 1795000000,
+              "text": "Added by you"
+            },
+            {
+              "at": 1795000060,
+              "text": "Moved from To do to In progress"
+            }
+          ],
+          "key": "b0fe90d9ba9f7418",
+          "order": 1.0,
+          "status": "doing",
+          "text": "Send the roadmap comments"
+        },
+        "id": "task-keep",
+        "kind": "commitment",
+        "revision": "rev-task-keep",
+        "source": "local",
+        "updatedAt": 1795000060,
+        "workspaceId": "personal"
+      },
+      {
+        "connectionId": "acct-1",
+        "data": {
+          "end": "2026-11-25T10:30:00Z",
+          "start": "2026-11-25T10:00:00Z",
+          "state": "downloaded",
+          "template": "short-summary",
+          "title": "Vendor sync"
+        },
+        "id": "mtg-1",
+        "kind": "meeting",
+        "revision": "v1",
+        "source": "calendar:cal-1",
+        "updatedAt": 1795000090,
+        "workspaceId": null
+      },
+      {
+        "connectionId": "acct-1",
+        "data": {
+          "acknowledgedAt": null,
+          "at": 400,
+          "conversationId": "conv-1",
+          "criticalRule": "manual",
+          "fromAddress": "ann@example.test",
+          "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+          "isMine": false,
+          "lane": "reply",
+          "lifecycle": "open",
+          "reason": "A new response in a conversation you marked Waiting",
+          "responseSourceId": null,
+          "seenAt": 1795000180,
+          "snoozedUntil": null,
+          "text": "Any news?",
+          "title": "Q3 budget",
+          "to": [
+            {
+              "emailAddress": {
+                "address": "taylor@example.test"
+              }
+            }
+          ]
+        },
+        "id": "m4",
+        "kind": "message",
+        "revision": "v1",
+        "source": "mail:inbox",
+        "updatedAt": 1795000180,
+        "workspaceId": null
+      },
+      {
+        "connectionId": "acct-1",
+        "data": {
+          "acknowledgedAt": null,
+          "at": 100,
+          "conversationId": "conv-1",
+          "criticalRule": "manual",
+          "fromAddress": "ann@example.test",
+          "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+          "isMine": false,
+          "lane": "fyi",
+          "lifecycle": "open",
+          "reason": "A later reply from you was found",
+          "responseSourceId": null,
+          "seenAt": 1795000000,
+          "snoozedUntil": null,
+          "text": "Can you review the Q3 budget?",
+          "title": "Q3 budget",
+          "to": [
+            {
+              "emailAddress": {
+                "address": "taylor@example.test"
+              }
+            }
+          ]
+        },
+        "id": "m1",
+        "kind": "message",
+        "revision": "v1",
+        "source": "mail:inbox",
+        "updatedAt": 1795000000,
+        "workspaceId": null
+      },
+      {
+        "connectionId": "acct-1",
+        "data": {
+          "acknowledgedAt": null,
+          "at": 200,
+          "conversationId": "conv-1",
+          "criticalRule": "manual",
+          "fromAddress": "taylor@example.test",
+          "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+          "isMine": true,
+          "lane": "waiting",
+          "lifecycle": null,
+          "reason": "A new response is available; review it before resolving Waiting",
+          "responseSourceId": "m4",
+          "seenAt": 1795000000,
+          "snoozedUntil": null,
+          "text": "Sure, which version?",
+          "title": "Q3 budget",
+          "to": [
+            {
+              "emailAddress": {
+                "address": "taylor@example.test"
+              }
+            }
+          ]
+        },
+        "id": "m2",
+        "kind": "message",
+        "revision": "v1",
+        "source": "mail:inbox",
+        "updatedAt": 1795000000,
+        "workspaceId": null
+      },
+      {
+        "connectionId": "acct-1",
+        "data": {
+          "acknowledgedAt": null,
+          "at": 300,
+          "conversationId": "conv-1",
+          "criticalRule": "manual",
+          "fromAddress": "ann@example.test",
+          "incidentId": "cec5c995a2ec942b9a517c889d42ddc0cb23a6cc6863ec301b54a93ba5032684",
+          "isMine": false,
+          "lane": "fyi",
+          "lifecycle": "open",
+          "reason": "Selected source; no direct request rule matched",
+          "responseSourceId": null,
+          "seenAt": 1795000000,
+          "snoozedUntil": null,
+          "text": "The one from Monday.",
+          "title": "Q3 budget",
+          "to": [
+            {
+              "emailAddress": {
+                "address": "taylor@example.test"
+              }
+            }
+          ]
+        },
+        "id": "m3",
+        "kind": "message",
+        "revision": "v1",
+        "source": "mail:inbox",
+        "updatedAt": 1795000000,
+        "workspaceId": null
+      }
+    ],
+    "removed": [
+      {
+        "connectionId": null,
+        "id": "task-gone",
+        "kind": "commitment",
+        "workspaceId": "personal"
+      }
+    ],
+    "removedJobs": [],
+    "replace": [],
+    "replyVoice": {
+      "available": [],
+      "copy": false,
+      "facts": {
+        "offered": false,
+        "on": true
+      },
+      "name": null,
+      "people": [],
+      "provider": "off",
+      "refreshedAt": null,
+      "rules": [],
+      "state": "off",
+      "style": null
+    },
+    "reset": false,
+    "revision": 14,
+    "scope": "b1e713af377889da1f0c7a333ad22d9d179d22a4cc9bdf39c20a462674b5bf8a",
+    "settings": {
+      "activeConnection": "acct-1",
+      "activeWorkspace": "personal",
+      "ai": {
+        "defaultFallback": null,
+        "defaultModel": null,
+        "defaultProfile": null,
+        "plugins": {},
+        "routes": {}
+      },
+      "askInMenu": true,
+      "background": false,
+      "clientId": "client-id",
+      "criticalRepeat": true,
+      "focusUntil": null,
+      "hiddenPages": [],
+      "launchAtLogin": false,
+      "meetings": {
+        "actionItems": true,
+        "askSpeakers": true,
+        "autoNotes": "rules",
+        "checkEveryMin": 5,
+        "columns": {},
+        "defaultTemplate": "meeting-notes",
+        "doneDays": 14,
+        "dueOnlySaid": true,
+        "folderPattern": "echo",
+        "glossaryFile": null,
+        "glossarySource": "connect",
+        "keepVersions": true,
+        "keepVtt": true,
+        "onlyAttendees": true,
+        "openOn": "summary",
+        "remind": true,
+        "review": true,
+        "root": null,
+        "skipShort": true,
+        "summaryTabs": [],
+        "tagsFile": null,
+        "waitMin": 15,
+        "weMe": true
+      },
+      "menuBar": {
+        "automations": false,
+        "meetings": false,
+        "replies": true,
+        "tasks": false
+      },
+      "notificationPermission": "not_requested",
+      "notificationPreview": false,
+      "notifications": false,
+      "quietEnd": "08:00",
+      "quietStart": "22:00",
+      "syncDays": 30,
+      "syncEveryMin": 1,
+      "tasks": {
+        "copyOffered": [],
+        "provider": "local"
+      },
+      "tenant": "common",
+      "theme": "system",
+      "timeZone": "UTC",
+      "view": "default",
+      "voice": {
+        "facts": true,
+        "provider": "off"
+      }
+    },
+    "taskProvider": {
+      "active": "local",
+      "available": [
+        {
+          "id": "local",
+          "name": "Connect"
+        }
+      ],
+      "copyOffered": false,
+      "lastSync": null,
+      "message": null,
+      "name": "Connect",
+      "parked": 0,
+      "pending": 0,
+      "retryAt": null,
+      "state": "local"
+    },
+    "workspaces": [
+      {
+        "accessRevision": 1,
+        "archived": false,
+        "color": "#2297f6",
+        "connectionId": "acct-1",
+        "id": "personal",
+        "isDefault": true,
+        "layout": [
+          "brief",
+          "focus",
+          "calendar",
+          "inbox",
+          "commitments",
+          "automations"
+        ],
+        "name": "Personal",
+        "profileRevision": 0,
+        "revision": 0,
+        "sources": {
+          "calendars": [
+            "cal-1"
+          ],
+          "chats": [
+            "chat-a"
+          ],
+          "mail": true
+        },
+        "today": {},
+        "widgetWidths": {}
+      }
+    ]
+  }
+}

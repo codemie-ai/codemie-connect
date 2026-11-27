@@ -1,7 +1,7 @@
 // Workspace controller: routing, native snapshot rendering and actions. Settings → CodeMie is
 // codemie/controller.js; the legacy installer UI (ui/renderer.js) only serves smoke/probe mode
 // and the storage-recovery page.
-import { createStore, escapeHtml as e } from './store.js';
+import { createStore, escapeHtml as e, refreshDelay } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
@@ -35,14 +35,14 @@ import { createAnalyticsController, attachAnalyticsTips } from './analytics-cont
 import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
-import { activeProvider, newTasksView, tasksOf } from './tasks-model.js';
+import { activeProvider, newTasksView, previewTaskDelete, previewTaskSave, tasksOf } from './tasks-model.js';
 import { datesTasks, foldOf, shownView } from './tasks-dates-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { createVoiceController, newVoiceView } from './voice-controller.js';
-import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
+import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash, previewJobCancel, previewMeetingDoc, previewMeetingSet, previewRun } from './meetings-model.js';
 import { seenToSend, openTarget, sendSeen } from './menu-bar.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
@@ -94,7 +94,20 @@ const watched = invoke && (async (cmd, args) => {
     throw err;
   }
 });
-const store = invoke ? createStore(watched) : null;
+// These writes show the moment they are asked (tasks: Accept, Dismiss, a move, a date, a new
+// one; meetings: the switch and template, Make main, delete a document, Make notes, Try again,
+// Stop); the snapshot after the write confirms them, and a refused one is taken back.
+const OPTIMISTIC = {
+  task_save: previewTaskSave,
+  task_delete: previewTaskDelete,
+  meeting_set: previewMeetingSet,
+  meeting_doc: previewMeetingDoc,
+  meeting_notes: previewRun('meeting_notes'),
+  meeting_download: previewRun('transcript_download'),
+  job_cancel: previewJobCancel,
+};
+// A read with a snapshot in hand asks only what changed since it (changes.js).
+const store = invoke ? createStore(watched, { optimistic: OPTIMISTIC, deltas: true }) : null;
 
 const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',
@@ -280,6 +293,15 @@ async function mutate(op, data = {}, workspaceId) {
     if (ready && !modalOpen() && pressing) heldRender = true;
     else if (ready && !modalOpen()) await render();
     flushNotification();
+    // A write shown by its preview settles when native answers, before the snapshot after it
+    // lands. Draw that one too: a focused field (the drawer's owner, say) holds back the
+    // store's own redraw, and what native added (the task's history) would wait for the next.
+    // Held like the render above while the mouse button is down.
+    store.idle().then(() => {
+      if (!ready || modalOpen()) return;
+      if (pressing) heldRender = true;
+      else render();
+    }).catch(() => {});
   }
 }
 
@@ -499,8 +521,9 @@ async function render() {
   // A field typed in keeps its caret (and selection) when the render puts focus back on it.
   const caret = refocus && typeof focused.selectionStart === 'number' ? { value: focused.value, range: [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] } : null;
   heldRender = false;
-  // A ⋯ menu the user opened stays open through an update (a minute tick, a new snapshot).
-  const openMenus = [...root.querySelectorAll('details.ws-menu[open][data-menu]')].map(d => d.dataset.menu);
+  // A ⋯ menu or a folding section the user opened stays open through an update (a minute tick,
+  // a new snapshot, a button clicked inside it).
+  const openMenus = [...root.querySelectorAll('details[open][data-menu]')].map(d => d.dataset.menu);
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
@@ -578,7 +601,7 @@ async function render() {
   syncReplyBox(freshReply);
   const freshChange = document.getElementById('reply-change');
   if (changeWords && freshChange && freshKey === replyKey) freshChange.value = changeWords;
-  for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
+  for (const menu of openMenus) root.querySelector(`details[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   root.querySelectorAll('.ws-mtg-strip > .ws-menu[open]').forEach(fitSectionMenu);
   if (['inbox', 'today'].includes(state.route)) rememberDraftBaseline(s);
   restoreScroll(saved);
@@ -3583,6 +3606,12 @@ function placeReplyMenu(menu) {
 document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);
+// Today's "+ Add task" row: opened by the person (a click or a key), its field takes focus. Not on
+// the toggle a render's reopening fires, which would pull focus away from wherever it is.
+document.addEventListener('click', ev => {
+  const row = ev.target.closest?.('details.ws-task-add > summary');
+  if (row && !row.parentElement.open) setTimeout(() => row.parentElement.querySelector('input[name="text"]')?.focus(), 0);
+});
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
   // The innermost open menu first (the last in document order), then the one around it.
@@ -4098,16 +4127,19 @@ async function boot() {
   if (state.route === 'settings' && state.settingsTab === 'plugins') pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
   const listen = window.__TAURI__.event.listen;
-  // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
+  // A sync round emits one change per Graph request; read what changed about three times a second.
+  // Every write announces its own change too: the write's own read, asked after that, brings it.
   let refreshTimer = null;
   let lastRefresh = 0;
+  let heardAt = 0;
   const scheduleRefresh = () => {
+    heardAt = performance.now();
     if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
       lastRefresh = Date.now();
-      store.refresh().catch(fail);
-    }, Math.max(150, 1200 - (Date.now() - lastRefresh)));
+      store.refreshAfter(heardAt).catch(fail);
+    }, refreshDelay(Date.now() - lastRefresh));
   };
   for (const name of ['workspace:changed', 'connection:changed']) await listen(name, scheduleRefresh);
   // The plugin manager finished a reload: what loaded and what didn't (and why) is read again, so

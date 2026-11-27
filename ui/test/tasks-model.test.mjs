@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  taskStatus, isMine, meOf, filterTasks, sortTasks, orderBetween, dueInfo, splitDone, COLUMNS, columnName, laneCounts, quoteTime, quickDates, DEFAULT_FILTERS, tasksOf, activeProvider,
+  taskStatus, isMine, meOf, filterTasks, sortTasks, orderBetween, dueInfo, splitDone, COLUMNS, columnName, laneCounts, quoteTime, quickDates, DEFAULT_FILTERS, tasksOf, activeProvider, previewTaskSave, previewTaskDelete,
 } from '../workspace/tasks-model.js';
 import { formatDate, dateFromKey } from '../workspace/format.js';
 import { buildSnapshot, withTasks } from './fixtures/workspace-fixture.mjs';
@@ -140,4 +140,39 @@ test('done tasks older than doneDays are hidden behind Show older', () => {
   assert.deepEqual(ids(shown), ['commit-3', 'task-pilot']);
   assert.deepEqual(ids(older), ['task-room']);
   assert.deepEqual(ids(splitDone(done, 60, NOW).older), []);
+});
+
+test('a task save or delete shows on the board before native has it, as native will store it', () => {
+  const s = withTasks(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
+  const task = id => s.records.find(r => r.id === id);
+  const shownTask = (snap, id) => snap.records.find(r => r.id === id);
+  const review = s.records.find(r => r.kind === 'commitment' && taskStatus(r) === 'review');
+  // Accept: its column and order; the snapshot it came from stays as it was.
+  const accepted = previewTaskSave(s, { id: review.id, status: 'todo', order: 99, log: 'Accepted from review' }, { now: NOW });
+  assert.equal(taskStatus(shownTask(accepted, review.id)), 'todo');
+  assert.equal(shownTask(accepted, review.id).data.order, 99);
+  assert.equal(shownTask(accepted, review.id).data.log, undefined, 'the log is history, not a field');
+  assert.equal(taskStatus(task(review.id)), 'review');
+  // Done and back: the done flag and when (seconds), as task_save sets them.
+  const done = previewTaskSave(s, { id: review.id, status: 'done' }, { now: NOW });
+  assert.deepEqual([shownTask(done, review.id).data.done, shownTask(done, review.id).data.doneAt], [true, NOW / 1000]);
+  const back = previewTaskSave(done, { id: review.id, status: 'doing' }, { now: NOW });
+  assert.deepEqual([shownTask(back, review.id).data.done, shownTask(back, review.id).data.doneAt], [false, null]);
+  // A new owner without a name drops the old owner's name; a text is trimmed.
+  const owned = previewTaskSave(s, { id: review.id, owner: 'someone@example.test', text: '  Ship it  ' }, { now: NOW });
+  assert.equal(shownTask(owned, review.id).data.ownerName, null);
+  assert.equal(shownTask(owned, review.id).data.text, 'Ship it');
+  // A new task shows under the id native gives it (the write's operation id), at the end of its
+  // column; a save of nothing to show (no text, no id) has no preview.
+  const added = previewTaskSave(s, { text: ' Book the room ', owner: null, due: null, status: 'doing' }, { operationId: 'op-1', now: NOW });
+  const fresh = shownTask(added, 'op-1');
+  assert.deepEqual([fresh.kind, fresh.data.text, taskStatus(fresh), fresh.data.done], ['commitment', 'Book the room', 'doing', false]);
+  assert.ok(fresh.data.order > Math.max(...s.records.filter(r => r.kind === 'commitment').map(r => Number(r.data.order) || 0)), 'at the end');
+  assert.equal(previewTaskSave(s, { text: 'New' }, {}), null);
+  assert.equal(previewTaskSave(s, { id: 'gone', status: 'todo' }, { now: NOW }), null);
+  // Undo of a delete: the task comes back under its own id.
+  assert.equal(shownTask(previewTaskSave(s, { id: 'back', text: 'Restored', status: 'todo' }, { now: NOW }), 'back').data.text, 'Restored');
+  // Delete: gone at once.
+  assert.equal(shownTask(previewTaskDelete(s, { id: review.id }), review.id), undefined);
+  assert.equal(previewTaskDelete(s, { id: 'gone' }), null);
 });

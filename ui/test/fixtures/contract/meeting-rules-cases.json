@@ -374,7 +374,7 @@
       "actionItems": true,
       "askSpeakers": true,
       "autoNotes": "rules",
-      "checkEveryMin": 10,
+      "checkEveryMin": 5,
       "columns": {},
       "defaultTemplate": "client",
       "doneDays": 14,

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   meetingState, meetingRows, meetingCounts, parseHash, meetingHash, resolveTemplate, parseGlossary, parseTags, runOf, legendOf, lineAt, FILTERS,
-  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems, hasTranscript,
+  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems, hasTranscript, previewMeetingSet, previewMeetingDoc, previewRun, previewJobCancel,
 } from '../workspace/meetings-model.js';
 import { dayKey } from '../workspace/format.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
@@ -317,4 +317,40 @@ test('hiddenCount counts what Show would bring back', () => {
   assert.equal(modelOf(s, { hidden, showNone: true }).hiddenCount, 2);
   assert.equal(modelOf(s, { hidden, filter: 'upcoming' }).hiddenCount, 1, 'Coming up counts its own');
   assert.equal(modelOf(s, { hidden, q: 'zzz' }).hiddenCount, 0, 'a search counts what matches');
+});
+
+test('meeting writes show before native has them: the switch, the template, the main document, a run, a stop', () => {
+  const s = snapshot();
+  const item = (snap, id) => meetingItems(snap, NOW).find(m => m.id === id);
+  const tpl = (snap, id) => { const m = item(snap, id); return resolveTemplate(m.ev, m.rec, snap); };
+  // The switch and the template, on a meeting with a record and on one without (only its event).
+  assert.equal(tpl(previewMeetingSet(s, { meetingId: 'mtg-sprint', auto: true }), 'mtg-sprint').auto, true);
+  const chosen = previewMeetingSet(s, { meetingId: 'mtg-sprint', template: 'short-summary' });
+  assert.deepEqual([tpl(chosen, 'mtg-sprint').id, tpl(chosen, 'mtg-sprint').why], ['short-summary', 'meeting']);
+  assert.notEqual(tpl(previewMeetingSet(chosen, { meetingId: 'mtg-sprint', template: null }), 'mtg-sprint').why, 'meeting');
+  assert.equal(tpl(previewMeetingSet(chosen, { meetingId: 'mtg-sprint', auto: null }), 'mtg-sprint').asked, false, 'auto: null goes back to the rule or setting');
+  const upcoming = previewMeetingSet(s, { meetingId: 'ev-next', auto: true });
+  assert.equal(tpl(upcoming, 'ev-next').auto, true);
+  assert.equal(item(upcoming, 'ev-next').state, 'upcoming');
+  assert.equal(previewMeetingSet(s, { meetingId: 'nowhere', auto: true }), null);
+  // Make main and delete: the picker follows; the last document gone means no notes yet.
+  const docs = item(s, 'mtg-philips').rec.data.docs;
+  assert.equal(docs.length, 2);
+  const main = previewMeetingDoc(s, { meetingId: 'mtg-philips', docId: docs[1].id, action: 'main' });
+  assert.equal(item(main, 'mtg-philips').rec.data.main, docs[1].id);
+  const one = previewMeetingDoc(main, { meetingId: 'mtg-philips', docId: docs[1].id, action: 'delete' });
+  assert.deepEqual([item(one, 'mtg-philips').rec.data.docs.map(d => d.id), item(one, 'mtg-philips').rec.data.main], [[docs[0].id], docs[0].id]);
+  const none = previewMeetingDoc(one, { meetingId: 'mtg-philips', docId: docs[0].id, action: 'delete' });
+  assert.equal(item(none, 'mtg-philips').state, 'downloaded');
+  assert.equal(previewMeetingDoc(s, { meetingId: 'mtg-philips', docId: docs[0].id, action: 'edit', text: 'x' }), null);
+  // Make notes and Try again: the meeting's run shows at once; Stop ends it at once.
+  const run = previewRun('meeting_notes')(s, { meetingId: 'mtg-vendor', templateId: 'short-summary' }, { operationId: 'op-1' });
+  assert.deepEqual([runOf(run, 'mtg-vendor').kind, runOf(run, 'mtg-vendor').templateId], ['meeting_notes', 'short-summary']);
+  assert.equal(runOf(previewRun('transcript_download')(s, { meetingId: 'mtg-vendor' }, { operationId: 'op-2' }), 'mtg-vendor').kind, 'transcript_download');
+  const stopped = previewJobCancel(run, { id: runOf(run, 'mtg-vendor').id });
+  assert.equal(runOf(stopped, 'mtg-vendor'), null);
+  assert.equal(previewJobCancel(s, { id: 'no-such-job' }), null);
+  // The snapshot it came from stays as it was.
+  assert.equal(runOf(s, 'mtg-vendor'), null);
+  assert.equal(item(s, 'mtg-philips').rec.data.docs.length, 2);
 });

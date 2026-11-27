@@ -32,7 +32,8 @@ pub struct CliRunner {
 }
 
 impl CliRunner {
-    /// Finds `claude` / `codemie-claude` the same way detection does.
+    /// Finds `claude` / `codemie-claude` the same way detection does; of several CodeMie
+    /// copies, the newest runs.
     pub fn new(env: DetectEnv) -> Self {
         Self::with_resolver(Arc::new(move |kind| match kind {
             ProfileKind::Native => super::discover::find_program_in(
@@ -42,7 +43,7 @@ impl CliRunner {
                 &env.system_dirs,
                 &[],
             ),
-            ProfileKind::CodeMie { .. } => super::discover::find_program_in(
+            ProfileKind::CodeMie { .. } => super::discover::find_codemie_program_in(
                 "codemie-claude",
                 &env.path_var,
                 &env.home,
@@ -384,6 +385,38 @@ mod tests {
             staging_root: root.to_path_buf(),
             folder: None,
         }
+    }
+
+    #[test]
+    fn a_codemie_run_starts_the_newest_codemie_claude() {
+        // An `npm link` to a 0.17.1 checkout comes first on the PATH; the server refuses it, and
+        // the 0.17.2 in ~/.codemie/agents is what runs. The lookup is tested in discover.rs.
+        use crate::ai::discover::tests::codemie_package;
+        let home = tempfile::tempdir().unwrap();
+        let checkout = tempfile::tempdir().unwrap();
+        let npm_bin = tempfile::tempdir().unwrap();
+        codemie_package(checkout.path(), "0.17.1", npm_bin.path(), "codemie-claude");
+        let agents = home.path().join(".codemie/agents");
+        codemie_package(
+            &agents.join("lib/node_modules/@codemieai/code"),
+            "0.17.2",
+            &agents.join("bin"),
+            "codemie-claude",
+        );
+        let runner = CliRunner::new(DetectEnv {
+            path_var: npm_bin.path().to_str().unwrap().into(),
+            home: home.path().into(),
+            system_dirs: vec![],
+            extra_dirs: vec![],
+            config_path: home.path().join("codemie-cli.config.json"),
+        });
+        let kind = ProfileKind::CodeMie {
+            name: "prod".into(),
+        };
+        assert_eq!(
+            (runner.resolve)(&kind),
+            Some(agents.join("bin/codemie-claude"))
+        );
     }
 
     /// A shell script standing in for `claude`.

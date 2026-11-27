@@ -26,6 +26,7 @@ import { shownTab, stripPrimary, summaryTabs, withLine } from './meeting-view-mo
 import {
   actionItems, dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, summaryPane, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
+import { FILE_MANAGER } from './platform.js';
 
 /** Meetings' sections (spec "Page sections"): the list, pinned to Today as "From your meetings"
  *  (the `meetings` widget), and the meeting. Version 2: the four tab sections of version 1 became
@@ -137,7 +138,7 @@ function statusOf(m, mc) {
   if (m.run && m.run.kind !== 'transcript_check') return { tone: m.run.kind === 'meeting_notes' ? 'purple' : 'info', label: `${runText(m.run)}…` };
   if (m.paused) return { tone: 'warning', label: PAUSED[m.paused].status };
   if (m.state === 'available' && mc.saveError) return mc.saveError.code === 'cancelled' ? { tone: 'muted', label: 'Saving stopped' } : { tone: 'error', label: 'Couldn’t get the transcript' };
-  if (m.state === 'upcoming') return { tone: 'muted', label: m.online ? (mc.tpl.auto ? 'Notes after the meeting' : 'Upcoming') : mc.d.location || 'In person' };
+  if (m.state === 'upcoming') return { tone: 'muted', label: m.live ? 'On now' : m.online ? (mc.tpl.auto ? 'Notes after the meeting' : 'Upcoming') : mc.d.location || 'In person' };
   return STATES[m.state] ? { tone: STATES[m.state].tone, label: STATES[m.state].label } : { tone: 'muted', label: m.state };
 }
 
@@ -161,6 +162,8 @@ export function primaryAction(m, mc, { size, where = 'detail' } = {}) {
     case 'failed': return button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: id, size });
     case 'blocked': return button('Import file', { action: 'meeting-import', iconName: 'upload', attrs: id, size });
     case 'pending': return button('Check now', { action: 'meeting-check', iconName: 'refresh', variant: 'ghost', attrs: id, size });
+    // On now by the calendar, perhaps over already: its transcript may be in Teams.
+    case 'upcoming': return m.live ? button('Check now', { action: 'meeting-check', iconName: 'refresh', variant: 'ghost', attrs: id, size }) : '';
     case 'none': case 'offline': return m.ended ? button('Import file', { action: 'meeting-import', iconName: 'upload', variant: 'ghost', attrs: id, size }) : '';
     default: return '';
   }
@@ -403,7 +406,7 @@ function meetingMenu(p, mc, tab, slots = []) {
     [
       ['#', 'Advanced'],
       has ? ['Files', 'meeting-pane', pane('files'), 'folder'] : null,
-      mc.r.folder ? ['Show folder in Finder', 'meeting-reveal', id, 'folder-open'] : null,
+      mc.r.folder ? [`Show folder in ${FILE_MANAGER}`, 'meeting-reveal', id, 'folder-open'] : null,
       mc.r.folder ? ['Copy folder path', 'meeting-copy-folder', id, 'copy'] : null,
       mc.saved && mc.fromTeams && !mc.imported ? ['Download again from Teams', 'meeting-download', id, 'refresh'] : null,
       m.ended && ['blocked', 'none', 'offline', 'available', 'downloaded'].includes(m.state) ? ['Import a transcript file…', 'meeting-import', id, 'upload'] : null,

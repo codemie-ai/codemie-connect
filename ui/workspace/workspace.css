@@ -228,7 +228,7 @@ body{font-family:var(--font-ui);-webkit-font-smoothing:antialiased;margin:0}
 .light .ws-logo-light{display:block}
 .ws-nav{display:flex;flex-direction:column;gap:1px}
 .ws-main-nav{flex:1;min-height:0;overflow-y:auto;gap:10px;margin:0 -6px;padding:0 6px;scrollbar-width:thin}
-.ws-nav-group{display:flex;flex-direction:column;gap:1px}
+.ws-nav .ws-nav-group{display:flex;flex-direction:column;gap:1px}
 .ws-nav button{position:relative;flex:none;display:flex;align-items:center;gap:9px;width:100%;height:var(--ws-nav-row-h);padding:0 9px;color:#CCCCCC;background:none;border:0;text-align:left;border-radius:var(--ws-r-nav);font-size:var(--ws-fs-body-sm);line-height:18px;white-space:nowrap;transition:background .12s ease,color .12s ease}
 .light .ws-nav button{color:#333}
 .ws-nav button:hover,.ws-nav button[aria-current=page]{background:#212224;color:#F2F0EF}
@@ -678,11 +678,14 @@ body.ws-drag-nwse,body.ws-drag-nwse *{cursor:nwse-resize!important}
 
 .ws-upnext .ws-card-body{padding:18px}
 .ws-upnext-main{display:flex;gap:18px;align-items:stretch}
-.ws-upnext-time{display:flex;flex-direction:column;justify-content:center;gap:2px;min-width:76px;padding:6px 0 6px 14px;border-left:4px solid var(--event-color)}
-.ws-upnext-time strong{font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.6px}
+.ws-upnext-time{display:flex;flex-direction:column;justify-content:flex-start;gap:2px;min-width:72px;padding:2px 0 0}
+.ws-upnext-time strong{display:flex;align-items:center;gap:8px;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.5px}
+/* The calendar's colour: a dot before the time, never a fill. */
+.ws-upnext-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--event-color)}
+.ws-upnext-time>span{padding-left:16px}
 .ws-upnext-time span{color:var(--ws-muted);font-size:var(--ws-fs-body-sm)}
 .ws-upnext-info{display:grid;gap:8px;min-width:0;flex:1}
-.ws-upnext-info h3{font-size:var(--ws-fs-heading-lg);line-height:26px;font-weight:600;letter-spacing:-.4px;overflow:hidden;text-overflow:ellipsis}
+.ws-upnext-info h3{font-family:var(--font-sans);font-size:19px;line-height:26px;font-weight:600;letter-spacing:-.3px;overflow:hidden;text-overflow:ellipsis}
 .ws-upnext-actions{margin-top:6px}
 .ws-meta{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--ws-muted);font-size:var(--ws-fs-body-sm);line-height:20px}
 .ws-meta>span{display:inline-flex;align-items:center;gap:6px;min-width:0}
@@ -692,16 +695,21 @@ body.ws-drag-nwse,body.ws-drag-nwse *{cursor:nwse-resize!important}
 .ws-face-stack .ws-avatar{margin-left:-6px;box-shadow:0 0 0 2px var(--ws-card)}
 .ws-face-stack .ws-avatar:first-child{margin-left:0}
 .ws-live-chip,.ws-soon-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:12px;font-size:var(--ws-fs-secondary);font-weight:600}
-.ws-live-chip{color:var(--ws-red);background:var(--ws-red-bg)}
+/* A meeting on now: the accent; its last five minutes: amber. Red is kept for problems. */
+.ws-live-chip{color:var(--ws-accent);background:color-mix(in srgb,var(--ws-accent) 14%,transparent)}
+.ws-live-chip.ws-ending{color:var(--ws-amber);background:var(--ws-amber-bg)}
 .ws-soon-chip{color:var(--ws-blue);background:var(--ws-blue-bg)}
 .ws-soon-chip.ws-soon{color:var(--ws-amber);background:var(--ws-amber-bg)}
 .ws-live-chip .ws-icon,.ws-soon-chip .ws-icon{width:14px;height:14px}
-.ws-progress{height:4px;border-radius:2px;background:var(--ws-raised);margin-top:16px;overflow:hidden}
-.ws-progress span{display:block;height:100%;background:var(--ws-red);border-radius:2px}
-.ws-later-label{font-weight:600;color:var(--ws-muted);margin-right:4px}
-.ws-later{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px 0 8px;border-radius:13px;border:1px solid var(--ws-border);background:var(--ws-card-2);font-size:var(--ws-fs-secondary);color:var(--ws-text);max-width:260px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.ws-later span{color:var(--ws-muted);padding-left:6px;border-left:3px solid var(--event-color)}
-.ws-later:hover{border-color:var(--ws-border-strong)}
+.ws-progress{height:3px;border-radius:2px;background:var(--ws-raised);margin-top:16px;overflow:hidden}
+.ws-progress span{display:block;height:100%;background:var(--ws-accent);border-radius:2px}
+/* What comes next: one line under the meeting (the Schedule shows the rest of the day). */
+.ws-next{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:0;border:0;background:none;color:var(--ws-muted);font-size:var(--ws-fs-secondary);line-height:18px;text-align:left}
+.ws-next-label{color:var(--ws-faint)}
+.ws-next-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--event-color)}
+.ws-next strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ws-text);font:500 13px/18px var(--font-sans);letter-spacing:0}
+.ws-next-in{flex:none;white-space:nowrap}
+.ws-next:hover strong{color:var(--ws-link)}
 .ws-upnext-free{display:flex;gap:14px;align-items:center;padding:6px 0}
 .ws-upnext-free>.ws-icon{width:32px;height:32px;color:var(--ws-muted)}
 .ws-upnext-free h3{font-size:var(--ws-fs-heading);line-height:24px}
@@ -788,6 +796,48 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-quick-add{display:flex;gap:8px;margin-bottom:10px}
 .ws-quick-add .ws-input:first-child{flex:1}
 .ws-quick-add .ws-date{width:150px;flex:0 0 150px}
+
+/* A calmer Today (spec docs/superpowers/specs/2026-11-20-calm-today-design.md): one accent for now,
+   a calendar's colour only as a rail or a dot, red kept for problems, quiet card chrome. */
+.ws-today-page{--ws-now:var(--ws-accent)}
+.ws-today-page .ws-today-title h1{font-size:22px;line-height:28px}
+/* Card headers: a small faint icon, the title, one quiet link; the tools show on hover or focus. */
+.ws-tile .ws-card-icon,.light .ws-tile .ws-card-icon{width:auto;height:auto;background:none;color:var(--ws-faint)}
+.ws-tile .ws-card-icon .ws-icon{width:15px;height:15px}
+.ws-tile .ws-card-title{gap:8px;font-size:15px}
+.ws-tile-extra .ws-btn-ghost{color:var(--ws-link);font-weight:500}
+.ws-tile-tools{opacity:0;transition:opacity .12s}
+.ws-tile:is(:hover,:focus-within) .ws-tile-tools,.ws-tile-tools:has(.ws-menu[open]),.ws-today-editing .ws-tile-tools{opacity:1}
+@media (hover:none){.ws-tile-tools{opacity:1}}
+/* Schedule: neutral blocks with the calendar's colour as a rail; the meeting on now tinted. */
+.ws-today-page .ws-tl-event{border-left:0;background:var(--ws-raised);color:var(--ws-text);box-shadow:inset 3px 0 0 var(--event-color)}
+.ws-today-page .ws-tl-event:hover{background:color-mix(in srgb,var(--ws-text) 6%,var(--ws-raised))}
+.ws-today-page .ws-tl-event strong{font:500 12px/16px var(--font-sans);letter-spacing:0}
+.ws-today-page .ws-tl-event span{color:var(--ws-muted)}
+.ws-today-page .ws-tl-event.ws-current{background:color-mix(in srgb,var(--ws-accent) 14%,var(--ws-raised))}
+.ws-today-page .ws-tl-event.ws-tentative{background:transparent;border:1px dashed var(--ws-border-strong);box-shadow:inset 3px 0 0 color-mix(in srgb,var(--event-color) 45%,transparent);opacity:.85}
+.ws-today-page .ws-chip-event,.light .ws-today-page .ws-chip-event{background:var(--ws-raised);color:var(--ws-text);font-weight:500;box-shadow:inset 3px 0 0 var(--event-color)}
+/* Tasks: the add form behind a row, the task text in the sans. */
+.ws-task-add{display:block}
+.ws-task-add-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--ws-border);color:var(--ws-faint);font-size:13px;cursor:pointer}
+.ws-task-add-row:hover,.ws-task-add[open] .ws-task-add-row{color:var(--ws-text)}
+.ws-task-add-row .ws-icon{width:15px;height:15px}
+.ws-task-add .ws-quick-add{margin:8px 0 6px}
+.ws-commitments .ws-todo-text .ws-link-title{font-family:var(--font-sans);font-size:13.5px;letter-spacing:0}
+/* Needs your reply: the name and the conversation on one line, the preview under it, the draft
+   button on hover or focus. */
+.ws-attention .ws-msg-row{gap:10px;padding:9px 8px}
+/* One track that never grows past the row: the name, conversation and time line shrinks its title. */
+.ws-attention .ws-msg-main{grid-template-columns:minmax(0,1fr)}
+.ws-attention .ws-msg-top strong{flex:none;max-width:45%;font:600 13px/19px var(--font-sans);letter-spacing:0}
+.ws-attention .ws-msg-top .ws-msg-title{flex:1;min-width:0;font-size:11.5px;color:var(--ws-faint)}
+.ws-attention .ws-msg-item.ws-has-action .ws-msg-title{margin-right:0}
+.ws-attention .ws-msg-preview{font-size:13px;line-height:24px}
+/* The draft pill sits on the preview's line only (24 px, like the line), clear of the name's line. */
+.ws-attention .ws-row-action{height:24px;min-width:24px;bottom:9px;line-height:22px}
+.ws-attention .ws-row-action{opacity:0;transition:opacity .12s ease,background .12s ease,color .12s ease,border-color .12s ease}
+.ws-attention .ws-msg-item:is(:hover,:focus-within) .ws-row-action{opacity:1}
+@media (hover:none){.ws-attention .ws-row-action{opacity:1}}
 .ws-todo-list{display:grid}
 .ws-todo{display:flex;align-items:flex-start;gap:10px;padding:9px 4px;border-bottom:1px solid var(--ws-border)}
 .ws-todo:last-child{border-bottom:0}
@@ -2375,11 +2425,12 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 /* Today's Tasks card: rows open the task; the tasks to review link to the board */
 .ws-todo-text .ws-link-title{font-size:var(--ws-fs-body);line-height:20px;overflow-wrap:anywhere}
 .ws-todo.ws-done .ws-todo-text .ws-link-title{text-decoration:line-through;color:var(--ws-muted)}
-.ws-today-review{display:flex;align-items:center;gap:12px;width:100%;margin-bottom:8px;padding:8px 10px;border:0;border-radius:8px;background:var(--ws-purple-bg);color:var(--ws-text);text-align:left}
-.ws-today-review>.ws-icon:first-child{color:var(--ws-purple)}
-.ws-today-review>span{flex:1;display:grid;min-width:0}
-.ws-today-review strong{font-size:var(--ws-fs-body-sm);font-weight:600}
-.ws-today-review small{color:var(--ws-muted);font-size:var(--ws-fs-secondary)}
+/* Tasks meetings found, waiting on the board: one quiet line. */
+.ws-today-review{display:inline-flex;align-items:center;gap:7px;max-width:100%;margin:0 0 4px;padding:2px 0;border:0;background:none;color:var(--ws-link);font-size:12.5px;line-height:18px;text-align:left}
+.ws-today-review>.ws-icon{flex:none;width:14px;height:14px}
+.ws-today-review>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-today-review strong{font-weight:600}
+.ws-today-review:hover>span{text-decoration:underline}
 
 /* ------------------------------------------------------------------ meetings (spec "Meetings page") */
 #workspace-app[data-route=meetings] .ws-main{overflow:hidden}
@@ -2564,17 +2615,21 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 /* make notes */
 .ws-mtg-make .ws-card-header{min-height:0}
-.ws-mtg-make-foot{padding:12px 18px}
+.ws-mtg-make-foot{flex-wrap:nowrap;gap:16px;padding:10px 18px}
+.ws-mtg-make-foot .ws-mtg-privacy{flex:1}
 .ws-mtg-form-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:20px}
 .ws-tpl-options{border:0;margin:0;padding:0;display:grid;gap:6px;align-content:start;min-width:0}
 .ws-tpl-options legend{margin-bottom:6px;padding:0}
-.ws-tpl-option{position:relative;display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:pointer;transition:border-color .12s ease,background .12s ease}
+.ws-tpl-option{position:relative;display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:pointer;transition:border-color .12s ease,background .12s ease}
 .ws-tpl-option:hover{border-color:var(--ws-border-strong)}
 .ws-tpl-option input{position:absolute;opacity:0;pointer-events:none}
-.ws-tpl-option:has(input:checked){border-color:var(--tpl);background:color-mix(in srgb,var(--tpl) 10%,var(--ws-card));box-shadow:0 0 0 1px var(--tpl)}
+.ws-tpl-option:has(input:checked){border-color:var(--tpl);background:color-mix(in srgb,var(--tpl) 8%,var(--ws-card))}
+/* Only the chosen template says what it makes; the others are a name (the rest is in their tooltip). */
+.ws-tpl-option:not(:has(input:checked)){align-items:center}
+.ws-tpl-option:not(:has(input:checked)) .ws-tpl-copy small{display:none}
 .ws-tpl-option:has(input:focus-visible){outline:2px solid var(--ws-focus);outline-offset:2px}
-.ws-tpl-icon{display:grid;place-items:center;flex:0 0 28px;height:28px;border-radius:8px;background:color-mix(in srgb,var(--tpl,var(--ws-accent)) 18%,transparent);color:var(--tpl,var(--ws-accent))}
-.ws-tpl-icon .ws-icon{width:15px;height:15px}
+.ws-tpl-icon{display:grid;place-items:center;flex:0 0 24px;height:24px;border-radius:8px;background:color-mix(in srgb,var(--tpl,var(--ws-accent)) 18%,transparent);color:var(--tpl,var(--ws-accent))}
+.ws-tpl-icon .ws-icon{width:14px;height:14px}
 .ws-tpl-copy{display:grid;gap:2px;min-width:0}
 .ws-tpl-copy strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:var(--ws-fs-body-sm);font-weight:600}
 .ws-tpl-copy small{font-size:var(--ws-fs-secondary);line-height:17px;color:var(--ws-muted)}
@@ -2584,7 +2639,8 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-form-side{display:grid;gap:16px;align-content:start;min-width:0}
 .ws-mtg-form-checks{display:grid;gap:12px}
 .ws-mtg-form-checks .ws-check{font-size:var(--ws-fs-body-sm)}
-.ws-mtg-privacy{display:flex;gap:8px;align-items:flex-start;font-size:var(--ws-fs-secondary);line-height:17px;color:var(--ws-muted);padding:10px 12px;border-radius:8px;background:var(--ws-card-2)}
+.ws-mtg-form-side .ws-textarea{min-height:60px}
+.ws-mtg-privacy{display:flex;gap:8px;align-items:flex-start;min-width:0;margin:0;font-size:var(--ws-fs-secondary);line-height:17px;color:var(--ws-muted)}
 .ws-mtg-privacy>.ws-icon{color:var(--ws-green);margin-top:1px}
 .ws-mtg-privacy code{font-size:var(--ws-fs-meta);word-break:break-all}
 .ws-mtg-keep{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border-radius:8px;background:var(--ws-green-bg);font-size:var(--ws-fs-secondary);line-height:18px;color:var(--ws-text-2)}
@@ -2789,6 +2845,9 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-mtg-items:not(.ws-mtg-items-pane){width:auto;max-height:50vh;border-left:0;border-top:1px solid var(--ws-border)}
 }
 @container (max-width:560px){
+  /* The quote goes under the chips. */
+  .ws-mtg-trow-meta{flex-wrap:wrap;row-gap:4px}
+  .ws-mtg-trow-meta .ws-mtg-quote{flex-basis:100%;margin-left:0}
   /* Narrow: the buttons keep the first line, the title takes the full width under them. */
   .ws-mtg-head-title{flex-wrap:wrap;row-gap:4px}
   .ws-mtg-head-copy{order:2;flex-basis:100%}
